@@ -16,8 +16,6 @@ const LEGACY_FIELDS = [
   "password",
   "captainPassword",
   "userPassword",
-  "pass",
-  "pin",
 ];
 const APPLY = process.argv.includes("--apply");
 
