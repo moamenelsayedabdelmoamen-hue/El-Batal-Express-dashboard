@@ -11,7 +11,7 @@
 const admin = require("firebase-admin");
 
 const PROJECT_ID = "el-batal-express-956ae";
-const COLLECTIONS = ["captains", "drivers", "users"];
+const COLLECTIONS = ["captains", "drivers"];
 const LEGACY_FIELDS = [
   "password",
   "captainPassword",
@@ -31,7 +31,7 @@ async function main() {
 
   const db = admin.firestore();
   const targets = [];
-  const totals = {};
+  const totals = { captains: {}, drivers: {}, linkedUserProfiles: 0 };
 
   for (const collectionName of COLLECTIONS) {
     const snapshot = await db.collection(collectionName).get();
@@ -45,6 +45,20 @@ async function main() {
       if (fields.length > 0) {
         affected += 1;
         targets.push({ ref: document.ref, fields });
+      }
+
+      // The legacy dashboard also copied the password into users/{captainUid}.
+      // Only inspect user profiles linked by the same Captain/Driver UID; never
+      // scan unrelated customer or administrator profiles.
+      const linkedUser = await db.collection("users").doc(document.id).get();
+      if (linkedUser.exists) {
+        const linkedFields = ["password", "captainPassword", "userPassword"].filter((field) =>
+          Object.prototype.hasOwnProperty.call(linkedUser.data() || {}, field)
+        );
+        if (linkedFields.length > 0) {
+          targets.push({ ref: linkedUser.ref, fields: linkedFields });
+          totals.linkedUserProfiles += 1;
+        }
       }
     }
 
