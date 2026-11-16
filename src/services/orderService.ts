@@ -813,7 +813,7 @@ export const OrderService = {
       orderNumber,
       orderCode: orderNumber,
       merchantId: data.restaurantId,
-      restaurantName: data.restaurantName,
+      merchantName: data.restaurantName,
       captainId: data.captainId,
       captainName: data.captainName,
       customerName: data.customerName || '',
@@ -850,7 +850,7 @@ export const OrderService = {
           order_code: orderNumber,
           order_codes: orderNumber,
           merchantId: data.restaurantId,
-          restaurantName: data.restaurantName,
+          merchantName: data.restaurantName,
           captainId: data.captainId,
           captainName: data.captainName,
           captain: {
