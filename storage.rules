@@ -14,10 +14,8 @@ service firebase.storage {
 
     // Trusted DB-backed merchant account check
     function isMerchantAccount() {
-      return isAuthenticated() && (
-        firestore.exists(/databases/(default)/documents/restaurants/$(request.auth.uid)) ||
-        firestore.exists(/databases/(default)/documents/merchants/$(request.auth.uid))
-      );
+      return isAuthenticated() &&
+        firestore.exists(/databases/(default)/documents/merchants/$(request.auth.uid));
     }
 
     function isValidImageUpload() {
@@ -93,6 +91,19 @@ service firebase.storage {
           ('activeMerchantId' in captainDoc.data && captainDoc.data.activeMerchantId == request.auth.uid) ||
           ('currentMerchantId' in captainDoc.data && captainDoc.data.currentMerchantId == request.auth.uid)
         );
+    }
+
+    // Merchant profile images: merchants/{merchantId}/profile.jpg
+    // The merchant can manage only their own image; admins can moderate any merchant image.
+    match /merchants/{merchantId}/{fileName} {
+      allow read: if isAuthenticated() && (
+        request.auth.uid == merchantId || isAdmin()
+      );
+      allow create, update: if isAuthenticated()
+        && (request.auth.uid == merchantId || isAdmin())
+        && fileName in ['profile.jpg', 'logo.jpg', 'logo.png', 'logo.webp']
+        && isValidImageUpload();
+      allow delete: if isAdmin() || (isAuthenticated() && request.auth.uid == merchantId);
     }
 
     // 1. Captain Profile Photo: captains/{captainId}/profile/profile.jpg
