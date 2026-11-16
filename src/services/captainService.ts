@@ -60,7 +60,7 @@ function mapDocToCaptain(id: string, data: Record<string, any>): Captain {
   const rawStatus = (data.status as CaptainStatus) || (data.isOnline ? 'online' : 'offline');
 
   // Determine whether captain is allowed to receive orders
-  let canReceiveOrders = true;
+  let canReceiveOrders = data.status === 'pending' ? false : true;
   if (typeof data.canReceiveOrders === 'boolean') {
     canReceiveOrders = data.canReceiveOrders;
   } else if (typeof data.isReceivingOrders === 'boolean') {
