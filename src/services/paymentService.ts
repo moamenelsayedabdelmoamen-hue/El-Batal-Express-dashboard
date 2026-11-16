@@ -73,7 +73,7 @@ export const PaymentService = {
     const payload = {
       transactionId: txnId,
       transactionNumber: txnId,
-      merchantId: data.merchantId || data.restaurantId || '',
+      merchantId: (data as any).merchantId || data.restaurantId || '',
       merchantName: data.restaurantName,
       amount: Number(data.amount) || 0,
       paymentMethod: data.paymentMethod,
@@ -91,6 +91,8 @@ export const PaymentService = {
         });
         const created: Payment = {
           ...payload,
+          restaurantId: payload.merchantId,
+          restaurantName: payload.merchantName,
           id: docRef.id,
         };
         localPaymentsCache = [created, ...localPaymentsCache];
@@ -102,6 +104,8 @@ export const PaymentService = {
 
     const newPayment: Payment = {
       ...payload,
+      restaurantId: payload.merchantId,
+      restaurantName: payload.merchantName,
       id: `pay_${Date.now()}`,
     };
 
