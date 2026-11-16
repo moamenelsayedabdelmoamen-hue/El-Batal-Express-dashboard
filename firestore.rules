@@ -413,6 +413,9 @@ service cloud.firestore {
       allow update: if isAdmin() ||
         (
           isOrderOwnedByMerchant(existing())
+          && incoming().merchantId == existing().merchantId
+          && incoming().userId == existing().userId
+          && incoming().orderCode == existing().orderCode
           && incoming().captainId == existing().captainId
           && !incoming().diff(existing()).affectedKeys().hasAny(['captainId', 'captainUid', 'driverId', 'assignedCaptainId', 'offeredCaptainId', 'dispatchStatus', 'assignedAt'])
         ) ||
@@ -420,6 +423,9 @@ service cloud.firestore {
           isCaptainAccount()
           && existing().captainId == request.auth.uid
           && incoming().captainId == existing().captainId
+          && incoming().merchantId == existing().merchantId
+          && incoming().userId == existing().userId
+          && incoming().orderCode == existing().orderCode
         );
       allow delete: if isAdmin();
     }
