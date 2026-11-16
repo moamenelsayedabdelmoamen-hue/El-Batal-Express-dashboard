@@ -25,8 +25,12 @@ service cloud.firestore {
     }
 
     function isAdmin() {
-      return isSignedIn() &&
-        exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+      return isSignedIn() && (
+        request.auth.token.role == 'admin' ||
+        request.auth.token.admin == true ||
+        request.auth.token.email in ['moamen.elsayed.abdelmoamen@gmail.com', 'admin@elbatalexpress.com'] ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
     }
 
     function isCaptainAccount() {
@@ -144,16 +148,17 @@ service cloud.firestore {
     }
 
     match /captains/{captainId} {
-      // Strictly own captain or Admin only (merchants cannot read captain personal/ID documents)
+      // A merchant can read only the currently assigned captain's live profile.
       allow get: if isSignedIn() && isValidId(captainId) && (
         request.auth.uid == captainId ||
-        isAdmin()
+        isAdmin() ||
+        (isMerchantAccount() && (
+          ('activeMerchantId' in existing() && existing().activeMerchantId == request.auth.uid) ||
+          ('currentMerchantId' in existing() && existing().currentMerchantId == request.auth.uid)
+        ))
       );
 
-      allow list: if isSignedIn() && (
-        isAdmin() ||
-        ('uid' in existing() && existing().uid == request.auth.uid)
-      );
+      allow list: if isAdmin();
 
       allow create: if isSignedIn()
         && isValidId(captainId)
@@ -372,13 +377,13 @@ service cloud.firestore {
         ('merchantId' in data && data.merchantId == request.auth.uid) ||
         ('storeId' in data && data.storeId == request.auth.uid) ||
         ('vendorId' in data && data.vendorId == request.auth.uid) ||
-        ('ownerId' in data && data.ownerId == request.auth.uid)
+        ('ownerId' in data && data.ownerId == request.auth.uid) ||
+        ('userId' in data && data.userId == request.auth.uid)
       );
     }
 
     function isOrderOwnedByCustomer(data) {
-      return ('customerId' in data && data.customerId == request.auth.uid) ||
-             ('userId' in data && data.userId == request.auth.uid);
+      return ('customerId' in data && data.customerId == request.auth.uid);
     }
 
     function canReadOrder(data) {
@@ -392,9 +397,74 @@ service cloud.firestore {
       allow get: if isSignedIn() && isValidId(orderId) && canReadOrder(existing());
       allow list: if isSignedIn() && canReadOrder(existing());
 
-      // All order creation, acceptance, pickup, receipt binding, merchant confirmation, and delivery
-      // MUST execute through Cloud Functions (Admin SDK) or verified Admin only.
+      // Merchant clients may create only a pending order for their own approved, verified account.
+      allow create: if isAdmin() || (
+        isMerchantAccount()
+        && request.auth.token.email_verified == true
+        && incoming().merchantId == request.auth.uid
+        && incoming().captainId == null
+        && incoming().dispatchStatus == 'searching'
+        && incoming().status == 'pending'
+        && get(/databases/$(database)/documents/merchants/$(request.auth.uid)).data.status in ['approved', 'active']
+      );
+
+      // The merchant cannot assign/change the captain or dispatch state. Captains can update
+      // delivery progress only on orders already assigned to their UID.
+      allow update: if isAdmin() ||
+        (
+          isOrderOwnedByMerchant(existing())
+          && incoming().captainId == existing().captainId
+          && !incoming().diff(existing()).affectedKeys().hasAny(['captainId', 'dispatchStatus', 'assignedAt'])
+        ) ||
+        (
+          isCaptainAccount()
+          && existing().captainId == request.auth.uid
+          && incoming().captainId == existing().captainId
+        );
+      allow delete: if isAdmin();
+    }
+
+    // Subscription records are read by their owner; only Admin SDK/Admin can mutate them.
+    match /subscriptions/{subscriptionId} {
+      allow get, list: if isAdmin() || (isMerchantAccount() && (
+        subscriptionId == request.auth.uid ||
+        ('merchantId' in existing() && existing().merchantId == request.auth.uid)
+      ));
       allow create, update, delete: if isAdmin();
+    }
+
+    match /payments/{paymentId} {
+      allow get, list: if isAdmin() || (isMerchantAccount() && existing().merchantId == request.auth.uid);
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /order_codes/{code} {
+      allow get, list: if isSignedIn();
+      allow create: if isAdmin() || (isMerchantAccount() && incoming().merchantId == request.auth.uid);
+      allow update, delete: if isAdmin();
+    }
+
+    match /idempotency_keys/{keyId} {
+      allow get: if isAdmin() || (isMerchantAccount() && (
+        !exists(/databases/$(database)/documents/idempotency_keys/$(keyId)) ||
+        existing().merchantId == request.auth.uid
+      ));
+      allow list: if isAdmin();
+      allow create: if isAdmin() || (isMerchantAccount() && incoming().merchantId == request.auth.uid);
+      allow update, delete: if isAdmin();
+    }
+
+    match /settings/{settingId} {
+      allow read: if isAdmin() || isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    match /operation_logs/{logId} {
+      allow read, write: if isAdmin();
+    }
+
+    match /webhook_events/{eventId} {
+      allow read, write: if isAdmin();
     }
 
     // --- 6. Captain Schedules & Shifts (Read-Only for Owning Captain, Admin-Managed) ---
