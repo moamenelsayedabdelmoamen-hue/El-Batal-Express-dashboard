@@ -74,7 +74,7 @@ export const PaymentService = {
       transactionId: txnId,
       transactionNumber: txnId,
       merchantId: data.merchantId || data.restaurantId || '',
-      restaurantName: data.restaurantName,
+      merchantName: data.restaurantName,
       amount: Number(data.amount) || 0,
       paymentMethod: data.paymentMethod,
       status: data.status || 'success',
