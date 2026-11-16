@@ -260,7 +260,7 @@ export const RestaurantsPage: React.FC = () => {
         isActive: true,
       });
     } catch (err) {
-      toastError('فشل إضافة التاجر');
+      toastError('يجب إنشاء حساب التاجر من تطبيق التاجر حتى يرتبط المستند بمعرّف Firebase Authentication الصحيح.');
     } finally {
       setActionLoading(false);
     }
