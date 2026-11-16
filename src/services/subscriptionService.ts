@@ -123,11 +123,11 @@ function normalizeStatus(rawStatus: any, endDateYMD?: string, isActiveMerchant?:
   }
   if (s === 'Pending' || s === 'pending' || s === 'معلق' || s === 'قيد الانتظار') return 'Pending';
   if (s === 'Expired' || s === 'expired' || s === 'منتهي') return 'Expired';
-  if (s === 'Suspended' || s === 'suspended' || s === 'موقوف' || s === 'inactive') return 'Suspended';
+  if (s === 'Suspended' || s === 'suspended' || s === 'موقوف' || s === 'inactive' || ['unsubscribed', 'none', 'payment_failed', 'failed', 'not_subscribed'].includes(s.toLowerCase())) return 'Suspended';
 
   if (isActiveMerchant === false) return 'Suspended';
   if (endDateYMD && endDateYMD < new Date().toISOString().split('T')[0]) return 'Expired';
-  return 'Active';
+  return 'Suspended';
 }
 
 function mapDocToSubscription(
