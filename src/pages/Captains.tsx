@@ -36,7 +36,7 @@ export const CaptainsPage: React.FC = () => {
   const [captains, setCaptains] = useState<Captain[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState<'all' | 'online' | 'offline' | 'busy'>('all');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'online' | 'offline' | 'busy' | 'pending'>('all');
 
   // Modals state
   const [viewingCaptain, setViewingCaptain] = useState<Captain | null>(null);
@@ -177,7 +177,7 @@ export const CaptainsPage: React.FC = () => {
 
   const handleSendPasswordReset = async (captain: Captain) => {
     const email = captain.email?.trim();
-    if (!email || email === '—' || !/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email)) {
+    if (!email || email === '—' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       toastError('لا يوجد بريد إلكتروني صالح مرتبط بحساب الكابتن.');
       return;
     }
@@ -364,6 +364,14 @@ export const CaptainsPage: React.FC = () => {
             }`}
           >
             الكل ({captains.length})
+          </button>
+          <button
+            onClick={() => setStatusFilter('pending')}
+            className={`px-3 py-1.5 rounded-lg font-bold transition-colors ${
+              statusFilter === 'pending' ? 'bg-amber-500 text-zinc-950' : 'text-zinc-400 hover:text-zinc-200'
+            }`}
+          >
+            بانتظار الموافقة ({captains.filter((c) => c.status === 'pending').length})
           </button>
           <button
             onClick={() => setStatusFilter('online')}
