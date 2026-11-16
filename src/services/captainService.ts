@@ -67,7 +67,7 @@ function mapDocToCaptain(id: string, data: Record<string, any>): Captain {
     canReceiveOrders = data.isReceivingOrders;
   } else if (typeof data.receiveOrders === 'boolean') {
     canReceiveOrders = data.receiveOrders;
-  } else if (data.isBlocked === true || data.isSuspended === true || data.orderReceptionDisabled === true) {
+  } else if (data.status === 'pending' || data.isBlocked === true || data.isSuspended === true || data.orderReceptionDisabled === true) {
     canReceiveOrders = false;
   }
 
@@ -198,7 +198,7 @@ export const CaptainService = {
     const captain = localCaptainsCache.find((item) => item.id === id);
     const email = captain?.email?.trim();
 
-    if (!email || email === '—' || !/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email)) {
+    if (!email || email === '—' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       throw new Error('لا يوجد بريد إلكتروني صالح مرتبط بحساب الكابتن.');
     }
     if (!auth || !isFirebaseConfigured) {
