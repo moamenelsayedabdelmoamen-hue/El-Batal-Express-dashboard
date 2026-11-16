@@ -65,7 +65,7 @@ function mapDocToRestaurant(id: string, data: Record<string, any>): Restaurant {
       (data.subscriptionStatus as SubscriptionStatus) ||
       (data.subscription?.status as SubscriptionStatus) ||
       'Active',
-    isActive: typeof data.isActive === 'boolean' ? data.isActive : (data.status === 'active' || data.status === 'نشط'),
+    isActive: typeof data.isActive === 'boolean' ? data.isActive : (['active', 'approved', 'نشط', 'معتمد'].includes(String(data.status || '').toLowerCase())),
     createdAt: formatTimestamp(data.createdAt || data.registeredAt || data.updatedAt),
     address:
       data.address ||
