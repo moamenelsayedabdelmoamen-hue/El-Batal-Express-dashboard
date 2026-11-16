@@ -35,10 +35,9 @@ service cloud.firestore {
     }
 
     function isMerchantAccount() {
-      return isSignedIn() && (
-        exists(/databases/$(database)/documents/restaurants/$(request.auth.uid)) ||
-        exists(/databases/$(database)/documents/merchants/$(request.auth.uid))
-      );
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/merchants/$(request.auth.uid))
+        && get(/databases/$(database)/documents/merchants/$(request.auth.uid)).data.accountType == 'merchant';
     }
 
     function isOptionalBoundedString(data, key, maxLen) {
@@ -263,86 +262,80 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
-    // --- 3. Restaurants & Merchants Collections ---
-    // Regular users and captains are STRICTLY FORBIDDEN from creating, modifying, or deleting restaurant data.
-    function isValidRestaurantDoc(data) {
-      return ('name' in data) && data.name is string && data.name.size() >= 1 && data.name.size() <= 150
+    // --- 3. Merchants Collection (canonical account store; restaurants is retired) ---
+    function isValidMerchantDoc(data, merchantId) {
+      return ('uid' in data) && data.uid == merchantId
+        && ('accountType' in data) && data.accountType == 'merchant'
+        && ('role' in data) && data.role == 'merchant'
+        && ('name' in data) && data.name is string && data.name.size() >= 1 && data.name.size() <= 150
+        && ('email' in data) && data.email is string && data.email.size() <= 160
         && isOptionalBoundedString(data, 'phone', 32)
         && isOptionalBoundedString(data, 'address', 300)
-        && isOptionalBoundedString(data, 'description', 500)
-        && isOptionalBoundedString(data, 'imageUrl', 500)
-        && isOptionalBoundedString(data, 'locationUrl', 1000)
-        && isOptionalBoundedString(data, 'locationLink', 1000)
-        && isOptionalBoundedString(data, 'mapUrl', 1000)
-        && isOptionalBoundedString(data, 'mapLink', 1000)
-        && isOptionalBoundedString(data, 'mapsUrl', 1000)
-        && isOptionalBoundedString(data, 'mapsLink', 1000)
-        && isOptionalBoundedString(data, 'googleMapsUrl', 1000)
-        && isOptionalBoundedString(data, 'googleMapUrl', 1000)
-        && (!('accountType' in data) || data.accountType != 'captain')
-        && (!('isOpen' in data) || data.isOpen is bool);
+        && isOptionalBoundedString(data, 'category', 80)
+        && isOptionalBoundedString(data, 'logo', 1000)
+        && isOptionalBoundedString(data, 'photoUrl', 1000)
+        && isOptionalBoundedString(data, 'logoUrl', 1000)
+        && isOptionalBoundedString(data, 'storagePath', 500);
+    }
+
+    function isSafeInitialMerchantDoc(data, merchantId) {
+      return isValidMerchantDoc(data, merchantId)
+        && data.email == request.auth.token.email
+        && data.status == 'pending'
+        && data.subscriptionStatus == 'unsubscribed'
+        && data.isSubscribed == false
+        && data.maxCaptains == 0
+        && data.planId == 0
+        && data.emailVerified == false
+        && !('isApproved' in data)
+        && !('isAdmin' in data)
+        && !('walletBalance' in data)
+        && !('subscription' in data)
+        && data.keys().hasOnly([
+          'uid', 'name', 'email', 'phone', 'address', 'category', 'logo', 'photoUrl',
+          'logoUrl', 'storagePath', 'accountType', 'role', 'emailVerified', 'status',
+          'isSubscribed', 'subscriptionStatus', 'maxCaptains', 'planId', 'authProvider',
+          'createdAt', 'updatedAt'
+        ]);
     }
 
     function isAllowedMerchantSelfUpdateKeys() {
       return incoming().diff(existing()).affectedKeys().hasOnly([
-        'name',
-        'phone',
-        'address',
-        'description',
-        'imageUrl',
-        'locationUrl',
-        'locationLink',
-        'mapUrl',
-        'mapLink',
-        'mapsUrl',
-        'mapsLink',
-        'googleMapsUrl',
-        'googleMapUrl',
-        'isOpen',
-        'workingHours',
-        'fcmToken',
-        'updatedAt'
+        'name', 'phone', 'address', 'category', 'description', 'logo', 'logoUrl',
+        'photoUrl', 'imageUrl', 'storagePath', 'location', 'latitude', 'longitude',
+        'locationUrl', 'locationLink', 'mapUrl', 'mapLink', 'mapsUrl', 'mapsLink',
+        'googleMapsUrl', 'googleMapUrl', 'isOpen', 'workingHours', 'fcmToken',
+        'emailVerified', 'lastLoginAt', 'updatedAt'
       ]);
     }
 
-    match /restaurants/{restaurantId} {
-      // Authenticated users can read store pickup/menu/location link metadata (no unauthenticated public scraping)
-      allow get, list: if isSignedIn();
-
-      // Only Admin can provision or delete restaurant documents
-      allow create, delete: if isAdmin();
-
-      // Only the verified owning merchant of THIS restaurant (already provisioned) or Admin can update non-financial fields
-      allow update: if isSignedIn()
-        && isValidId(restaurantId)
-        && (
-          isAdmin() ||
-          (
-            request.auth.uid == restaurantId
-            && exists(/databases/$(database)/documents/restaurants/$(request.auth.uid))
-            && !isCaptainAccount()
-            && isValidRestaurantDoc(incoming())
-            && isAllowedMerchantSelfUpdateKeys()
-          )
-        );
-    }
-
     match /merchants/{merchantId} {
-      allow get: if isSignedIn() && isValidId(merchantId);
+      allow get: if isSignedIn() && isValidId(merchantId)
+        && (request.auth.uid == merchantId || isAdmin());
       allow list: if isAdmin();
-      allow create, delete: if isAdmin();
+
+      // A merchant may create only their own minimal, pending, non-privileged account.
+      allow create: if isSignedIn()
+        && isValidId(merchantId)
+        && request.auth.uid == merchantId
+        && isSafeInitialMerchantDoc(incoming(), merchantId);
+
       allow update: if isSignedIn()
         && isValidId(merchantId)
         && (
           isAdmin() ||
           (
             request.auth.uid == merchantId
-            && exists(/databases/$(database)/documents/merchants/$(request.auth.uid))
-            && !isCaptainAccount()
-            && isValidRestaurantDoc(incoming())
+            && isMerchantAccount()
+            && isValidMerchantDoc(incoming(), merchantId)
             && isAllowedMerchantSelfUpdateKeys()
+            && (!('emailVerified' in incoming().diff(existing()).affectedKeys())
+              || incoming().emailVerified == false
+              || request.auth.token.email_verified == true)
           )
         );
+
+      allow delete: if isAdmin();
     }
 
     // --- 4. Admins Collection ---
@@ -367,13 +360,16 @@ service cloud.firestore {
     }
 
     function isAvailablePendingOrder(data) {
-      return ('status' in data && data.status == 'pending');
+      return ('status' in data && data.status == 'pending')
+        && (
+          ('offeredCaptainId' in data && data.offeredCaptainId == request.auth.uid) ||
+          ('eligibleCaptainIds' in data && request.auth.uid in data.eligibleCaptainIds)
+        );
     }
 
     function isOrderOwnedByMerchant(data) {
       return isMerchantAccount() && (
         ('merchantId' in data && data.merchantId == request.auth.uid) ||
-        ('restaurantId' in data && data.restaurantId == request.auth.uid) ||
         ('storeId' in data && data.storeId == request.auth.uid) ||
         ('vendorId' in data && data.vendorId == request.auth.uid) ||
         ('ownerId' in data && data.ownerId == request.auth.uid)
