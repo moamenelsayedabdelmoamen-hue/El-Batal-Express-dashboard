@@ -414,7 +414,7 @@ service cloud.firestore {
         (
           isOrderOwnedByMerchant(existing())
           && incoming().captainId == existing().captainId
-          && !incoming().diff(existing()).affectedKeys().hasAny(['captainId', 'dispatchStatus', 'assignedAt'])
+          && !incoming().diff(existing()).affectedKeys().hasAny(['captainId', 'captainUid', 'driverId', 'assignedCaptainId', 'offeredCaptainId', 'dispatchStatus', 'assignedAt'])
         ) ||
         (
           isCaptainAccount()
