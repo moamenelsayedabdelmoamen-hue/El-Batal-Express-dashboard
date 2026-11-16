@@ -67,7 +67,12 @@ function mapDocToCaptain(id: string, data: Record<string, any>): Captain {
     canReceiveOrders = data.isReceivingOrders;
   } else if (typeof data.receiveOrders === 'boolean') {
     canReceiveOrders = data.receiveOrders;
-  } else if (data.status === 'pending' || data.isBlocked === true || data.isSuspended === true || data.orderReceptionDisabled === true) {
+  } else if (data.isBlocked === true || data.isSuspended === true || data.orderReceptionDisabled === true) {
+    canReceiveOrders = false;
+  }
+
+  // Pending approval always takes precedence over legacy order-reception flags.
+  if (data.status === 'pending') {
     canReceiveOrders = false;
   }
 
@@ -140,7 +145,15 @@ export const CaptainService = {
   async updateStatus(id: string, status: CaptainStatus): Promise<void> {
     const nowIso = new Date().toISOString();
     localCaptainsCache = localCaptainsCache.map((c) =>
-      c.id === id ? { ...c, status, isOnline: status === 'online', statusUpdatedAt: nowIso } : c
+      c.id === id
+        ? {
+            ...c,
+            status,
+            isOnline: status === 'online',
+            canReceiveOrders: status === 'pending' ? false : c.canReceiveOrders,
+            statusUpdatedAt: nowIso,
+          }
+        : c
     );
 
     if (isFirebaseConfigured) {
@@ -149,6 +162,14 @@ export const CaptainService = {
         await updateDoc(docRef, {
           status,
           isOnline: status === 'online',
+          ...(status === 'pending'
+            ? {
+                canReceiveOrders: false,
+                isReceivingOrders: false,
+                receiveOrders: false,
+                isBlocked: true,
+              }
+            : {}),
           statusUpdatedAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
