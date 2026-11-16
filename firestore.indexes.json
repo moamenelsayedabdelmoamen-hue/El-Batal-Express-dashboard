@@ -15,12 +15,8 @@
     { "collectionGroup": "orders", "queryScope": "COLLECTION", "fields": [
       { "fieldPath": "status", "order": "ASCENDING" },
       { "fieldPath": "dispatchStatus", "order": "ASCENDING" }
-    ]},
-    { "collectionGroup": "captains", "queryScope": "COLLECTION", "fields": [
-      { "fieldPath": "isOnline", "order": "ASCENDING" },
-      { "fieldPath": "availabilityStatus", "order": "ASCENDING" },
-      { "fieldPath": "status", "order": "ASCENDING" }
     ]}
+  ]}
   ],
   "fieldOverrides": []
 }
