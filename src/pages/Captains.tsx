@@ -3,16 +3,13 @@ import { useNavigate } from 'react-router-dom';
 import {
   Bike,
   Search,
-  Plus,
   Star,
   RefreshCw,
   Trash2,
   Eye,
-  EyeOff,
   X,
   TrendingUp,
   CalendarClock,
-  KeyRound,
   Mail,
   Edit2,
   Power,
@@ -39,17 +36,11 @@ export const CaptainsPage: React.FC = () => {
   const [captains, setCaptains] = useState<Captain[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState<'all' | 'online' | 'offline' | 'busy'>('all');
-
-  // Track which captain passwords are visible in the table
-  const [visiblePasswords, setVisiblePasswords] = useState<Record<string, boolean>>({});
+  const [statusFilter, setStatusFilter] = useState<'all' | 'online' | 'offline' | 'busy' | 'pending'>('all');
 
   // Modals state
-  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [viewingCaptain, setViewingCaptain] = useState<Captain | null>(null);
   const [editingCaptain, setEditingCaptain] = useState<Captain | null>(null);
-  const [passwordModalCaptain, setPasswordModalCaptain] = useState<Captain | null>(null);
-  const [newPasswordInput, setNewPasswordInput] = useState('');
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
@@ -60,7 +51,6 @@ export const CaptainsPage: React.FC = () => {
     name: '',
     phone: '',
     email: '',
-    password: '',
     profileImage: '',
     vehicleType: 'دراجة نارية (موتوسيكل)',
     status: 'online' as CaptainStatus,
@@ -99,13 +89,6 @@ export const CaptainsPage: React.FC = () => {
     });
   }, [captains, searchQuery, statusFilter]);
 
-  const togglePasswordVisibility = (captainId: string) => {
-    setVisiblePasswords((prev) => ({
-      ...prev,
-      [captainId]: !prev[captainId],
-    }));
-  };
-
   const handlePhotoFileChange = async (e: React.ChangeEvent<HTMLInputElement>, captainId?: string) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -143,6 +126,11 @@ export const CaptainsPage: React.FC = () => {
   };
 
   const handleToggleOrderReception = async (captain: Captain) => {
+    if (captain.status === 'pending') {
+      toastError('يجب اعتماد حساب الكابتن من قائمة الحالة أولاً قبل تفعيل استقبال الطلبات.');
+      return;
+    }
+
     const currentCanReceive = captain.canReceiveOrders !== false;
     const nextCanReceive = !currentCanReceive;
     const nowIso = new Date().toISOString();
@@ -192,33 +180,19 @@ export const CaptainsPage: React.FC = () => {
     }
   };
 
-  const handleOpenPasswordModal = (captain: Captain) => {
-    setPasswordModalCaptain(captain);
-    setNewPasswordInput(captain.password || '');
-  };
-
-  const handleSavePassword = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!passwordModalCaptain) return;
-    if (!newPasswordInput.trim()) {
-      toastError('يرجى إدخال كلمة السر الجديدة');
+  const handleSendPasswordReset = async (captain: Captain) => {
+    const email = captain.email?.trim();
+    if (!email || email === '—' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      toastError('لا يوجد بريد إلكتروني صالح مرتبط بحساب الكابتن.');
       return;
     }
-
     setActionLoading(true);
     try {
-      const trimmedPass = newPasswordInput.trim();
-      await CaptainService.updatePassword(passwordModalCaptain.id, trimmedPass);
-      setCaptains((prev) =>
-        prev.map((c) => (c.id === passwordModalCaptain.id ? { ...c, password: trimmedPass } : c))
-      );
-      if (viewingCaptain?.id === passwordModalCaptain.id) {
-        setViewingCaptain((prev) => (prev ? { ...prev, password: trimmedPass } : null));
-      }
-      success(`تم تحديث كلمة السر للكابتن "${passwordModalCaptain.name}" بنجاح`);
-      setPasswordModalCaptain(null);
+      await CaptainService.sendPasswordReset(captain.id);
+      success('تم إرسال رابط إعادة تعيين كلمة المرور إلى البريد الإلكتروني المسجل للكابتن.');
     } catch (err) {
-      toastError('فشل تحديث كلمة السر للكابتن');
+      console.error('Captain password reset email failed:', err);
+      toastError('تعذر إرسال رابط إعادة التعيين. تأكد من أن البريد مرتبط بحساب Firebase Authentication.');
     } finally {
       setActionLoading(false);
     }
@@ -230,7 +204,6 @@ export const CaptainsPage: React.FC = () => {
       name: captain.name,
       phone: captain.phone && captain.phone !== '—' ? captain.phone : '',
       email: captain.email && captain.email !== '—' ? captain.email : '',
-      password: captain.password || '',
       profileImage: captain.profileImage || captain.photoURL || '',
       vehicleType: captain.vehicleType || 'دراجة نارية (موتوسيكل)',
       status: captain.status || 'online',
@@ -248,8 +221,7 @@ export const CaptainsPage: React.FC = () => {
       await CaptainService.updateCaptain(editingCaptain.id, {
         name: formData.name,
         phone: formData.phone,
-        email: formData.email || '—',
-        password: formData.password,
+        // Email is owned by Firebase Authentication and is not edited through Firestore.
         profileImage: formData.profileImage,
         vehicleType: formData.vehicleType,
         status: formData.status,
@@ -263,8 +235,6 @@ export const CaptainsPage: React.FC = () => {
                 ...c,
                 name: formData.name,
                 phone: formData.phone,
-                email: formData.email || '—',
-                password: formData.password,
                 profileImage: formData.profileImage,
                 photoURL: formData.profileImage,
                 vehicleType: formData.vehicleType,
@@ -280,48 +250,6 @@ export const CaptainsPage: React.FC = () => {
       setEditingCaptain(null);
     } catch (err) {
       toastError('فشل تحديث بيانات الكابتن');
-    } finally {
-      setActionLoading(false);
-    }
-  };
-
-  const handleAddCaptain = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!formData.name.trim() || !formData.phone.trim()) {
-      toastError('يرجى كتابة اسم ورقم هاتف الكابتن');
-      return;
-    }
-
-    setActionLoading(true);
-    try {
-      const newCapt = await CaptainService.create({
-        name: formData.name,
-        phone: formData.phone,
-        email: formData.email || '—',
-        password: formData.password,
-        profileImage: formData.profileImage,
-        vehicleType: formData.vehicleType,
-        status: formData.status,
-        canReceiveOrders: formData.canReceiveOrders,
-        ordersCount: 0,
-        rating: 5.0,
-      });
-
-      setCaptains((prev) => [newCapt, ...prev]);
-      success('تم إضافة الكابتن الجديد بنجاح');
-      setIsAddModalOpen(false);
-      setFormData({
-        name: '',
-        phone: '',
-        email: '',
-        password: '',
-        profileImage: '',
-        vehicleType: 'دراجة نارية (موتوسيكل)',
-        status: 'online',
-        canReceiveOrders: true,
-      });
-    } catch (err) {
-      toastError('فشل تسجيل الكابتن');
     } finally {
       setActionLoading(false);
     }
@@ -386,25 +314,9 @@ export const CaptainsPage: React.FC = () => {
           >
             <RefreshCw className="w-4 h-4" />
           </button>
-          <button
-            onClick={() => {
-              setFormData({
-                name: '',
-                phone: '',
-                email: '',
-                password: '',
-                profileImage: '',
-                vehicleType: 'دراجة نارية (موتوسيكل)',
-                status: 'online',
-                canReceiveOrders: true,
-              });
-              setIsAddModalOpen(true);
-            }}
-            className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 font-black text-xs sm:text-sm shadow-md shadow-amber-500/10 transition-colors"
-          >
-            <Plus className="w-4 h-4" />
-            <span>إضافة كابتن جديد</span>
-          </button>
+          <div className="px-3 py-2.5 rounded-xl bg-zinc-900 border border-zinc-800 text-zinc-400 text-xs font-bold max-w-sm">
+            التسجيل يتم من تطبيق الكابتن، ثم يظهر الحساب هنا للمراجعة والإدارة
+          </div>
         </div>
       </div>
 
@@ -457,6 +369,14 @@ export const CaptainsPage: React.FC = () => {
             }`}
           >
             الكل ({captains.length})
+          </button>
+          <button
+            onClick={() => setStatusFilter('pending')}
+            className={`px-3 py-1.5 rounded-lg font-bold transition-colors ${
+              statusFilter === 'pending' ? 'bg-amber-500 text-zinc-950' : 'text-zinc-400 hover:text-zinc-200'
+            }`}
+          >
+            بانتظار الموافقة ({captains.filter((c) => c.status === 'pending').length})
           </button>
           <button
             onClick={() => setStatusFilter('online')}
@@ -517,14 +437,13 @@ export const CaptainsPage: React.FC = () => {
                   <th className="py-4 px-4">عدد الطلبات</th>
                   <th className="py-4 px-4">التقييم</th>
                   <th className="py-4 px-4">تاريخ الحالة</th>
-                  <th className="py-4 px-4">كلمة السر</th>
+                  <th className="py-4 px-4">إعادة تعيين كلمة المرور</th>
                   <th className="py-4 px-4">الحالة واستقبال الطلبات</th>
                   <th className="py-4 px-4 text-left">الإجراءات</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-800/60">
                 {filteredCaptains.map((captain) => {
-                  const isPassVisible = Boolean(visiblePasswords[captain.id]);
                   const canReceive = captain.canReceiveOrders !== false;
                   const storageFallbacks = [
                     `captains/${captain.id}`,
@@ -601,42 +520,18 @@ export const CaptainsPage: React.FC = () => {
                         {formatStatusDate(captain)}
                       </td>
 
-                      {/* كلمة السر الخاصة بالكابتن وإمكانية تعديلها */}
+                      {/* Reset links are sent by Firebase Authentication; passwords are never displayed. */}
                       <td className="py-4 px-4">
-                        <div className="flex items-center gap-1.5">
-                          <span
-                            className="px-2.5 py-1 rounded-lg bg-[#0a0c12] border border-zinc-800 text-xs font-mono text-amber-300 select-all"
-                            dir="ltr"
-                          >
-                            {captain.password
-                              ? isPassVisible
-                                ? captain.password
-                                : '••••••••'
-                              : 'غير محددة'}
-                          </span>
-                          {captain.password && (
-                            <button
-                              type="button"
-                              onClick={() => togglePasswordVisibility(captain.id)}
-                              className="p-1.5 text-zinc-400 hover:text-white hover:bg-zinc-800 rounded-lg transition-colors"
-                              title={isPassVisible ? 'إخفاء كلمة السر' : 'إظهار كلمة السر'}
-                            >
-                              {isPassVisible ? (
-                                <EyeOff className="w-3.5 h-3.5" />
-                              ) : (
-                                <Eye className="w-3.5 h-3.5" />
-                              )}
-                            </button>
-                          )}
-                          <button
-                            type="button"
-                            onClick={() => handleOpenPasswordModal(captain)}
-                            className="p-1.5 text-amber-400 hover:bg-amber-500/10 border border-amber-500/20 rounded-lg transition-colors"
-                            title="تعديل كلمة السر الخاصة بالكابتن"
-                          >
-                            <KeyRound className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleSendPasswordReset(captain)}
+                          disabled={actionLoading || !captain.email || captain.email === '—'}
+                          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/25 text-xs font-bold disabled:opacity-40 disabled:cursor-not-allowed"
+                          title="إرسال رابط إعادة تعيين كلمة المرور إلى البريد المسجل"
+                        >
+                          <Mail className="w-3.5 h-3.5" />
+                          إرسال الرابط
+                        </button>
                       </td>
 
                       {/* الحالة واستقبال الطلبات */}
@@ -649,6 +544,7 @@ export const CaptainsPage: React.FC = () => {
                               onChange={(e) => handleUpdateStatus(captain, e.target.value as CaptainStatus)}
                               className="bg-[#0a0c12] border border-zinc-800 text-[11px] font-bold text-zinc-300 rounded-lg px-2 py-1 focus:outline-none focus:border-amber-500"
                             >
+                              <option value="pending">بانتظار الموافقة</option>
                               <option value="online">متصل (Online)</option>
                               <option value="busy">في توصيل (Busy)</option>
                               <option value="offline">غير متصل (Offline)</option>
@@ -658,7 +554,7 @@ export const CaptainsPage: React.FC = () => {
                           {/* زر تفعيل / إيقاف استقبال الطلبات للكابتن */}
                           <button
                             type="button"
-                            disabled={togglingReceptionId === captain.id}
+                            disabled={togglingReceptionId === captain.id || captain.status === 'pending'}
                             onClick={() => handleToggleOrderReception(captain)}
                             className={`inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-xl text-[11px] font-extrabold border transition-all cursor-pointer disabled:opacity-50 ${
                               canReceive
@@ -692,7 +588,7 @@ export const CaptainsPage: React.FC = () => {
                           <button
                             onClick={() => handleOpenEditCaptain(captain)}
                             className="p-1.5 text-zinc-400 hover:text-amber-400 hover:bg-zinc-800/80 rounded-lg transition-colors"
-                            title="تعديل بيانات الكابتن والصورة وكلمة السر"
+                            title="تعديل بيانات الكابتن والصورة"
                           >
                             <Edit2 className="w-4 h-4" />
                           </button>
@@ -730,62 +626,6 @@ export const CaptainsPage: React.FC = () => {
           </div>
         )}
       </div>
-
-      {/* Edit Password Modal */}
-      {passwordModalCaptain && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-xs">
-          <div className="w-full max-w-sm bg-[#11141c] border border-zinc-800 rounded-3xl p-6 shadow-2xl relative">
-            <button
-              onClick={() => setPasswordModalCaptain(null)}
-              className="absolute top-5 left-5 text-zinc-400 hover:text-white p-1 rounded-lg"
-            >
-              <X className="w-5 h-5" />
-            </button>
-
-            <div className="flex items-center gap-3 mb-4">
-              <div className="w-10 h-10 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-amber-400 flex items-center justify-center">
-                <KeyRound className="w-5 h-5" />
-              </div>
-              <div>
-                <h3 className="text-base font-black text-white">تعديل كلمة السر للكابتن</h3>
-                <p className="text-xs text-zinc-400">{passwordModalCaptain.name}</p>
-              </div>
-            </div>
-
-            <form onSubmit={handleSavePassword} className="space-y-4 text-xs">
-              <div>
-                <label className="block font-bold text-zinc-300 mb-1.5">كلمة السر الخاصة بالكابتن</label>
-                <input
-                  type="text"
-                  value={newPasswordInput}
-                  onChange={(e) => setNewPasswordInput(e.target.value)}
-                  dir="ltr"
-                  placeholder="أدخل كلمة السر الجديدة..."
-                  className="w-full bg-[#0a0c12] border border-zinc-800 rounded-xl px-3.5 py-2.5 text-zinc-100 font-mono focus:outline-none focus:border-amber-500"
-                  required
-                />
-              </div>
-
-              <div className="flex items-center justify-end gap-3 pt-2 border-t border-zinc-800/80">
-                <button
-                  type="button"
-                  onClick={() => setPasswordModalCaptain(null)}
-                  className="px-4 py-2 text-zinc-400 hover:text-white"
-                >
-                  إلغاء
-                </button>
-                <button
-                  type="submit"
-                  disabled={actionLoading}
-                  className="px-5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 font-bold transition-colors disabled:opacity-50"
-                >
-                  {actionLoading ? 'جاري الحفظ...' : 'حفظ كلمة السر'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
 
       {/* View Captain Details Modal */}
       {viewingCaptain && (
@@ -831,11 +671,22 @@ export const CaptainsPage: React.FC = () => {
                 <span className="text-zinc-500 block mb-1">نوع المركبة</span>
                 <span className="font-bold text-zinc-200">{viewingCaptain.vehicleType || 'دراجة نارية'}</span>
               </div>
-              <div className="col-span-2 p-3 rounded-xl bg-zinc-900/80 border border-zinc-800">
-                <span className="text-zinc-500 block mb-1">البريد الإلكتروني</span>
-                <span className="font-bold text-zinc-200 font-mono" dir="ltr">
-                  {viewingCaptain.email || '—'}
-                </span>
+              <div className="col-span-2 p-3 rounded-xl bg-zinc-900/80 border border-zinc-800 flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <span className="text-zinc-500 block mb-1">البريد الإلكتروني المسجل في Firebase Authentication</span>
+                  <span className="font-bold text-zinc-200 font-mono break-all" dir="ltr">
+                    {viewingCaptain.email || '—'}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleSendPasswordReset(viewingCaptain)}
+                  disabled={actionLoading || !viewingCaptain.email || viewingCaptain.email === '—'}
+                  className="shrink-0 inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/25 text-xs font-bold disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <Mail className="w-3.5 h-3.5" />
+                  إعادة تعيين
+                </button>
               </div>
               <div className="p-3 rounded-xl bg-zinc-900/80 border border-zinc-800">
                 <span className="text-zinc-500 block mb-1">الحالة</span>
@@ -854,25 +705,6 @@ export const CaptainsPage: React.FC = () => {
                 <span className="font-bold text-amber-400">
                   {viewingCaptain.rating ? viewingCaptain.rating.toFixed(1) : '5.0'} ★
                 </span>
-              </div>
-              <div className="col-span-2 p-3 rounded-xl bg-zinc-900/80 border border-zinc-800 flex items-center justify-between">
-                <div>
-                  <span className="text-zinc-500 block mb-1">كلمة السر الخاصة بالكابتن</span>
-                  <span className="font-bold text-amber-300 font-mono" dir="ltr">
-                    {viewingCaptain.password || 'غير محددة'}
-                  </span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const c = viewingCaptain;
-                    setViewingCaptain(null);
-                    handleOpenPasswordModal(c);
-                  }}
-                  className="px-3 py-1.5 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 text-amber-400 border border-amber-500/30 font-bold text-xs"
-                >
-                  تعديل كلمة السر
-                </button>
               </div>
             </div>
 
@@ -1004,23 +836,12 @@ export const CaptainsPage: React.FC = () => {
                 <input
                   type="email"
                   value={formData.email}
-                  onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                  readOnly
                   dir="ltr"
                   placeholder="captain@example.com"
-                  className="w-full bg-[#0a0c12] border border-zinc-800 rounded-xl px-3.5 py-2.5 text-zinc-100 focus:outline-none focus:border-amber-500"
+                  className="w-full bg-[#0a0c12] border border-zinc-800 rounded-xl px-3.5 py-2.5 text-zinc-400 cursor-not-allowed"
                 />
-              </div>
-
-              <div>
-                <label className="block font-bold text-zinc-300 mb-1.5">كلمة السر الخاصة بالكابتن</label>
-                <input
-                  type="text"
-                  value={formData.password}
-                  onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                  dir="ltr"
-                  placeholder="كلمة السر الخاصة بالكابتن..."
-                  className="w-full bg-[#0a0c12] border border-zinc-800 rounded-xl px-3.5 py-2.5 text-zinc-100 font-mono focus:outline-none focus:border-amber-500"
-                />
+                <p className="text-[11px] text-zinc-500 mt-1">تغيير البريد يتم من Firebase Authentication وليس بتعديل ملف الكابتن فقط.</p>
               </div>
 
               <div>
@@ -1061,160 +882,6 @@ export const CaptainsPage: React.FC = () => {
                   className="px-5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 font-bold transition-colors disabled:opacity-50"
                 >
                   {actionLoading ? 'جاري الحفظ...' : 'حفظ التعديلات'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Add New Captain Modal */}
-      {isAddModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-xs">
-          <div className="w-full max-w-md bg-[#11141c] border border-zinc-800 rounded-3xl p-6 shadow-2xl relative max-h-[90vh] overflow-y-auto">
-            <button
-              onClick={() => setIsAddModalOpen(false)}
-              className="absolute top-5 left-5 text-zinc-400 hover:text-white p-1 rounded-lg"
-            >
-              <X className="w-5 h-5" />
-            </button>
-
-            <h3 className="text-lg font-black text-white mb-4">تسجيل كابتن جديد في المنظومة</h3>
-
-            <form onSubmit={handleAddCaptain} className="space-y-4 text-xs">
-              <div>
-                <label className="block font-bold text-zinc-300 mb-1.5">
-                  الصورة الشخصية للكابتن (Firebase Storage)
-                </label>
-                <div className="flex items-center gap-3 mb-2">
-                  <FirebaseImage
-                    src={formData.profileImage}
-                    alt="صورة الكابتن"
-                    className="w-12 h-12 rounded-2xl border border-zinc-700"
-                    fallbackContent={
-                      <div className="w-full h-full bg-zinc-900 text-zinc-500 flex items-center justify-center">
-                        <UserIcon className="w-5 h-5" />
-                      </div>
-                    }
-                  />
-                  <label className="flex-1 cursor-pointer flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-zinc-200 font-bold transition-colors">
-                    <Upload className="w-4 h-4 text-amber-400" />
-                    <span>{uploadingPhoto ? 'جاري الرفع...' : 'رفع الصورة الشخصية'}</span>
-                    <input
-                      type="file"
-                      accept="image/*"
-                      onChange={(e) => handlePhotoFileChange(e)}
-                      className="hidden"
-                      disabled={uploadingPhoto}
-                    />
-                  </label>
-                </div>
-                <input
-                  type="text"
-                  value={formData.profileImage}
-                  onChange={(e) => setFormData({ ...formData, profileImage: e.target.value })}
-                  dir="ltr"
-                  placeholder="أو رابط الصورة في Firebase Storage..."
-                  className="w-full bg-[#0a0c12] border border-zinc-800 rounded-xl px-3.5 py-2 text-zinc-100 focus:outline-none focus:border-amber-500"
-                />
-              </div>
-
-              <div>
-                <label className="block font-bold text-zinc-300 mb-1.5">اسم الكابتن الرباعي *</label>
-                <input
-                  type="text"
-                  value={formData.name}
-                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                  placeholder="مثال: أحمد محمد مصطفى"
-                  className="w-full bg-[#0a0c12] border border-zinc-800 rounded-xl px-3.5 py-2.5 text-zinc-100 focus:outline-none focus:border-amber-500"
-                  required
-                />
-              </div>
-
-              <div>
-                <label className="block font-bold text-zinc-300 mb-1.5">رقم الهاتف المحمول *</label>
-                <input
-                  type="text"
-                  value={formData.phone}
-                  onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
-                  dir="ltr"
-                  placeholder="010XXXXXXXX"
-                  className="w-full bg-[#0a0c12] border border-zinc-800 rounded-xl px-3.5 py-2.5 text-zinc-100 focus:outline-none focus:border-amber-500"
-                  required
-                />
-              </div>
-
-              <div>
-                <label className="block font-bold text-zinc-300 mb-1.5">البريد الإلكتروني</label>
-                <input
-                  type="email"
-                  value={formData.email}
-                  onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                  dir="ltr"
-                  placeholder="captain@example.com"
-                  className="w-full bg-[#0a0c12] border border-zinc-800 rounded-xl px-3.5 py-2.5 text-zinc-100 focus:outline-none focus:border-amber-500"
-                />
-              </div>
-
-              <div>
-                <label className="block font-bold text-zinc-300 mb-1.5">كلمة السر الخاصة بالكابتن</label>
-                <input
-                  type="text"
-                  value={formData.password}
-                  onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                  dir="ltr"
-                  placeholder="أدخل كلمة سر الكابتن..."
-                  className="w-full bg-[#0a0c12] border border-zinc-800 rounded-xl px-3.5 py-2.5 text-zinc-100 font-mono focus:outline-none focus:border-amber-500"
-                />
-              </div>
-
-              <div>
-                <label className="block font-bold text-zinc-300 mb-1.5">نوع المركبة</label>
-                <select
-                  value={formData.vehicleType}
-                  onChange={(e) => setFormData({ ...formData, vehicleType: e.target.value })}
-                  className="w-full bg-[#0a0c12] border border-zinc-800 rounded-xl px-3.5 py-2.5 text-zinc-100 focus:outline-none focus:border-amber-500"
-                >
-                  <option value="دراجة نارية (موتوسيكل)">دراجة نارية (موتوسيكل)</option>
-                  <option value="سكوتر كهربائي">سكوتر كهربائي</option>
-                  <option value="سيارة ميني فان">سيارة ميني فان</option>
-                  <option value="دراجة هوائية">دراجة هوائية</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block font-bold text-zinc-300 mb-1.5">الحالة الأولية واستقبال الطلبات</label>
-                <select
-                  value={formData.status}
-                  onChange={(e) => {
-                    const st = e.target.value as CaptainStatus;
-                    setFormData({
-                      ...formData,
-                      status: st,
-                      canReceiveOrders: st !== 'offline',
-                    });
-                  }}
-                  className="w-full bg-[#0a0c12] border border-zinc-800 rounded-xl px-3.5 py-2.5 text-zinc-100 focus:outline-none focus:border-amber-500"
-                >
-                  <option value="online">متصل ومفعل لاستقبال الطلبات (Online)</option>
-                  <option value="offline">غير متصل وموقوف عن الطلبات (Offline)</option>
-                </select>
-              </div>
-
-              <div className="flex items-center justify-end gap-3 pt-3 border-t border-zinc-800/80">
-                <button
-                  type="button"
-                  onClick={() => setIsAddModalOpen(false)}
-                  className="px-4 py-2 text-zinc-400 hover:text-white"
-                >
-                  إلغاء
-                </button>
-                <button
-                  type="submit"
-                  disabled={actionLoading || uploadingPhoto}
-                  className="px-5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 font-bold transition-colors disabled:opacity-50"
-                >
-                  {actionLoading ? 'جاري الإضافة...' : 'تسجيل الكابتن'}
                 </button>
               </div>
             </form>

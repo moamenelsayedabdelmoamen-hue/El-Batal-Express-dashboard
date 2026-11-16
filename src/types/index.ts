@@ -57,14 +57,13 @@ export interface Restaurant {
   raw?: Record<string, any>;
 }
 
-export type CaptainStatus = 'online' | 'offline' | 'busy' | 'available';
+export type CaptainStatus = 'online' | 'offline' | 'busy' | 'available' | 'pending';
 
 export interface Captain {
   id: string;
   name: string;
   phone: string;
   email?: string;
-  password?: string;
   profileImage?: string;
   photoURL?: string;
   status: CaptainStatus;

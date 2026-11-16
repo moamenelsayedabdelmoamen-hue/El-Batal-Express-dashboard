@@ -174,7 +174,6 @@ export function exportCaptains(captains: Captain[], format: 'xlsx' | 'csv' = 'xl
     'عدد الطلبات المنجزة': c.ordersCount || 0,
     'التقييم': c.rating || 5,
     'تاريخ الحالة': formatDate(c.statusUpdatedAt || c.updatedAt || c.createdAt),
-    'كلمة السر': c.password || '-',
     'استقبال الطلبات': c.canReceiveOrders !== false ? 'مفعل' : 'متوقف',
     'الحالة الحالية': translateStatus(c.status),
   }));
@@ -189,7 +188,6 @@ export function exportCaptains(captains: Captain[], format: 'xlsx' | 'csv' = 'xl
     { wch: 18 },
     { wch: 10 },
     { wch: 22 },
-    { wch: 18 },
     { wch: 18 },
     { wch: 16 },
   ];
