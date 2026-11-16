@@ -536,7 +536,7 @@ function mapDocToOrder(
     id,
     orderNumber: realOrderCode,
     orderCode: realOrderCode,
-    restaurantId: data.restaurantId || data.restaurant_id || data.merchantId || data.restaurant?.id || '',
+    restaurantId: data.merchantId || data.restaurantId || data.restaurant_id || data.restaurant?.id || '',
     restaurantName:
       data.restaurantName ||
       data.restaurant_name ||
@@ -812,7 +812,7 @@ export const OrderService = {
       id: newId,
       orderNumber,
       orderCode: orderNumber,
-      restaurantId: data.restaurantId,
+      merchantId: data.restaurantId,
       restaurantName: data.restaurantName,
       captainId: data.captainId,
       captainName: data.captainName,
@@ -849,7 +849,7 @@ export const OrderService = {
           orderCode: orderNumber,
           order_code: orderNumber,
           order_codes: orderNumber,
-          restaurantId: data.restaurantId,
+          merchantId: data.restaurantId,
           restaurantName: data.restaurantName,
           captainId: data.captainId,
           captainName: data.captainName,
