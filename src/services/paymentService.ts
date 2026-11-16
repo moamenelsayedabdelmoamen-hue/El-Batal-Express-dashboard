@@ -27,7 +27,7 @@ function mapDocToPayment(id: string, data: Record<string, any>): Payment {
     id,
     transactionId: txnId,
     transactionNumber: txnId,
-    restaurantId: data.restaurantId || '',
+    restaurantId: data.merchantId || data.restaurantId || '',
     restaurantName: data.restaurantName || data.merchantName || 'تاجر غير محدد',
     amount: typeof data.amount === 'number' ? data.amount : Number(data.amount) || 0,
     paymentMethod: (data.paymentMethod as PaymentMethod) || (data.method === 'card' ? 'Visa' : 'Mobile Wallet'),
@@ -73,7 +73,7 @@ export const PaymentService = {
     const payload = {
       transactionId: txnId,
       transactionNumber: txnId,
-      restaurantId: data.restaurantId || '',
+      merchantId: data.merchantId || data.restaurantId || '',
       restaurantName: data.restaurantName,
       amount: Number(data.amount) || 0,
       paymentMethod: data.paymentMethod,
