@@ -286,7 +286,7 @@ export const SubscriptionService = {
         list.push(mapDocToSubscription(docSnap.id, subData, matchedMerchant));
       });
 
-      // 2. Also include every registered merchant in `restaurants` that doesn't have a separate doc in `subscriptions`
+      // 2. Also include every registered merchant in `merchants` that doesn't have a separate doc in `subscriptions`
       merchantsSnap.forEach((docSnap) => {
         if (!coveredMerchantIds.has(docSnap.id)) {
           const mData = docSnap.data();
@@ -349,7 +349,7 @@ export const SubscriptionService = {
       }
       await updateDoc(restRef, payload);
     } catch {
-      // Ignore if restaurantId doc doesn't exist in restaurants collection
+      // Ignore if merchant UID does not exist in merchants collection
     }
   },
 
@@ -369,7 +369,7 @@ export const SubscriptionService = {
           {
             ...(targetSub
               ? {
-                  restaurantId: targetSub.restaurantId,
+                  merchantId: targetSub.restaurantId,
                   restaurantName: targetSub.restaurantName,
                   plan: targetSub.plan,
                   captainsCount: targetSub.captainsCount || 2,
@@ -417,7 +417,7 @@ export const SubscriptionService = {
         await setDoc(
           docRef,
           {
-            restaurantId: targetRestId,
+            merchantId: targetRestId,
             restaurantName: updates.restaurantName || existing?.restaurantName || '',
             captainsCount: updates.captainsCount,
             price: updates.price,
@@ -471,7 +471,7 @@ export const SubscriptionService = {
         await setDoc(
           docRef,
           {
-            restaurantId: data.restaurantId,
+            merchantId: data.restaurantId,
             restaurantName: data.restaurantName,
             plan: data.plan,
             captainsCount: data.captainsCount || 2,
@@ -525,7 +525,7 @@ export const SubscriptionService = {
           {
             ...(existing
               ? {
-                  restaurantId: existing.restaurantId,
+                  merchantId: existing.restaurantId,
                   restaurantName: existing.restaurantName,
                   plan: existing.plan,
                   captainsCount: existing.captainsCount || 2,
