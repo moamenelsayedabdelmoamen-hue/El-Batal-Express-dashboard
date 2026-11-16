@@ -24,6 +24,7 @@ class CloudFunctionException(
     val httpCode: Int = 0,
     val isRetryable: Boolean = true,
     val isNotFound: Boolean = false,
+    val isEndpointNotFound: Boolean = false,
     cause: Throwable? = null
 ) : Exception(message, cause)
 
@@ -100,6 +101,7 @@ class CloudFunctionsOrderClient(
     private suspend fun postAuthenticatedFunction(
         functionName: String,
         defaultClientErrorMsg: String,
+        aliasFunctionNames: List<String> = emptyList(),
         payloadBuilder: JSONObject.(uid: String) -> Unit
     ): Result<JSONObject> = withContext(Dispatchers.IO) {
         val (uid, idToken) = resolveAuthCredentials().getOrElse { err ->
@@ -107,77 +109,116 @@ class CloudFunctionsOrderClient(
         }
 
         val normalizedBase = baseUrl.trimEnd('/')
-        val endpoint = "$normalizedBase/$functionName"
         val payload = JSONObject().apply { payloadBuilder(uid) }
+        val candidates = listOf(functionName) + aliasFunctionNames
 
-        try {
-            val request = Request.Builder()
-                .url(endpoint)
-                .addHeader("Authorization", "Bearer $idToken")
-                .post(payload.toString().toRequestBody(JSON_MEDIA_TYPE))
-                .build()
+        var lastResult: Result<JSONObject>? = null
+        for ((index, targetFn) in candidates.withIndex()) {
+            val endpoint = "$normalizedBase/$targetFn"
+            try {
+                val request = Request.Builder()
+                    .url(endpoint)
+                    .addHeader("Authorization", "Bearer $idToken")
+                    .post(payload.toString().toRequestBody(JSON_MEDIA_TYPE))
+                    .build()
 
-            httpClient.newCall(request).execute().use { response ->
-                val bodyStr = response.body?.string().orEmpty()
-                val parsedJson = if (bodyStr.isNotBlank()) {
-                    runCatching { JSONObject(bodyStr) }.getOrNull()
-                } else {
-                    null
+                httpClient.newCall(request).execute().use { response ->
+                    val bodyStr = response.body?.string().orEmpty()
+                    val parsedJson = if (bodyStr.isNotBlank()) {
+                        runCatching { JSONObject(bodyStr) }.getOrNull()
+                    } else {
+                        null
+                    }
+
+                    if (response.isSuccessful) {
+                        return@withContext Result.success(parsedJson ?: JSONObject())
+                    }
+
+                    val serverErrorMsg = parsedJson?.optString("error")?.trim()?.takeIf { it.isNotEmpty() }
+                        ?: parsedJson?.optString("message")?.trim()?.takeIf { it.isNotEmpty() }
+
+                    val code = response.code
+                    val isBareEndpoint404 = code == 404 && parsedJson == null && serverErrorMsg == null
+                    if (isBareEndpoint404 && index < candidates.lastIndex) {
+                        Log.w(TAG, "Cloud Function '$targetFn' returned bare HTTP 404; trying alias...")
+                        return@use
+                    }
+
+                    val isDomainOrderGone = when {
+                        isBareEndpoint404 -> false
+                        code == 410 -> true
+                        code == 404 && parsedJson != null -> true
+                        serverErrorMsg != null && (
+                            serverErrorMsg.contains("الطلب غير موجود") ||
+                                serverErrorMsg.contains("لم يعد متاحاً") ||
+                                serverErrorMsg.contains("بواسطة كابتن آخر") ||
+                                serverErrorMsg.contains("انتهت مهلة")
+                            ) -> true
+                        else -> false
+                    }
+
+                    val isRetryable = when {
+                        isBareEndpoint404 -> true
+                        isDomainOrderGone -> false
+                        else -> (code >= 500 || code == 408 || code == 429)
+                    }
+
+                    val resolvedMessage = when {
+                        isBareEndpoint404 ->
+                            "خدمة الخادم لقبول وتنفيذ الطلبات غير مفعّلة أو غير منشورة (404). يرجى التأكد من نشر Cloud Functions على الخادم ثم إعادة المحاولة."
+                        !serverErrorMsg.isNullOrBlank() -> serverErrorMsg
+                        isDomainOrderGone -> "الطلب غير موجود أو لم يعد متاحاً على الخادم."
+                        isRetryable -> "تعذر إتمام العملية بسبب خطأ في الاتصال بالخادم ($code). يرجى إعادة المحاولة."
+                        code == 401 || code == 403 -> "غير مصرح لك بتنفيذ هذه العملية على هذا الطلب."
+                        code == 409 -> "تعذر تنفيذ العملية على الطلب في حالته الحالية."
+                        else -> defaultClientErrorMsg
+                    }
+
+                    lastResult = Result.failure(
+                        CloudFunctionException(
+                            message = resolvedMessage,
+                            httpCode = code,
+                            isRetryable = isRetryable,
+                            isNotFound = isDomainOrderGone,
+                            isEndpointNotFound = isBareEndpoint404
+                        )
+                    )
+                    return@withContext lastResult!!
                 }
-
-                if (response.isSuccessful) {
-                    return@withContext Result.success(parsedJson ?: JSONObject())
-                }
-
-                val serverErrorMsg = parsedJson?.optString("error")?.trim()?.takeIf { it.isNotEmpty() }
-                    ?: parsedJson?.optString("message")?.trim()?.takeIf { it.isNotEmpty() }
-
-                val code = response.code
-                val notFound = code == 404 || code == 410 ||
-                    serverErrorMsg?.contains("الطلب غير موجود") == true ||
-                    serverErrorMsg?.contains("لم يعد متاحاً") == true
-                val isRetryable = if (notFound) false else (code >= 500 || code == 408 || code == 429)
-                val resolvedMessage = when {
-                    !serverErrorMsg.isNullOrBlank() -> serverErrorMsg
-                    notFound -> "الطلب غير موجود أو لم يعد متاحاً على الخادم."
-                    isRetryable -> "تعذر إتمام العملية بسبب خطأ في الاتصال بالخادم ($code). يرجى إعادة المحاولة."
-                    code == 401 || code == 403 -> "غير مصرح لك بتنفيذ هذه العملية على هذا الطلب."
-                    code == 409 -> "تم تحديث حالة الطلب بالفعل ولم يعد متاحاً لهذه العملية."
-                    else -> defaultClientErrorMsg
-                }
-
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: IOException) {
+                Log.w(TAG, "Network failure calling Cloud Function $targetFn", e)
                 return@withContext Result.failure(
                     CloudFunctionException(
-                        message = resolvedMessage,
-                        httpCode = code,
-                        isRetryable = isRetryable,
-                        isNotFound = notFound
+                        message = "تعذر الاتصال بالخادم لتنفيذ العملية. يرجى التحقق من اتصال الإنترنت وإعادة المحاولة.",
+                        httpCode = 0,
+                        isRetryable = true,
+                        cause = e
+                    )
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "Unexpected error calling Cloud Function $targetFn", e)
+                return@withContext Result.failure(
+                    CloudFunctionException(
+                        message = "حدث خطأ أثناء الاتصال بالخادم. يرجى إعادة المحاولة.",
+                        httpCode = 0,
+                        isRetryable = true,
+                        cause = e
                     )
                 )
             }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: IOException) {
-            Log.w(TAG, "Network failure calling Cloud Function $functionName", e)
-            Result.failure(
-                CloudFunctionException(
-                    message = "تعذر الاتصال بالخادم لتنفيذ العملية. يرجى التحقق من اتصال الإنترنت وإعادة المحاولة.",
-                    httpCode = 0,
-                    isRetryable = true,
-                    cause = e
-                )
-            )
-        } catch (e: Exception) {
-            Log.e(TAG, "Unexpected error calling Cloud Function $functionName", e)
-            Result.failure(
-                CloudFunctionException(
-                    message = "حدث خطأ أثناء الاتصال بالخادم. يرجى إعادة المحاولة.",
-                    httpCode = 0,
-                    isRetryable = true,
-                    cause = e
-                )
-            )
         }
+
+        lastResult ?: Result.failure(
+            CloudFunctionException(
+                message = defaultClientErrorMsg,
+                httpCode = 404,
+                isRetryable = true,
+                isNotFound = false,
+                isEndpointNotFound = true
+            )
+        )
     }
 
     /**
@@ -197,7 +238,8 @@ class CloudFunctionsOrderClient(
         }
         return postAuthenticatedFunction(
             functionName = "acceptDeliveryOffer",
-            defaultClientErrorMsg = "تعذر قبول الطلب من الخادم"
+            defaultClientErrorMsg = "تعذر قبول الطلب من الخادم",
+            aliasFunctionNames = listOf("acceptOrder")
         ) {
             put("orderId", cleanId)
             if (cleanId != orderDocId.trim()) {
@@ -223,7 +265,8 @@ class CloudFunctionsOrderClient(
         }
         return postAuthenticatedFunction(
             functionName = "captainArrivedAtMerchant",
-            defaultClientErrorMsg = "تعذر تسجيل الوصول إلى التاجر عبر الخادم"
+            defaultClientErrorMsg = "تعذر تسجيل الوصول إلى التاجر عبر الخادم",
+            aliasFunctionNames = listOf("captainArrived")
         ) {
             put("orderId", cleanId)
             if (cleanId != orderDocId.trim()) {
@@ -275,7 +318,8 @@ class CloudFunctionsOrderClient(
         }
         return postAuthenticatedFunction(
             functionName = "submitCustomerDeliveryDetails",
-            defaultClientErrorMsg = "رفض الخادم حفظ بيانات العميل والإيصال: تحقق من ملكية الطلب وحالته"
+            defaultClientErrorMsg = "رفض الخادم حفظ بيانات العميل والإيصال: تحقق من ملكية الطلب وحالته",
+            aliasFunctionNames = listOf("submitReceiptAndCustomerData")
         ) { uid ->
             put("orderId", cleanId)
             if (cleanId != orderDocId.trim()) {
@@ -305,7 +349,8 @@ class CloudFunctionsOrderClient(
         }
         return postAuthenticatedFunction(
             functionName = "confirmDelivery",
-            defaultClientErrorMsg = "تعذر تأكيد تسليم الطلب عبر الخادم"
+            defaultClientErrorMsg = "تعذر تأكيد تسليم الطلب عبر الخادم",
+            aliasFunctionNames = listOf("completeDelivery")
         ) {
             put("orderId", cleanId)
             if (cleanId != orderDocId.trim()) {

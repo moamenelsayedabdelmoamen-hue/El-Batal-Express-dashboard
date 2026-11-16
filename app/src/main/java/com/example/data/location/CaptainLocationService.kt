@@ -45,7 +45,12 @@ class CaptainLocationService : Service() {
 
         try {
             val db = AppDatabase.getDatabase(applicationContext)
-            repository = CaptainRepository(db.captainDao(), db.orderDao(), applicationContext)
+            repository = CaptainRepository(
+                captainDao = db.captainDao(),
+                orderDao = db.orderDao(),
+                shiftDao = db.shiftDao(),
+                context = applicationContext
+            )
         } catch (e: Exception) {
             Log.e(TAG, "Error initializing repository in service", e)
         }
@@ -128,6 +133,7 @@ class CaptainLocationService : Service() {
         }
 
         requestLocationUpdates()
+        runCatching { repository?.startRealtimeOrdersListener() }
     }
 
     @SuppressLint("MissingPermission")
@@ -181,6 +187,7 @@ class CaptainLocationService : Service() {
         }
 
         CaptainLocationTracker.setTracking(false)
+        runCatching { repository?.stopRealtimeOrdersListener() }
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
@@ -243,6 +250,7 @@ class CaptainLocationService : Service() {
             fusedLocationClient.removeLocationUpdates(locationCallback)
         } catch (_: Exception) {}
         serviceScope.cancel()
+        runCatching { repository?.stopRealtimeOrdersListener() }
         CaptainLocationTracker.setTracking(false)
     }
 

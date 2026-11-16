@@ -83,6 +83,7 @@ import com.example.data.OrderEntity
 import com.example.data.OrderHistoryHelper
 import com.example.data.OrderHistoryTab
 import com.example.data.OrderStatus
+import com.example.ui.components.OrderCodeBadge
 import com.example.ui.components.StorageAsyncImage
 import com.example.ui.theme.DarkBackground
 import com.example.ui.theme.DarkCardBorder
@@ -759,20 +760,14 @@ private fun ArchivedOrderHistoryCard(
                         accentColor = statusColor
                     )
                     Spacer(modifier = Modifier.width(10.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = order.storeName,
-                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                            color = Color.White,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            text = "طلب #${order.cleanOrderNumber}",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = HeroYellow
-                        )
-                    }
+                    Text(
+                        text = order.storeName,
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                        color = Color.White,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
                 }
 
                 Spacer(modifier = Modifier.width(8.dp))
@@ -800,6 +795,15 @@ private fun ArchivedOrderHistoryCard(
                         )
                     }
                 }
+            }
+
+            if (order.cleanOrderCode.isNotBlank()) {
+                Spacer(modifier = Modifier.height(10.dp))
+                OrderCodeBadge(
+                    orderCode = order.cleanOrderCode,
+                    modifier = Modifier.fillMaxWidth(),
+                    badgeTag = "archived_order_code_badge"
+                )
             }
 
             Spacer(modifier = Modifier.height(10.dp))
@@ -1052,7 +1056,7 @@ private fun ArchivedOrderDetailsBottomSheet(
                     Spacer(modifier = Modifier.width(12.dp))
                     Column {
                         Text(
-                            text = "تفاصيل الطلب #${order.cleanOrderNumber}",
+                            text = "تفاصيل الطلب",
                             style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.ExtraBold),
                             color = Color.White
                         )
@@ -1075,6 +1079,15 @@ private fun ArchivedOrderDetailsBottomSheet(
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
                     )
                 }
+            }
+
+            if (order.cleanOrderCode.isNotBlank()) {
+                Spacer(modifier = Modifier.height(12.dp))
+                OrderCodeBadge(
+                    orderCode = order.cleanOrderCode,
+                    modifier = Modifier.fillMaxWidth(),
+                    badgeTag = "archived_sheet_order_code_badge"
+                )
             }
 
             Spacer(modifier = Modifier.height(16.dp))

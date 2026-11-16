@@ -10,6 +10,7 @@ import com.example.data.AppDatabase
 import com.example.data.CaptainCloudMetadataPort
 import com.example.data.CaptainEntity
 import com.example.data.CaptainRepository
+import com.example.data.FirestoreOrderFallbackPort
 import com.example.data.OrderEntity
 import com.example.data.OrderStatus
 import com.example.data.remote.CloudFunctionException
@@ -283,6 +284,331 @@ class SecurityAuditRuleTest {
         assertEquals(OrderStatus.DELIVERED, repo.allOrdersFlow.first().first { it.id == 500L }.status)
     }
 
+    @Test
+    fun cloudFunctions404Distinction_preservesOrderOnEndpoint404_triesAlias_andDeletesOnlyOnDomainGone() = runBlocking {
+        val db = checkNotNull(database)
+        var scenario = "BARE_HTML_404" // BARE_HTML_404 -> ALIAS_200 -> ACTIVE_CONFLICT_409 -> DOMAIN_GONE_JSON_409 -> DOMAIN_GONE_JSON_404
+        val calledPaths = mutableListOf<String>()
+
+        val mockHttpClient = OkHttpClient.Builder()
+            .addInterceptor(Interceptor { chain ->
+                val req = chain.request()
+                val path = req.url.encodedPath
+                calledPaths.add(path)
+                when (scenario) {
+                    "BARE_HTML_404" -> Response.Builder()
+                        .request(req)
+                        .protocol(Protocol.HTTP_1_1)
+                        .code(404)
+                        .message("Not Found")
+                        .body("<html><body>Error: Page not found</body></html>".toResponseBody("text/html".toMediaType()))
+                        .build()
+                    "ALIAS_200" -> if (path.endsWith("/acceptDeliveryOffer")) {
+                        Response.Builder()
+                            .request(req)
+                            .protocol(Protocol.HTTP_1_1)
+                            .code(404)
+                            .message("Not Found")
+                            .body("".toResponseBody("text/plain".toMediaType()))
+                            .build()
+                    } else {
+                        Response.Builder()
+                            .request(req)
+                            .protocol(Protocol.HTTP_1_1)
+                            .code(200)
+                            .message("OK")
+                            .body("""{"success":true,"message":"تم قبول الطلب بنجاح عبر الدالة البديلة"}""".toResponseBody("application/json".toMediaType()))
+                            .build()
+                    }
+                    "ACTIVE_CONFLICT_409" -> Response.Builder()
+                        .request(req)
+                        .protocol(Protocol.HTTP_1_1)
+                        .code(409)
+                        .message("Conflict")
+                        .body("""{"error":"لديك طلب نشط بالفعل قيد التنفيذ، لا يمكن قبول أكثر من طلب في وقت واحد."}""".toResponseBody("application/json".toMediaType()))
+                        .build()
+                    "DOMAIN_GONE_JSON_409" -> Response.Builder()
+                        .request(req)
+                        .protocol(Protocol.HTTP_1_1)
+                        .code(409)
+                        .message("Conflict")
+                        .body("""{"error":"هذا الطلب لم يعد متاحاً"}""".toResponseBody("application/json".toMediaType()))
+                        .build()
+                    else -> Response.Builder()
+                        .request(req)
+                        .protocol(Protocol.HTTP_1_1)
+                        .code(404)
+                        .message("Not Found")
+                        .body("""{"error":"الطلب غير موجود"}""".toResponseBody("application/json".toMediaType()))
+                        .build()
+                }
+            })
+            .build()
+
+        val cfClient = CloudFunctionsOrderClient(
+            firebaseAuth = null,
+            baseUrl = "https://us-central1-el-batal-express-956ae.cloudfunctions.net",
+            httpClient = mockHttpClient,
+            authCredentialsProvider = { "captain_1" to "mock_jwt_token_captain_1" }
+        )
+        val storageRepo = FirebaseStorageRepository(
+            context = context,
+            gateway = object : StorageGateway {
+                override suspend fun putBytesWithProgress(
+                    storagePath: String, bytes: ByteArray, contentType: String,
+                    customMetadata: Map<String, String>, requesterUid: String, onProgress: (Int) -> Unit
+                ) {}
+                override suspend fun getBytes(storagePath: String, maxDownloadBytes: Long, requesterUid: String) = ByteArray(0)
+            },
+            authUidProvider = AuthUidProvider { "captain_1" },
+            connectivityChecker = NetworkConnectivityChecker { true },
+            maxAutoRetries = 1
+        )
+        val metadataPort = object : CaptainCloudMetadataPort {
+            override fun currentAuthUid(): String = "captain_1"
+            override suspend fun saveCaptainImageMetadata(uid: String, fields: Map<String, Any>) {}
+            override suspend fun fetchCaptainImageMetadata(uid: String): Map<String, String>? = emptyMap()
+            override suspend fun submitOrderReceiptDetails(
+                orderDocId: String, customerName: String, customerPhone: String, receiptImagePath: String, notes: String
+            ): Result<String> = Result.success("")
+        }
+        val repo = CaptainRepository(
+            captainDao = db.captainDao(),
+            orderDao = db.orderDao(),
+            shiftDao = db.shiftDao(),
+            context = context,
+            storageRepository = storageRepo,
+            cloudMetadataPortOverride = metadataPort,
+            cloudFunctionsClientOverride = cfClient
+        )
+
+        db.captainDao().insertOrUpdate(
+            CaptainEntity(id = 1, uid = "captain_1", fullName = "كابتن 1", phoneNumber = "01011111111", isOnline = true, isLoggedIn = true)
+        )
+        db.orderDao().insertOrder(
+            OrderEntity(
+                id = 600L, orderNumber = "##ELB-600", firestoreDocId = "ORD_600",
+                customerName = "عميل", customerPhone = "0100", storeName = "مطعم",
+                pickupAddress = "عنوان 1", deliveryAddress = "عنوان 2",
+                itemsSummary = "وجبة", itemsCount = 1, orderTotalAmount = 100.0,
+                deliveryFee = 30.0, distanceKm = 2.0, status = OrderStatus.PENDING, captainId = ""
+            )
+        )
+
+        // 1) Undeployed Cloud Function bare HTML 404 -> tries primary & alias, returns retryable endpoint error, PRESERVES Room order!
+        val bare404Res = repo.acceptOrder(600L)
+        assertTrue(bare404Res.isFailure)
+        val bareEx = bare404Res.exceptionOrNull() as? CloudFunctionException
+        assertNotNull(bareEx)
+        assertTrue("Bare HTML 404 must be flagged isEndpointNotFound", bareEx!!.isEndpointNotFound)
+        assertFalse("Bare HTML 404 must NOT be misclassified as domain order not found", bareEx.isNotFound)
+        assertTrue("Bare HTML 404 must allow retry", bareEx.isRetryable)
+        assertTrue("Expected alias fallback call", calledPaths.contains("/acceptOrder"))
+        assertEquals(OrderStatus.PENDING, repo.allOrdersFlow.first().first { it.id == 600L }.status)
+
+        // 2) Active order 409 JSON conflict -> preserves PENDING order in Room
+        scenario = "ACTIVE_CONFLICT_409"
+        val conflictRes = repo.acceptOrder(600L)
+        assertTrue(conflictRes.isFailure)
+        val conflictEx = conflictRes.exceptionOrNull() as CloudFunctionException
+        assertFalse("Active order conflict must NOT delete target order", conflictEx.isNotFound)
+        assertEquals(OrderStatus.PENDING, repo.allOrdersFlow.first().first { it.id == 600L }.status)
+
+        // 3) Alias endpoint succeeds when primary returns bare 404 -> order transitions to ACCEPTED
+        scenario = "ALIAS_200"
+        val aliasOk = repo.acceptOrder(600L)
+        assertTrue("Alias endpoint acceptOrder should succeed", aliasOk.isSuccess)
+        assertEquals(OrderStatus.ACCEPTED, repo.allOrdersFlow.first().first { it.id == 600L }.status)
+
+        // Complete order 600L locally in Room so captain is eligible to accept order 601L
+        db.orderDao().markOrderDelivered(600L, "captain_1", System.currentTimeMillis())
+
+        // 4) Genuine domain JSON "هذا الطلب لم يعد متاحاً" -> flagged isNotFound=true & deletes stale order
+        db.orderDao().insertOrder(
+            OrderEntity(
+                id = 601L, orderNumber = "ELB-601", firestoreDocId = "ORD_601",
+                customerName = "عميل", customerPhone = "0100", storeName = "مطعم",
+                pickupAddress = "عنوان 1", deliveryAddress = "عنوان 2",
+                itemsSummary = "وجبة", itemsCount = 1, orderTotalAmount = 100.0,
+                deliveryFee = 30.0, distanceKm = 2.0, status = OrderStatus.PENDING, captainId = ""
+            )
+        )
+        scenario = "DOMAIN_GONE_JSON_409"
+        val goneRes = repo.acceptOrder(601L)
+        assertTrue(goneRes.isFailure)
+        val goneEx = goneRes.exceptionOrNull() as CloudFunctionException
+        assertTrue("Genuine JSON gone error must set isNotFound=true", goneEx.isNotFound)
+        assertFalse(goneEx.isEndpointNotFound)
+        assertFalse(goneEx.isRetryable)
+        assertTrue("Stale order should be removed from Room on genuine domain error", repo.allOrdersFlow.first().none { it.id == 601L })
+        Unit
+    }
+
+    @Test
+    fun cloudFunctionsBare404_fallsBackToAuthenticatedFirestoreTransaction_onlyOnEndpoint404() = runBlocking {
+        val db = checkNotNull(database)
+        var httpScenario = "NETWORK_DOWN" // NETWORK_DOWN -> HTTP_500 -> BARE_HTML_404
+        var fallbackCalls = 0
+        var denyPermissionInFallback = false
+
+        val mockHttpClient = OkHttpClient.Builder()
+            .addInterceptor(Interceptor { chain ->
+                val req = chain.request()
+                when (httpScenario) {
+                    "NETWORK_DOWN" -> throw IOException("Simulated offline")
+                    "HTTP_500" -> Response.Builder()
+                        .request(req)
+                        .protocol(Protocol.HTTP_1_1)
+                        .code(500)
+                        .message("Internal Server Error")
+                        .body("""{"error":"خطأ مؤقت في الخادم"}""".toResponseBody("application/json".toMediaType()))
+                        .build()
+                    else -> Response.Builder()
+                        .request(req)
+                        .protocol(Protocol.HTTP_1_1)
+                        .code(404)
+                        .message("Not Found")
+                        .body("<html><body>Function not deployed</body></html>".toResponseBody("text/html".toMediaType()))
+                        .build()
+                }
+            })
+            .build()
+
+        val cfClient = CloudFunctionsOrderClient(
+            firebaseAuth = null,
+            baseUrl = "https://us-central1-el-batal-express-956ae.cloudfunctions.net",
+            httpClient = mockHttpClient,
+            authCredentialsProvider = { "captain_1" to "mock_jwt_token_captain_1" }
+        )
+
+        val storageRepo = FirebaseStorageRepository(
+            context = context,
+            gateway = object : StorageGateway {
+                override suspend fun putBytesWithProgress(
+                    storagePath: String, bytes: ByteArray, contentType: String,
+                    customMetadata: Map<String, String>, requesterUid: String, onProgress: (Int) -> Unit
+                ) { onProgress(100) }
+                override suspend fun getBytes(storagePath: String, maxDownloadBytes: Long, requesterUid: String) = ByteArray(16)
+            },
+            authUidProvider = AuthUidProvider { "captain_1" },
+            connectivityChecker = NetworkConnectivityChecker { true },
+            maxAutoRetries = 1
+        )
+
+        val metadataPort = object : CaptainCloudMetadataPort {
+            override fun currentAuthUid(): String = "captain_1"
+            override suspend fun saveCaptainImageMetadata(uid: String, fields: Map<String, Any>) {}
+            override suspend fun fetchCaptainImageMetadata(uid: String): Map<String, String>? = emptyMap()
+            override suspend fun submitOrderReceiptDetails(
+                orderDocId: String, customerName: String, customerPhone: String, receiptImagePath: String, notes: String
+            ): Result<String> = cfClient.submitCustomerDeliveryDetails(orderDocId, customerName, customerPhone, receiptImagePath, notes)
+        }
+
+        val fallbackPort = object : FirestoreOrderFallbackPort {
+            override suspend fun acceptOrder(order: OrderEntity, captainUid: String, captainPhone: String): Result<String> {
+                fallbackCalls++
+                return if (denyPermissionInFallback) {
+                    Result.failure(CloudFunctionException("Denied", httpCode = 403, isRetryable = true, isNotFound = false))
+                } else {
+                    Result.success("تم قبول الطلب")
+                }
+            }
+
+            override suspend fun markArrivedAtMerchant(order: OrderEntity, captainUid: String, captainPhone: String): Result<String> {
+                fallbackCalls++
+                return if (denyPermissionInFallback) {
+                    Result.failure(CloudFunctionException("Denied", httpCode = 403, isRetryable = true, isNotFound = false))
+                } else {
+                    Result.success("تم الوصول")
+                }
+            }
+
+            override suspend fun confirmPickup(order: OrderEntity, captainUid: String, captainPhone: String): Result<String> {
+                fallbackCalls++
+                return Result.success("تم الاستلام")
+            }
+
+            override suspend fun submitCustomerDeliveryDetails(
+                order: OrderEntity, captainUid: String, captainPhone: String,
+                customerName: String, customerPhone: String, receiptImagePath: String, notes: String
+            ): Result<String> {
+                fallbackCalls++
+                return Result.success("تم رفع البيانات")
+            }
+
+            override suspend fun confirmDelivery(order: OrderEntity, captainUid: String, captainPhone: String): Result<Double> {
+                fallbackCalls++
+                return Result.success(40.0)
+            }
+
+            override suspend fun expireOrDeclineOffer(order: OrderEntity, captainUid: String, reason: String): Result<Unit> {
+                fallbackCalls++
+                return Result.success(Unit)
+            }
+        }
+
+        val repo = CaptainRepository(
+            captainDao = db.captainDao(),
+            orderDao = db.orderDao(),
+            shiftDao = db.shiftDao(),
+            context = context,
+            storageRepository = storageRepo,
+            cloudMetadataPortOverride = metadataPort,
+            cloudFunctionsClientOverride = cfClient,
+            firestoreOrderFallbackOverride = fallbackPort
+        )
+
+        db.captainDao().insertOrUpdate(
+            CaptainEntity(id = 1, uid = "captain_1", fullName = "كابتن 1", phoneNumber = "01011111111", isOnline = true, isLoggedIn = true)
+        )
+        db.orderDao().insertOrder(
+            OrderEntity(
+                id = 700L, orderNumber = "ELB-700", firestoreDocId = "ORD_700",
+                customerName = "عميل", customerPhone = "0100", storeName = "مطعم",
+                pickupAddress = "عنوان 1", deliveryAddress = "عنوان 2",
+                itemsSummary = "وجبة", itemsCount = 1, orderTotalAmount = 150.0,
+                deliveryFee = 40.0, distanceKm = 3.0, status = OrderStatus.PENDING, captainId = ""
+            )
+        )
+
+        // 1) Network down & HTTP 500 MUST NEVER invoke Firestore fallback!
+        assertTrue(repo.acceptOrder(700L).isFailure)
+        assertEquals(0, fallbackCalls)
+        httpScenario = "HTTP_500"
+        assertTrue(repo.acceptOrder(700L).isFailure)
+        assertEquals(0, fallbackCalls)
+
+        // 2) Bare 404 with PERMISSION_DENIED in Firestore fallback -> does NOT mutate Room state
+        httpScenario = "BARE_HTML_404"
+        denyPermissionInFallback = true
+        val permFail = repo.acceptOrder(700L)
+        assertTrue(permFail.isFailure)
+        assertEquals(1, fallbackCalls)
+        assertEquals(OrderStatus.PENDING, repo.allOrdersFlow.first().first { it.id == 700L }.status)
+
+        // 3) Full end-to-end lifecycle succeeds via Firestore fallback when Cloud Functions return bare 404
+        denyPermissionInFallback = false
+        assertTrue(repo.acceptOrder(700L).isSuccess)
+        assertEquals(OrderStatus.ACCEPTED, repo.allOrdersFlow.first().first { it.id == 700L }.status)
+
+        assertTrue(repo.markAtStore(700L).isSuccess)
+        assertEquals(OrderStatus.AT_STORE, repo.allOrdersFlow.first().first { it.id == 700L }.status)
+
+        assertTrue(repo.confirmPickup(700L).isSuccess)
+        assertEquals(OrderStatus.PICKED_UP, repo.allOrdersFlow.first().first { it.id == 700L }.status)
+
+        val receiptUri = createSampleJpeg("fallback_receipt")
+        assertTrue(repo.saveOrderCustomerData(700L, "عميل البطل", "01012345678", "ملاحظة", receiptUri).isSuccess)
+        assertEquals(OrderStatus.AWAITING_MERCHANT_CONFIRMATION, repo.allOrdersFlow.first().first { it.id == 700L }.status)
+
+        db.orderDao().updateOrderStatus(700L, OrderStatus.EN_ROUTE)
+        val deliveredRes = repo.completeDelivery(700L)
+        assertTrue(deliveredRes.isSuccess)
+        assertEquals(OrderStatus.DELIVERED, repo.allOrdersFlow.first().first { it.id == 700L }.status)
+        assertEquals(40.0, db.captainDao().getCaptain()?.walletBalance ?: 0.0, 0.01)
+        Unit
+    }
+
     // -------------------------------------------------------------------------
     // 2. Explicit receipt status allowlist & private cache wipe & project config audit
     // -------------------------------------------------------------------------
@@ -435,6 +761,7 @@ class SecurityAuditRuleTest {
                 "captains/$cap1Uid",
                 mapOf(
                     "uid" to strVal(cap1Uid),
+                    "accountType" to strVal("captain"),
                     "role" to strVal("captain"),
                     "status" to strVal("active"),
                     "walletBalance" to doubleVal(0.0),
@@ -445,6 +772,7 @@ class SecurityAuditRuleTest {
                 "captains/$cap2Uid",
                 mapOf(
                     "uid" to strVal(cap2Uid),
+                    "accountType" to strVal("captain"),
                     "role" to strVal("captain"),
                     "status" to strVal("active"),
                     "walletBalance" to doubleVal(0.0)
@@ -547,6 +875,160 @@ class SecurityAuditRuleTest {
         } finally {
             app.delete()
         }
+    }
+
+    @Test
+    fun offlineOrOutsideShiftCaptain_cannotBeAssignedOrAcceptOrders() = runBlocking {
+        val db = checkNotNull(database)
+        var httpCalls = 0
+        var fallbackCalls = 0
+
+        val mockHttpClient = OkHttpClient.Builder()
+            .addInterceptor(Interceptor { chain ->
+                httpCalls++
+                Response.Builder()
+                    .request(chain.request())
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body("""{"success":true}""".toResponseBody("application/json".toMediaType()))
+                    .build()
+            })
+            .build()
+
+        val cfClient = CloudFunctionsOrderClient(
+            firebaseAuth = null,
+            baseUrl = "https://us-central1-el-batal-express-956ae.cloudfunctions.net",
+            httpClient = mockHttpClient,
+            authCredentialsProvider = { "cap_elig" to "mock_jwt" }
+        )
+        val storageRepo = FirebaseStorageRepository(
+            context = context,
+            gateway = object : StorageGateway {
+                override suspend fun putBytesWithProgress(
+                    storagePath: String,
+                    bytes: ByteArray,
+                    contentType: String,
+                    customMetadata: Map<String, String>,
+                    requesterUid: String,
+                    onProgress: (Int) -> Unit
+                ) {}
+                override suspend fun getBytes(storagePath: String, maxDownloadBytes: Long, requesterUid: String): ByteArray = ByteArray(0)
+            },
+            authUidProvider = AuthUidProvider { "cap_elig" },
+            connectivityChecker = NetworkConnectivityChecker { true }
+        )
+        val metadataPort = object : CaptainCloudMetadataPort {
+            override fun currentAuthUid(): String = "cap_elig"
+            override suspend fun saveCaptainImageMetadata(uid: String, fields: Map<String, Any>) {}
+            override suspend fun fetchCaptainImageMetadata(uid: String): Map<String, String>? = emptyMap()
+            override suspend fun submitOrderReceiptDetails(
+                orderDocId: String,
+                customerName: String,
+                customerPhone: String,
+                receiptImagePath: String,
+                notes: String
+            ): Result<String> = Result.success("ok")
+        }
+        val fallbackPort = object : FirestoreOrderFallbackPort {
+            override suspend fun acceptOrder(order: OrderEntity, captainUid: String, captainPhone: String): Result<String> {
+                fallbackCalls++
+                return Result.success("ok")
+            }
+            override suspend fun markArrivedAtMerchant(order: OrderEntity, captainUid: String, captainPhone: String): Result<String> = Result.success("ok")
+            override suspend fun confirmPickup(order: OrderEntity, captainUid: String, captainPhone: String): Result<String> = Result.success("ok")
+            override suspend fun submitCustomerDeliveryDetails(
+                order: OrderEntity, captainUid: String, captainPhone: String,
+                customerName: String, customerPhone: String, receiptImagePath: String, notes: String
+            ): Result<String> = Result.success("ok")
+            override suspend fun confirmDelivery(order: OrderEntity, captainUid: String, captainPhone: String): Result<Double> = Result.success(25.0)
+            override suspend fun expireOrDeclineOffer(order: OrderEntity, captainUid: String, reason: String): Result<Unit> = Result.success(Unit)
+        }
+
+        val repo = CaptainRepository(
+            captainDao = db.captainDao(),
+            orderDao = db.orderDao(),
+            shiftDao = db.shiftDao(),
+            context = context,
+            storageRepository = storageRepo,
+            cloudMetadataPortOverride = metadataPort,
+            cloudFunctionsClientOverride = cfClient,
+            firestoreOrderFallbackOverride = fallbackPort
+        )
+
+        val pendingOrder = OrderEntity(
+            id = 910L, orderNumber = "PND-910", firestoreDocId = "ORD_910",
+            customerName = "عميل", customerPhone = "0100", storeName = "مطعم",
+            pickupAddress = "أ", deliveryAddress = "ب", itemsSummary = "وجبة",
+            itemsCount = 1, orderTotalAmount = 100.0, deliveryFee = 25.0,
+            distanceKm = 2.0, status = OrderStatus.PENDING, captainId = ""
+        )
+        val activeOrder = OrderEntity(
+            id = 911L, orderNumber = "ACT-911", firestoreDocId = "ORD_911",
+            customerName = "عميل 2", customerPhone = "0101", storeName = "مطعم 2",
+            pickupAddress = "أ", deliveryAddress = "ب", itemsSummary = "وجبة",
+            itemsCount = 1, orderTotalAmount = 120.0, deliveryFee = 30.0,
+            distanceKm = 2.5, status = OrderStatus.ACCEPTED, captainId = "cap_elig"
+        )
+        val deliveredOrder = OrderEntity(
+            id = 912L, orderNumber = "DEL-912", firestoreDocId = "ORD_912",
+            customerName = "عميل 3", customerPhone = "0102", storeName = "مطعم 3",
+            pickupAddress = "أ", deliveryAddress = "ب", itemsSummary = "وجبة",
+            itemsCount = 1, orderTotalAmount = 150.0, deliveryFee = 35.0,
+            distanceKm = 3.0, status = OrderStatus.DELIVERED, captainId = "cap_elig"
+        )
+
+        // 1) Offline captain: acceptOrder MUST be blocked with 0 server calls
+        db.captainDao().insertOrUpdate(
+            CaptainEntity(id = 1, uid = "cap_elig", fullName = "كابتن", phoneNumber = "01011111111", isOnline = false, isLoggedIn = true)
+        )
+        db.orderDao().insertOrder(pendingOrder)
+        db.orderDao().insertOrder(activeOrder)
+        db.orderDao().insertOrder(deliveredOrder)
+
+        val offlineAcceptRes = repo.acceptOrder(910L)
+        assertTrue("Offline captain must NOT accept orders", offlineAcceptRes.isFailure)
+        assertEquals(0, httpCalls)
+        assertEquals(0, fallbackCalls)
+        assertEquals(OrderStatus.PENDING, repo.allOrdersFlow.first().first { it.id == 910L }.status)
+
+        val offlinePendingQuery = repo.queryPendingOrdersFromFirestore()
+        assertTrue(offlinePendingQuery.isSuccess)
+        assertTrue("Offline captain must receive 0 pending orders", offlinePendingQuery.getOrDefault(emptyList()).isEmpty())
+
+        // 2) setOnlineStatus(false) removes PENDING offers while preserving ACTIVE and DELIVERED orders
+        db.orderDao().insertOrder(pendingOrder)
+        repo.setOnlineStatus(false)
+        val remainingOrders = repo.allOrdersFlow.first()
+        assertFalse("PENDING order must be cleared when captain goes offline", remainingOrders.any { it.id == 910L })
+        assertTrue("Active ongoing order must be preserved", remainingOrders.any { it.id == 911L && it.status == OrderStatus.ACCEPTED })
+        assertTrue("Delivered history order must be preserved", remainingOrders.any { it.id == 912L && it.status == OrderStatus.DELIVERED })
+
+        // 3) Online captain BUT outside shift schedule (all 7 days marked isDayOff = true) -> blocked!
+        db.captainDao().updateOnlineStatus(true)
+        db.orderDao().insertOrder(pendingOrder)
+        val allDaysOffShifts = (1..7).map { day ->
+            com.example.data.ShiftEntity(
+                id = "cap_elig_day_$day",
+                captainUid = "cap_elig",
+                dayOfWeek = day,
+                dayNameArabic = "يوم",
+                startTime = "00:00",
+                endTime = "00:00",
+                isDayOff = true
+            )
+        }
+        db.shiftDao().insertShifts(allDaysOffShifts)
+
+        val outOfShiftAccept = repo.acceptOrder(910L)
+        assertTrue("Outside-shift captain must NOT accept orders", outOfShiftAccept.isFailure)
+        assertEquals(0, httpCalls)
+        assertEquals(0, fallbackCalls)
+
+        val outOfShiftPendingQuery = repo.queryPendingOrdersFromFirestore()
+        assertTrue(outOfShiftPendingQuery.isSuccess)
+        assertTrue("Outside-shift captain must receive 0 pending orders", outOfShiftPendingQuery.getOrDefault(emptyList()).isEmpty())
+        assertFalse("PENDING order must be cleared when outside shift", repo.allOrdersFlow.first().any { it.id == 910L })
     }
 
     private suspend fun signUpOrSignIn(auth: FirebaseAuth, email: String, pass: String): String {

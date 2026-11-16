@@ -1,12 +1,14 @@
 package com.example.ui.components
 
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
-import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -26,9 +28,11 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Directions
 import androidx.compose.material.icons.filled.HourglassTop
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.NearMe
+import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.ReceiptLong
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Storefront
@@ -42,7 +46,10 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -53,10 +60,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import com.example.data.OrderEntity
 import com.example.data.OrderStatus
 import com.example.ui.theme.DarkSurface
@@ -73,9 +84,11 @@ fun ActiveOrderCard(
     onConfirmPickup: (Long) -> Unit,
     onOpenCustomerDataEntry: (OrderEntity) -> Unit,
     onCompleteDelivery: (OrderEntity) -> Unit,
-    onSimulateMerchantConfirm: ((Long, Boolean) -> Unit)? = null
+    onSimulateMerchantConfirm: ((Long, Boolean) -> Unit)? = null,
+    onRefreshMerchantLocation: ((OrderEntity) -> Unit)? = null
 ) {
     val context = LocalContext.current
+    var showMerchantDirectionsDialog by remember(order.id) { mutableStateOf(false) }
 
     val statusTitle = when (order.status) {
         OrderStatus.ACCEPTED -> "١. في الطريق إلى مقر التاجر"
@@ -84,7 +97,7 @@ fun ActiveOrderCard(
         OrderStatus.ORDER_DATA_ENTERED,
         OrderStatus.AWAITING_MERCHANT_CONFIRMATION -> "٤. بانتظار تأكيد التاجر ومراجعته للبيانات"
         OrderStatus.MERCHANT_REJECTED -> "⚠️ تم رفض البيانات من التاجر - يرجى تصحيحها"
-        OrderStatus.EN_ROUTE -> "٥. أكد التاجر الطلب - في الطريق لتسليم العميل"
+        OrderStatus.EN_ROUTE -> "٥. أكد التاجر بيانات الطلب - جاهز لتسليم الطلب للعميل"
         OrderStatus.DELIVERED -> "تم تسليم الطلب بنجاح وإغلاق المستحقات"
         else -> "الطلب قيد التنفيذ"
     }
@@ -107,7 +120,10 @@ fun ActiveOrderCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f)
+                ) {
                     Box(
                         modifier = Modifier
                             .size(10.dp)
@@ -116,11 +132,14 @@ fun ActiveOrderCard(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "طلب نشط #${order.cleanOrderNumber}",
+                        text = "طلب نشط",
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                        color = Color.White
+                        color = Color.White,
+                        maxLines = 1
                     )
                 }
+
+                Spacer(modifier = Modifier.width(8.dp))
 
                 Text(
                     text = "${order.deliveryFee.toInt()} ج.م",
@@ -128,7 +147,18 @@ fun ActiveOrderCard(
                         fontWeight = FontWeight.Black,
                         fontSize = 20.sp
                     ),
-                    color = HeroYellow
+                    color = HeroYellow,
+                    maxLines = 1,
+                    softWrap = false
+                )
+            }
+
+            if (order.cleanOrderCode.isNotBlank()) {
+                Spacer(modifier = Modifier.height(10.dp))
+                OrderCodeBadge(
+                    orderCode = order.cleanOrderCode,
+                    modifier = Modifier.fillMaxWidth(),
+                    badgeTag = "active_order_code_badge"
                 )
             }
 
@@ -313,16 +343,18 @@ fun ActiveOrderCard(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        // Open Map Directions
+                        // Open Merchant Location Link Dialog
                         OutlinedButton(
                             onClick = {
-                                openDirections(context, order.restaurantLatitude, order.restaurantLongitude, order.pickupAddress.ifBlank { order.storeName })
+                                onRefreshMerchantLocation?.invoke(order)
+                                showMerchantDirectionsDialog = true
                             },
                             modifier = Modifier
                                 .weight(1f)
-                                .height(50.dp),
+                                .height(50.dp)
+                                .testTag("merchant_directions_button"),
                             shape = RoundedCornerShape(12.dp),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, HeroYellow)
+                            border = BorderStroke(1.dp, HeroYellow)
                         ) {
                             Icon(Icons.Default.Directions, contentDescription = null, tint = HeroYellow)
                             Spacer(modifier = Modifier.width(4.dp))
@@ -471,7 +503,7 @@ fun ActiveOrderCard(
                     }
                 }
 
-                // 6. EN_ROUTE: Merchant confirmed! Direction to customer + "تم التوصيل"
+                // 6. EN_ROUTE: Merchant confirmed! Direction to customer + "تسليم الطلب للعميل"
                 OrderStatus.EN_ROUTE -> {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -483,27 +515,44 @@ fun ActiveOrderCard(
                             },
                             modifier = Modifier
                                 .weight(1f)
-                                .height(52.dp),
+                                .height(52.dp)
+                                .testTag("customer_map_button"),
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp),
                             shape = RoundedCornerShape(12.dp),
                             border = androidx.compose.foundation.BorderStroke(1.dp, HeroYellow)
                         ) {
-                            Icon(Icons.Default.Map, contentDescription = null, tint = HeroYellow)
+                            Icon(Icons.Default.Map, contentDescription = null, tint = HeroYellow, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("خريطة العميل", color = HeroYellow)
+                            Text(
+                                text = "خريطة العميل",
+                                color = HeroYellow,
+                                fontSize = 12.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
                         }
 
                         Button(
                             onClick = { onCompleteDelivery(order) },
                             enabled = !isLoading,
                             modifier = Modifier
-                                .weight(1.5f)
-                                .height(52.dp),
+                                .weight(1.55f)
+                                .height(52.dp)
+                                .testTag("deliver_to_customer_button"),
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = StatusOnlineGreen),
                             shape = RoundedCornerShape(12.dp)
                         ) {
-                            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color.White)
+                            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("تم التوصيل 🏁", fontWeight = FontWeight.Bold, color = Color.White)
+                            Text(
+                                text = "تسليم الطلب للعميل 🏁",
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White,
+                                fontSize = 13.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
                         }
                     }
                 }
@@ -533,6 +582,259 @@ fun ActiveOrderCard(
                 }
 
                 else -> { /* Pending or Expired */ }
+            }
+        }
+    }
+
+    if (showMerchantDirectionsDialog) {
+        MerchantDirectionsLinkDialog(
+            storeName = order.storeName,
+            pickupAddress = order.pickupAddress,
+            locationUrl = order.effectiveStoreLocationUrl,
+            latitude = order.restaurantLatitude,
+            longitude = order.restaurantLongitude,
+            onDismiss = { showMerchantDirectionsDialog = false },
+            onOpenUrlInGoogleMaps = { url ->
+                openGoogleMapsWithUrl(context, url)
+            },
+            onOpenFallbackInGoogleMaps = {
+                openDirections(
+                    context,
+                    order.restaurantLatitude,
+                    order.restaurantLongitude,
+                    order.pickupAddress.ifBlank { order.storeName }
+                )
+            }
+        )
+    }
+}
+
+@Composable
+private fun MerchantDirectionsLinkDialog(
+    storeName: String,
+    pickupAddress: String,
+    locationUrl: String,
+    latitude: Double?,
+    longitude: Double?,
+    onDismiss: () -> Unit,
+    onOpenUrlInGoogleMaps: (String) -> Unit,
+    onOpenFallbackInGoogleMaps: () -> Unit
+) {
+    val cleanUrl = locationUrl.trim()
+    val hasCoordinates = latitude != null && longitude != null && latitude != 0.0 && longitude != 0.0
+    val hasAddress = pickupAddress.isNotBlank() && pickupAddress != "عنوان المتجر"
+
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.5.dp, HeroYellow.copy(alpha = 0.65f), RoundedCornerShape(22.dp))
+                .testTag("merchant_location_link_dialog"),
+            shape = RoundedCornerShape(22.dp),
+            color = DarkSurface,
+            tonalElevation = 12.dp
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(20.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(44.dp)
+                            .clip(CircleShape)
+                            .background(HeroYellow.copy(alpha = 0.16f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.LocationOn,
+                            contentDescription = null,
+                            tint = HeroYellow,
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "موقع التاجر: $storeName",
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                            color = Color.White,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        if (pickupAddress.isNotBlank()) {
+                            Text(
+                                text = pickupAddress,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color.LightGray,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                if (cleanUrl.isNotBlank()) {
+                    Text(
+                        text = "رابط الموقع المضاف من حساب التاجر:",
+                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                        color = StatusOnlineGreen
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .minimumInteractiveComponentSize()
+                            .clip(RoundedCornerShape(14.dp))
+                            .clickable { onOpenUrlInGoogleMaps(cleanUrl) }
+                            .testTag("merchant_location_url_card"),
+                        shape = RoundedCornerShape(14.dp),
+                        color = DarkSurfaceVariant,
+                        border = BorderStroke(1.dp, StatusOnlineGreen.copy(alpha = 0.6f))
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(14.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Link,
+                                contentDescription = null,
+                                tint = StatusOnlineGreen,
+                                modifier = Modifier.size(22.dp)
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = cleanUrl,
+                                    style = MaterialTheme.typography.bodyMedium.copy(
+                                        fontWeight = FontWeight.SemiBold,
+                                        textDecoration = TextDecoration.Underline
+                                    ),
+                                    color = HeroYellow,
+                                    maxLines = 3,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = "اضغط على الرابط لفتح موقع التاجر في خرائط جوجل",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Color.LightGray
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Icon(
+                                imageVector = Icons.Default.OpenInNew,
+                                contentDescription = "فتح الرابط في خرائط جوجل",
+                                tint = HeroYellow,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Button(
+                        onClick = { onOpenUrlInGoogleMaps(cleanUrl) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(50.dp)
+                            .testTag("open_google_maps_button"),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = StatusOnlineGreen,
+                            contentColor = Color.White
+                        ),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Icon(Icons.Default.Map, contentDescription = null, tint = Color.White)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "فتح الموقع في خرائط جوجل",
+                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+                        )
+                    }
+                } else {
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("merchant_location_missing_notice"),
+                        shape = RoundedCornerShape(14.dp),
+                        color = DarkSurfaceVariant,
+                        border = BorderStroke(1.dp, HeroYellow.copy(alpha = 0.45f))
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(14.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Info,
+                                contentDescription = null,
+                                tint = HeroYellow,
+                                modifier = Modifier.size(22.dp)
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Text(
+                                text = "لم يضف التاجر رابط موقع في حسابه حتى الآن." +
+                                    if (hasCoordinates || hasAddress) {
+                                        " يمكنك تحديد موقع التاجر باستخدام العنوان أو الإحداثيات المسجلة على خرائط جوجل."
+                                    } else {
+                                        ""
+                                    },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color.LightGray
+                            )
+                        }
+                    }
+
+                    if (hasCoordinates || hasAddress || storeName.isNotBlank()) {
+                        Spacer(modifier = Modifier.height(14.dp))
+                        Button(
+                            onClick = onOpenFallbackInGoogleMaps,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(50.dp)
+                                .testTag("open_google_maps_fallback_button"),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = HeroYellow,
+                                contentColor = Color.Black
+                            ),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Icon(Icons.Default.Directions, contentDescription = null, tint = Color.Black)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "تحديد الموقع في خرائط جوجل",
+                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                TextButton(
+                    onClick = onDismiss,
+                    modifier = Modifier
+                        .align(Alignment.End)
+                        .minimumInteractiveComponentSize()
+                        .testTag("close_merchant_directions_dialog")
+                ) {
+                    Text(
+                        text = "إغلاق",
+                        color = Color.LightGray,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
             }
         }
     }
@@ -569,6 +871,48 @@ private fun StepBadgeMini(label: String, isDone: Boolean) {
     }
 }
 
+internal fun buildGoogleMapsViewIntent(rawUrl: String, forceMapsPackage: Boolean = true): Intent {
+    val cleanUrl = rawUrl.trim().let { u ->
+        val lower = u.lowercase()
+        if (lower.startsWith("http://") ||
+            lower.startsWith("https://") ||
+            lower.startsWith("geo:") ||
+            lower.startsWith("google.navigation:")
+        ) {
+            u
+        } else {
+            "https://$u"
+        }
+    }
+    return Intent(Intent.ACTION_VIEW, Uri.parse(cleanUrl)).apply {
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        if (forceMapsPackage) {
+            setPackage("com.google.android.apps.maps")
+        }
+    }
+}
+
+private fun openGoogleMapsWithUrl(context: Context, rawUrl: String) {
+    try {
+        val mapsIntent = buildGoogleMapsViewIntent(rawUrl, forceMapsPackage = true)
+        context.startActivity(mapsIntent)
+    } catch (_: ActivityNotFoundException) {
+        try {
+            val fallbackIntent = buildGoogleMapsViewIntent(rawUrl, forceMapsPackage = false)
+            context.startActivity(fallbackIntent)
+        } catch (_: Exception) {
+            Toast.makeText(context, "تعذر فتح رابط موقع التاجر على الخرائط", Toast.LENGTH_SHORT).show()
+        }
+    } catch (_: Exception) {
+        try {
+            val fallbackIntent = buildGoogleMapsViewIntent(rawUrl, forceMapsPackage = false)
+            context.startActivity(fallbackIntent)
+        } catch (_: Exception) {
+            Toast.makeText(context, "تعذر فتح رابط موقع التاجر على الخرائط", Toast.LENGTH_SHORT).show()
+        }
+    }
+}
+
 private fun openDirections(context: Context, lat: Double?, lng: Double?, addressQuery: String) {
     try {
         val mapUri = if (lat != null && lng != null && lat != 0.0 && lng != 0.0) {
@@ -576,12 +920,26 @@ private fun openDirections(context: Context, lat: Double?, lng: Double?, address
         } else {
             Uri.parse("geo:0,0?q=${Uri.encode(addressQuery)}")
         }
-        val intent = Intent(Intent.ACTION_VIEW, mapUri)
-        context.startActivity(intent)
+        val intent = Intent(Intent.ACTION_VIEW, mapUri).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            setPackage("com.google.android.apps.maps")
+        }
+        try {
+            context.startActivity(intent)
+        } catch (_: ActivityNotFoundException) {
+            intent.setPackage(null)
+            context.startActivity(intent)
+        }
     } catch (e: Exception) {
         try {
-            val fallbackUri = Uri.parse("https://www.google.com/maps/search/?api=1&query=${Uri.encode(addressQuery)}")
-            context.startActivity(Intent(Intent.ACTION_VIEW, fallbackUri))
+            val fallbackUri = if (lat != null && lng != null && lat != 0.0 && lng != 0.0) {
+                Uri.parse("https://www.google.com/maps/search/?api=1&query=$lat,$lng")
+            } else {
+                Uri.parse("https://www.google.com/maps/search/?api=1&query=${Uri.encode(addressQuery)}")
+            }
+            context.startActivity(Intent(Intent.ACTION_VIEW, fallbackUri).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            })
         } catch (e2: Exception) {
             Toast.makeText(context, "تعذر فتح تطبيق الخرائط", Toast.LENGTH_SHORT).show()
         }

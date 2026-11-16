@@ -29,26 +29,36 @@ import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudUpload
+import androidx.compose.material.icons.filled.DriveEta
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.ExitToApp
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.SupportAgent
 import androidx.compose.material.icons.filled.TwoWheeler
+import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -83,18 +93,23 @@ fun ProfileScreen(
     profileUploadState: ImageUploadState = ImageUploadState.Idle,
     idFrontUploadState: ImageUploadState = ImageUploadState.Idle,
     idBackUploadState: ImageUploadState = ImageUploadState.Idle,
+    licenseUploadState: ImageUploadState = ImageUploadState.Idle,
     onUploadProfilePhoto: (Uri, onCompleted: () -> Unit) -> Unit = { _, _ -> },
     onUploadIdFront: (Uri, onCompleted: () -> Unit) -> Unit = { _, _ -> },
     onUploadIdBack: (Uri, onCompleted: () -> Unit) -> Unit = { _, _ -> },
+    onUploadLicensePhoto: (Uri, onCompleted: () -> Unit) -> Unit = { _, _ -> },
     onResetProfileUploadState: () -> Unit = {},
     onResetIdFrontUploadState: () -> Unit = {},
     onResetIdBackUploadState: () -> Unit = {},
-    onSaveProfile: (fullName: String, phone: String, email: String, vehicleType: String, licensePlate: String, avatarUri: String) -> Unit,
+    onResetLicenseUploadState: () -> Unit = {},
+    onSaveProfile: (fullName: String, phone: String, email: String, vehicleType: String, licensePlate: String, avatarUri: String) -> Unit = { _, _, _, _, _, _ -> },
+    onSaveProfileDetails: ((fullName: String, phone: String, email: String, address: String, vehicleType: String, licensePlate: String, avatarUri: String) -> Unit)? = null,
     onLogout: () -> Unit
 ) {
     var fullName by remember(captain?.uid, captain?.fullName) { mutableStateOf(captain?.fullName ?: "") }
     var phone by remember(captain?.uid, captain?.phoneNumber) { mutableStateOf(captain?.phoneNumber ?: "") }
     var email by remember(captain?.uid, captain?.email) { mutableStateOf(captain?.email ?: "") }
+    var address by remember(captain?.uid, captain?.address) { mutableStateOf(captain?.address ?: "") }
     var vehicleType by remember(captain?.uid, captain?.vehicleType) {
         mutableStateOf(captain?.vehicleType ?: "سكوتر / دراجة نارية")
     }
@@ -106,10 +121,12 @@ fun ProfileScreen(
     var pendingProfilePreviewUri by remember { mutableStateOf<Uri?>(null) }
     var pendingIdFrontPreviewUri by remember { mutableStateOf<Uri?>(null) }
     var pendingIdBackPreviewUri by remember { mutableStateOf<Uri?>(null) }
+    var pendingLicensePreviewUri by remember { mutableStateOf<Uri?>(null) }
 
     val savedProfilePath = captain?.effectiveProfileImage.orEmpty()
     val savedIdFrontPath = captain?.effectiveIdFrontImage.orEmpty()
     val savedIdBackPath = captain?.effectiveIdBackImage.orEmpty()
+    val savedLicensePath = captain?.effectiveLicenseImage.orEmpty()
     val isNationalIdComplete = captain?.isNationalIdComplete == true
 
     val profileLauncher = rememberImageSourceLauncher(
@@ -134,6 +151,14 @@ fun ProfileScreen(
     ) { uri ->
         onResetIdBackUploadState()
         pendingIdBackPreviewUri = uri
+    }
+
+    val licenseLauncher = rememberImageSourceLauncher(
+        filePrefix = "license_photo",
+        dialogTitle = "صورة رخصة القيادة / المركبة"
+    ) { uri ->
+        onResetLicenseUploadState()
+        pendingLicensePreviewUri = uri
     }
 
     val scrollState = rememberScrollState()
@@ -417,11 +442,22 @@ fun ProfileScreen(
 
             Spacer(modifier = Modifier.height(18.dp))
 
-            // 2 & 3. Private National ID Documents Section (Front + Back independent slots)
+            // 2 & 3. Private National ID Documents Section (Front + Back independent slots, locked after upload)
             Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = DarkSurface)
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("national_id_section_card"),
+                shape = RoundedCornerShape(22.dp),
+                border = BorderStroke(
+                    width = if (isNationalIdComplete) 1.5.dp else 1.dp,
+                    color = if (isNationalIdComplete) {
+                        StatusOnlineGreen.copy(alpha = 0.45f)
+                    } else {
+                        DarkSurfaceVariant
+                    }
+                ),
+                colors = CardDefaults.cardColors(containerColor = DarkSurface),
+                elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
             ) {
                 Column(
                     modifier = Modifier
@@ -433,50 +469,125 @@ fun ProfileScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(HeroYellow.copy(alpha = 0.14f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Badge,
+                                    contentDescription = null,
+                                    tint = HeroYellow,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column {
+                                Text(
+                                    text = "صور البطاقة الشخصية",
+                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                    color = HeroYellow
+                                )
+                                Text(
+                                    text = "مستندات التوثيق الرسمية",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Color.LightGray
+                                )
+                            }
+                        }
+
+                        Surface(
+                            shape = RoundedCornerShape(50),
+                            color = StatusOnlineGreen.copy(alpha = 0.14f),
+                            border = BorderStroke(1.dp, StatusOnlineGreen.copy(alpha = 0.4f))
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Lock,
+                                    contentDescription = "مستندات مشفرة ومحمية",
+                                    tint = StatusOnlineGreen,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = "مشفرة",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = StatusOnlineGreen
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    Text(
+                        text = "بياناتك ومستنداتك مشفرة ومحفوظة بأمان، ولا يمكن تعديلها بعد الاعتماد.",
+                        style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
+                        color = Color.White.copy(alpha = 0.88f)
+                    )
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    // Security notice bar
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("national_id_top_security_notice"),
+                        shape = RoundedCornerShape(12.dp),
+                        color = DarkSurfaceVariant,
+                        border = BorderStroke(1.dp, HeroYellow.copy(alpha = 0.25f))
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
                             Icon(
-                                imageVector = Icons.Default.Badge,
+                                imageVector = Icons.Default.Shield,
                                 contentDescription = null,
                                 tint = HeroYellow,
-                                modifier = Modifier.size(22.dp)
+                                modifier = Modifier.size(18.dp)
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = "صور البطاقة الشخصية (مستندات خاصة)",
-                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                                color = HeroYellow
+                                text = "مستنداتك محفوظة ومؤمّنة بالكامل. لا يمكن تغيير أو استبدال صور البطاقة الشخصية بعد رفعها.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color.LightGray
                             )
                         }
-                        Icon(
-                            imageVector = Icons.Default.Lock,
-                            contentDescription = "محمية وخاصة",
-                            tint = StatusOnlineGreen,
-                            modifier = Modifier.size(18.dp)
-                        )
                     }
-
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text(
-                        text = "بيانات سرية محمية في Firebase Storage لا تظهر للعامة ولا لأي كابتن آخر.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color.LightGray
-                    )
 
                     Spacer(modifier = Modifier.height(12.dp))
 
                     // Completion verification banner (ONLY complete when BOTH front and back succeeded uploading!)
-                    Card(
+                    Surface(
                         modifier = Modifier
                             .fillMaxWidth()
                             .testTag("national_id_completion_banner"),
-                        colors = CardDefaults.cardColors(
-                            containerColor = if (isNationalIdComplete) {
-                                StatusOnlineGreen.copy(alpha = 0.16f)
+                        color = if (isNationalIdComplete) {
+                            StatusOnlineGreen.copy(alpha = 0.14f)
+                        } else {
+                            HeroYellow.copy(alpha = 0.12f)
+                        },
+                        border = BorderStroke(
+                            width = 1.dp,
+                            color = if (isNationalIdComplete) {
+                                StatusOnlineGreen.copy(alpha = 0.48f)
                             } else {
-                                HeroYellow.copy(alpha = 0.14f)
+                                HeroYellow.copy(alpha = 0.42f)
                             }
                         ),
-                        shape = RoundedCornerShape(12.dp)
+                        shape = RoundedCornerShape(14.dp)
                     ) {
                         Row(
                             modifier = Modifier
@@ -485,7 +596,7 @@ fun ProfileScreen(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Icon(
-                                imageVector = if (isNationalIdComplete) Icons.Default.CheckCircle else Icons.Default.Warning,
+                                imageVector = if (isNationalIdComplete) Icons.Default.VerifiedUser else Icons.Default.Warning,
                                 contentDescription = null,
                                 tint = if (isNationalIdComplete) StatusOnlineGreen else HeroYellow,
                                 modifier = Modifier.size(20.dp)
@@ -493,7 +604,7 @@ fun ProfileScreen(
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
                                 text = if (isNationalIdComplete) {
-                                    "مستند البطاقة الشخصية مكتمل: تم رفع الوجه الأمامي والخلفي بنجاح ✓"
+                                    "تم توثيق البطاقة الشخصية بنجاح (الوجه الأمامي والخلفي) — المستند مغلق للتعديل 🔒"
                                 } else {
                                     "المستند غير مكتمل بعد: يجب رفع وحفظ الوجه الأمامي والوجه الخلفي معاً"
                                 },
@@ -510,15 +621,21 @@ fun ProfileScreen(
                         title = "البطاقة الشخصية – الوجه الأمامي",
                         subtitle = "صورة واضحة للوجه الأمامي (الاسم والرقم القومي)",
                         savedStoragePath = savedIdFrontPath,
-                        pendingPreviewUri = pendingIdFrontPreviewUri,
+                        pendingPreviewUri = if (savedIdFrontPath.isBlank()) pendingIdFrontPreviewUri else null,
                         uploadState = idFrontUploadState,
                         tagPrefix = "id_front",
-                        onPickCamera = { idFrontLauncher.captureFromCamera() },
-                        onPickGallery = { idFrontLauncher.pickFromGallery() },
+                        onPickCamera = {
+                            if (savedIdFrontPath.isBlank()) idFrontLauncher.captureFromCamera()
+                        },
+                        onPickGallery = {
+                            if (savedIdFrontPath.isBlank()) idFrontLauncher.pickFromGallery()
+                        },
                         onConfirmUpload = {
                             val target = pendingIdFrontPreviewUri ?: return@NationalIdSideCard
-                            onUploadIdFront(target) {
-                                pendingIdFrontPreviewUri = null
+                            if (savedIdFrontPath.isBlank()) {
+                                onUploadIdFront(target) {
+                                    pendingIdFrontPreviewUri = null
+                                }
                             }
                         },
                         onCancelPreview = {
@@ -534,15 +651,21 @@ fun ProfileScreen(
                         title = "البطاقة الشخصية – الوجه الخلفي",
                         subtitle = "صورة واضحة للوجه الخلفي (تاريخ الإصدار والسريان)",
                         savedStoragePath = savedIdBackPath,
-                        pendingPreviewUri = pendingIdBackPreviewUri,
+                        pendingPreviewUri = if (savedIdBackPath.isBlank()) pendingIdBackPreviewUri else null,
                         uploadState = idBackUploadState,
                         tagPrefix = "id_back",
-                        onPickCamera = { idBackLauncher.captureFromCamera() },
-                        onPickGallery = { idBackLauncher.pickFromGallery() },
+                        onPickCamera = {
+                            if (savedIdBackPath.isBlank()) idBackLauncher.captureFromCamera()
+                        },
+                        onPickGallery = {
+                            if (savedIdBackPath.isBlank()) idBackLauncher.pickFromGallery()
+                        },
                         onConfirmUpload = {
                             val target = pendingIdBackPreviewUri ?: return@NationalIdSideCard
-                            onUploadIdBack(target) {
-                                pendingIdBackPreviewUri = null
+                            if (savedIdBackPath.isBlank()) {
+                                onUploadIdBack(target) {
+                                    pendingIdBackPreviewUri = null
+                                }
                             }
                         },
                         onCancelPreview = {
@@ -550,6 +673,218 @@ fun ProfileScreen(
                             onResetIdBackUploadState()
                         }
                     )
+
+                    Spacer(modifier = Modifier.height(16.dp))
+                    HorizontalDivider(color = Color.White.copy(alpha = 0.08f))
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("national_id_support_note"),
+                        shape = RoundedCornerShape(12.dp),
+                        color = DarkSurfaceVariant.copy(alpha = 0.65f)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.SupportAgent,
+                                contentDescription = null,
+                                tint = HeroYellow,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "لتحديث بيانات البطاقة الشخصية، يرجى التواصل مع الدعم الفني.",
+                                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
+                                color = Color.LightGray
+                            )
+                        }
+                    }
+                }
+            }
+
+                    Spacer(modifier = Modifier.height(18.dp))
+
+            // 3B. Driving / Vehicle License Card
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("profile_license_section_card"),
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(containerColor = DarkSurface),
+                border = BorderStroke(
+                    width = 1.dp,
+                    color = if (savedLicensePath.isNotBlank()) StatusOnlineGreen.copy(alpha = 0.45f) else DarkSurfaceVariant
+                )
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(20.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.DriveEta,
+                                contentDescription = null,
+                                tint = HeroYellow,
+                                modifier = Modifier.size(22.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "رخصة القيادة / المركبة",
+                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                color = HeroYellow
+                            )
+                        }
+                        if (savedLicensePath.isNotBlank()) {
+                            Icon(
+                                imageVector = Icons.Default.CheckCircle,
+                                contentDescription = "مرفوعة وموثقة",
+                                tint = StatusOnlineGreen,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    val licensePreview = pendingLicensePreviewUri
+                    if (licensePreview != null || savedLicensePath.isNotBlank()) {
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(160.dp),
+                            shape = RoundedCornerShape(14.dp),
+                            colors = CardDefaults.cardColors(containerColor = DarkSurfaceVariant)
+                        ) {
+                            if (licensePreview != null) {
+                                AsyncImage(
+                                    model = licensePreview,
+                                    contentDescription = "معاينة رخصة القيادة",
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            } else {
+                                StorageAsyncImage(
+                                    pathOrUrl = savedLicensePath,
+                                    contentDescription = "صورة رخصة القيادة المحفوظة",
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .testTag("profile_saved_license_image")
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(10.dp))
+                    } else {
+                        Text(
+                            text = "لم يتم رفع صورة الرخصة بعد (اختياري).",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.Gray
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+                    }
+
+                    if (pendingLicensePreviewUri != null) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Button(
+                                onClick = {
+                                    val target = pendingLicensePreviewUri ?: return@Button
+                                    onUploadLicensePhoto(target) {
+                                        pendingLicensePreviewUri = null
+                                    }
+                                },
+                                enabled = !licenseUploadState.isBusy,
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = StatusOnlineGreen,
+                                    contentColor = Color.White
+                                ),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier
+                                    .weight(1.4f)
+                                    .height(48.dp)
+                            ) {
+                                Icon(Icons.Default.CloudUpload, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("حفظ ورفع الرخصة", fontWeight = FontWeight.Bold)
+                            }
+                            OutlinedButton(
+                                onClick = {
+                                    pendingLicensePreviewUri = null
+                                    onResetLicenseUploadState()
+                                },
+                                enabled = !licenseUploadState.isBusy,
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(48.dp)
+                            ) {
+                                Text("إلغاء", color = Color.LightGray)
+                            }
+                        }
+                    } else {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = { licenseLauncher.captureFromCamera() },
+                                enabled = !licenseUploadState.isBusy,
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(48.dp)
+                            ) {
+                                Icon(Icons.Default.CameraAlt, contentDescription = null, tint = HeroYellow, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("تصوير", color = Color.White, fontWeight = FontWeight.Bold)
+                            }
+                            OutlinedButton(
+                                onClick = { licenseLauncher.pickFromGallery() },
+                                enabled = !licenseUploadState.isBusy,
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(48.dp)
+                            ) {
+                                Icon(Icons.Default.PhotoLibrary, contentDescription = null, tint = HeroYellow, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = if (savedLicensePath.isBlank()) "من المعرض" else "تحديث الرخصة",
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+
+                    if (licenseUploadState !is ImageUploadState.Idle) {
+                        Spacer(modifier = Modifier.height(10.dp))
+                        UploadStatusBanner(
+                            state = licenseUploadState,
+                            onRetry = pendingLicensePreviewUri?.let { retryUri ->
+                                {
+                                    onUploadLicensePhoto(retryUri) {
+                                        pendingLicensePreviewUri = null
+                                    }
+                                }
+                            },
+                            tagPrefix = "license_upload"
+                        )
+                    }
                 }
             }
 
@@ -588,7 +923,9 @@ fun ProfileScreen(
                             unfocusedContainerColor = DarkSurfaceVariant
                         ),
                         shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("profile_fullname_input")
                     )
 
                     Spacer(modifier = Modifier.height(12.dp))
@@ -609,16 +946,19 @@ fun ProfileScreen(
                             unfocusedContainerColor = DarkSurfaceVariant
                         ),
                         shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("profile_phone_input")
                     )
 
                     Spacer(modifier = Modifier.height(12.dp))
 
-                    Text("البريد الإلكتروني (اختياري)", style = MaterialTheme.typography.labelMedium, color = Color.Gray)
+                    Text("البريد الإلكتروني الموثق", style = MaterialTheme.typography.labelMedium, color = Color.Gray)
                     Spacer(modifier = Modifier.height(4.dp))
                     OutlinedTextField(
                         value = email,
-                        onValueChange = { email = it },
+                        onValueChange = {},
+                        readOnly = true,
                         leadingIcon = { Icon(Icons.Default.Email, contentDescription = null, tint = HeroYellow) },
                         singleLine = true,
                         colors = OutlinedTextFieldDefaults.colors(
@@ -628,7 +968,31 @@ fun ProfileScreen(
                             unfocusedContainerColor = DarkSurfaceVariant
                         ),
                         shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("profile_email_input")
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    Text("العنوان", style = MaterialTheme.typography.labelMedium, color = Color.Gray)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    OutlinedTextField(
+                        value = address,
+                        onValueChange = { address = it },
+                        leadingIcon = { Icon(Icons.Default.LocationOn, contentDescription = null, tint = HeroYellow) },
+                        placeholder = { Text("مثال: القاهرة - مدينة نصر", color = Color.Gray) },
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = ExpressRed,
+                            unfocusedBorderColor = DarkSurfaceVariant,
+                            focusedContainerColor = DarkSurfaceVariant,
+                            unfocusedContainerColor = DarkSurfaceVariant
+                        ),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("profile_address_input")
                     )
 
                     Spacer(modifier = Modifier.height(12.dp))
@@ -647,7 +1011,9 @@ fun ProfileScreen(
                             unfocusedContainerColor = DarkSurfaceVariant
                         ),
                         shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("profile_vehicle_input")
                     )
 
                     Spacer(modifier = Modifier.height(12.dp))
@@ -665,21 +1031,35 @@ fun ProfileScreen(
                             unfocusedContainerColor = DarkSurfaceVariant
                         ),
                         shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("profile_plate_input")
                     )
 
                     Spacer(modifier = Modifier.height(20.dp))
 
                     Button(
                         onClick = {
-                            onSaveProfile(
-                                fullName,
-                                phone,
-                                email,
-                                vehicleType,
-                                licensePlate,
-                                savedProfilePath
-                            )
+                            if (onSaveProfileDetails != null) {
+                                onSaveProfileDetails(
+                                    fullName,
+                                    phone,
+                                    email,
+                                    address,
+                                    vehicleType,
+                                    licensePlate,
+                                    savedProfilePath
+                                )
+                            } else {
+                                onSaveProfile(
+                                    fullName,
+                                    phone,
+                                    email,
+                                    vehicleType,
+                                    licensePlate,
+                                    savedProfilePath
+                                )
+                            }
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = ExpressRed),
                         shape = RoundedCornerShape(12.dp),
@@ -742,28 +1122,107 @@ private fun NationalIdSideCard(
     onConfirmUpload: () -> Unit,
     onCancelPreview: () -> Unit
 ) {
-    val isUploadedAndSaved = savedStoragePath.isNotBlank() && pendingPreviewUri == null
+    val isUploadedAndSaved = savedStoragePath.isNotBlank()
+    val hasPendingPreview = !isUploadedAndSaved && pendingPreviewUri != null
+    var showFinalLockConfirmDialog by remember { mutableStateOf(false) }
+
+    if (showFinalLockConfirmDialog && hasPendingPreview) {
+        AlertDialog(
+            onDismissRequest = { showFinalLockConfirmDialog = false },
+            containerColor = DarkSurface,
+            icon = {
+                Icon(
+                    imageVector = Icons.Default.Lock,
+                    contentDescription = null,
+                    tint = HeroYellow,
+                    modifier = Modifier.size(28.dp)
+                )
+            },
+            title = {
+                Text(
+                    text = "تأكيد الحفظ والتوثيق النهائي",
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                    color = Color.White
+                )
+            },
+            text = {
+                Text(
+                    text = "تنبيه: يرجى التأكد من وضوح صورة البطاقة قبل الحفظ، حيث لن تتمكن من تغييرها أو استبدالها مرة أخرى بعد الرفع.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color.LightGray
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showFinalLockConfirmDialog = false
+                        onConfirmUpload()
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = StatusOnlineGreen,
+                        contentColor = Color.White
+                    ),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier
+                        .height(48.dp)
+                        .testTag("${tagPrefix}_dialog_confirm_button")
+                ) {
+                    Icon(Icons.Default.Lock, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("تأكيد الحفظ والرفع", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showFinalLockConfirmDialog = false },
+                    modifier = Modifier
+                        .height(48.dp)
+                        .testTag("${tagPrefix}_dialog_cancel_button")
+                ) {
+                    Text("مراجعة الصورة", color = HeroYellow, fontWeight = FontWeight.Bold)
+                }
+            }
+        )
+    }
 
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .border(
-                width = 1.dp,
-                color = when {
-                    pendingPreviewUri != null -> HeroYellow
-                    isUploadedAndSaved -> StatusOnlineGreen.copy(alpha = 0.6f)
-                    else -> DarkSurfaceVariant
-                },
-                shape = RoundedCornerShape(16.dp)
-            )
             .testTag("${tagPrefix}_card"),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = DarkSurfaceVariant)
+        shape = RoundedCornerShape(18.dp),
+        border = BorderStroke(
+            width = if (isUploadedAndSaved || hasPendingPreview) 1.5.dp else 1.dp,
+            color = when {
+                hasPendingPreview -> HeroYellow.copy(alpha = 0.8f)
+                isUploadedAndSaved -> StatusOnlineGreen.copy(alpha = 0.55f)
+                else -> Color.White.copy(alpha = 0.10f)
+            }
+        ),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isUploadedAndSaved) {
+                DarkSurfaceVariant
+            } else {
+                DarkSurfaceVariant
+            }
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = if (isUploadedAndSaved) 3.dp else 1.dp)
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(14.dp)
+                .background(
+                    brush = if (isUploadedAndSaved) {
+                        Brush.verticalGradient(
+                            colors = listOf(
+                                StatusOnlineGreen.copy(alpha = 0.10f),
+                                Color.Transparent
+                            )
+                        )
+                    } else {
+                        Brush.verticalGradient(listOf(Color.Transparent, Color.Transparent))
+                    }
+                )
+                .padding(16.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -776,134 +1235,239 @@ private fun NationalIdSideCard(
                         style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                         color = Color.White
                     )
+                    Spacer(modifier = Modifier.height(3.dp))
                     Text(
                         text = when {
-                            pendingPreviewUri != null -> "معاينة قبل الحفظ — اضغط حفظ ورفع لتأكيد المستند"
-                            isUploadedAndSaved -> "تم الرفع والحفظ في Firebase Storage ✓"
+                            hasPendingPreview -> "معاينة قبل الحفظ — يرجى مراجعة وضوح البطاقة قبل التأكيد"
+                            isUploadedAndSaved -> "تم الحفظ والتوثيق بنجاح 🔒"
                             else -> subtitle
                         },
-                        style = MaterialTheme.typography.bodySmall,
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            fontWeight = if (isUploadedAndSaved || hasPendingPreview) FontWeight.SemiBold else FontWeight.Normal
+                        ),
                         color = when {
-                            pendingPreviewUri != null -> HeroYellow
+                            hasPendingPreview -> HeroYellow
                             isUploadedAndSaved -> StatusOnlineGreen
                             else -> Color.LightGray
                         }
                     )
                 }
 
-                Icon(
-                    imageVector = if (isUploadedAndSaved) Icons.Default.CheckCircle else Icons.Default.Badge,
-                    contentDescription = null,
-                    tint = if (isUploadedAndSaved) StatusOnlineGreen else HeroYellow,
-                    modifier = Modifier.size(22.dp)
-                )
+                Spacer(modifier = Modifier.width(8.dp))
+
+                if (isUploadedAndSaved) {
+                    Surface(
+                        shape = RoundedCornerShape(50),
+                        color = StatusOnlineGreen.copy(alpha = 0.18f),
+                        border = BorderStroke(1.dp, StatusOnlineGreen.copy(alpha = 0.5f))
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.CheckCircle,
+                                contentDescription = "موثقة ومقفلة",
+                                tint = StatusOnlineGreen,
+                                modifier = Modifier.size(15.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "موثقة",
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                color = StatusOnlineGreen
+                            )
+                        }
+                    }
+                } else {
+                    Icon(
+                        imageVector = Icons.Default.Badge,
+                        contentDescription = null,
+                        tint = HeroYellow,
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.height(12.dp))
 
             // Image preview / saved image frame
-            if (pendingPreviewUri != null || savedStoragePath.isNotBlank()) {
-                Box(
+            if (hasPendingPreview || isUploadedAndSaved) {
+                Card(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(165.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(DarkSurface),
-                    contentAlignment = Alignment.Center
+                        .height(180.dp),
+                    shape = RoundedCornerShape(14.dp),
+                    border = BorderStroke(
+                        width = 1.dp,
+                        color = if (isUploadedAndSaved) {
+                            StatusOnlineGreen.copy(alpha = 0.42f)
+                        } else {
+                            HeroYellow.copy(alpha = 0.45f)
+                        }
+                    ),
+                    colors = CardDefaults.cardColors(containerColor = DarkSurface)
                 ) {
-                    if (pendingPreviewUri != null) {
-                        AsyncImage(
-                            model = pendingPreviewUri,
-                            contentDescription = "معاينة $title",
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier.fillMaxSize()
-                        )
-                    } else {
-                        StorageAsyncImage(
-                            pathOrUrl = savedStoragePath,
-                            contentDescription = title,
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier.fillMaxSize()
-                        )
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (hasPendingPreview) {
+                            AsyncImage(
+                                model = pendingPreviewUri,
+                                contentDescription = "معاينة $title",
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        } else {
+                            StorageAsyncImage(
+                                pathOrUrl = savedStoragePath,
+                                contentDescription = title,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                            Surface(
+                                modifier = Modifier
+                                    .align(Alignment.BottomStart)
+                                    .padding(10.dp),
+                                shape = RoundedCornerShape(50),
+                                color = DarkBackground.copy(alpha = 0.82f),
+                                border = BorderStroke(1.dp, StatusOnlineGreen.copy(alpha = 0.55f))
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Lock,
+                                        contentDescription = null,
+                                        tint = StatusOnlineGreen,
+                                        modifier = Modifier.size(13.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(5.dp))
+                                    Text(
+                                        text = "مستند موثق ومحمي",
+                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                        color = StatusOnlineGreen
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
                 Spacer(modifier = Modifier.height(12.dp))
             }
 
-            if (pendingPreviewUri != null) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Button(
-                        onClick = onConfirmUpload,
-                        enabled = !uploadState.isBusy,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = StatusOnlineGreen,
-                            contentColor = Color.White
-                        ),
-                        shape = RoundedCornerShape(12.dp),
+            when {
+                isUploadedAndSaved -> {
+                    // Document is permanently locked once saved: hide camera/replace buttons completely
+                    Surface(
                         modifier = Modifier
-                            .weight(1.4f)
-                            .height(48.dp)
-                            .testTag("${tagPrefix}_confirm_upload_button")
-                    ) {
-                        Icon(Icons.Default.CloudUpload, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("حفظ ورفع المستند", fontWeight = FontWeight.Bold)
-                    }
-
-                    OutlinedButton(
-                        onClick = onCancelPreview,
-                        enabled = !uploadState.isBusy,
+                            .fillMaxWidth()
+                            .testTag("${tagPrefix}_locked_banner"),
                         shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(48.dp)
-                            .testTag("${tagPrefix}_cancel_preview_button")
+                        color = StatusOnlineGreen.copy(alpha = 0.10f),
+                        border = BorderStroke(1.dp, StatusOnlineGreen.copy(alpha = 0.35f))
                     ) {
-                        Text("إلغاء", color = Color.LightGray)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Info,
+                                contentDescription = null,
+                                tint = StatusOnlineGreen,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "🔒 تم قفل المستند بعد الرفع. في حال وجود خطأ أو لتجديد البطاقة، يرجى التواصل مع الإدارة / الدعم الفني.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color.LightGray
+                            )
+                        }
                     }
                 }
-            } else {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    OutlinedButton(
-                        onClick = onPickCamera,
-                        enabled = !uploadState.isBusy,
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(48.dp)
-                            .testTag("${tagPrefix}_camera_button")
-                    ) {
-                        Icon(Icons.Default.CameraAlt, contentDescription = "تصوير", tint = HeroYellow, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = if (savedStoragePath.isBlank()) "تصوير" else "إعادة تصوير",
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
 
-                    OutlinedButton(
-                        onClick = onPickGallery,
-                        enabled = !uploadState.isBusy,
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(48.dp)
-                            .testTag("${tagPrefix}_gallery_button")
+                hasPendingPreview -> {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Icon(Icons.Default.PhotoLibrary, contentDescription = "المعرض", tint = HeroYellow, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = if (savedStoragePath.isBlank()) "من المعرض" else "استبدال",
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold
-                        )
+                        Button(
+                            onClick = { showFinalLockConfirmDialog = true },
+                            enabled = !uploadState.isBusy,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = StatusOnlineGreen,
+                                contentColor = Color.White
+                            ),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .weight(1.4f)
+                                .height(48.dp)
+                                .testTag("${tagPrefix}_confirm_upload_button")
+                        ) {
+                            Icon(Icons.Default.CloudUpload, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("حفظ ورفع المستند", fontWeight = FontWeight.Bold)
+                        }
+
+                        OutlinedButton(
+                            onClick = onCancelPreview,
+                            enabled = !uploadState.isBusy,
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(48.dp)
+                                .testTag("${tagPrefix}_cancel_preview_button")
+                        ) {
+                            Text("إلغاء", color = Color.LightGray)
+                        }
+                    }
+                }
+
+                else -> {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = onPickCamera,
+                            enabled = !uploadState.isBusy,
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(48.dp)
+                                .testTag("${tagPrefix}_camera_button")
+                        ) {
+                            Icon(Icons.Default.CameraAlt, contentDescription = "تصوير", tint = HeroYellow, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "تصوير",
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+
+                        OutlinedButton(
+                            onClick = onPickGallery,
+                            enabled = !uploadState.isBusy,
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(48.dp)
+                                .testTag("${tagPrefix}_gallery_button")
+                        ) {
+                            Icon(Icons.Default.PhotoLibrary, contentDescription = "المعرض", tint = HeroYellow, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "من المعرض",
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
                     }
                 }
             }
@@ -912,7 +1476,7 @@ private fun NationalIdSideCard(
                 Spacer(modifier = Modifier.height(10.dp))
                 UploadStatusBanner(
                     state = uploadState,
-                    onRetry = if (pendingPreviewUri != null) onConfirmUpload else null,
+                    onRetry = if (hasPendingPreview) onConfirmUpload else null,
                     tagPrefix = tagPrefix
                 )
             }

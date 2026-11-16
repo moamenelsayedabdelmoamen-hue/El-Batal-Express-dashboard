@@ -35,8 +35,22 @@ interface OrderDao {
     suspend fun upsertByFirestoreId(order: OrderEntity): Long {
         if (order.firestoreDocId.isNotBlank()) {
             val existing = findByFirestoreDocId(order.firestoreDocId)
-            if (existing != null && existing.id != order.id) {
-                return insertOrder(order.copy(id = existing.id))
+            if (existing != null) {
+                if (existing.status == OrderStatus.EXPIRED &&
+                    order.status == OrderStatus.PENDING &&
+                    (order.offerExpiresAt <= 0L || order.offerExpiresAt <= existing.offerExpiresAt)
+                ) {
+                    return existing.id
+                }
+                val mergedOrderCode = order.orderCode.ifBlank { existing.orderCode }
+                val mergedOfferExpiresAt = if (order.offerExpiresAt > 0L) order.offerExpiresAt else existing.offerExpiresAt
+                return insertOrder(
+                    order.copy(
+                        id = existing.id,
+                        orderCode = mergedOrderCode,
+                        offerExpiresAt = mergedOfferExpiresAt
+                    )
+                )
             }
         }
         return insertOrder(order)
@@ -47,6 +61,9 @@ interface OrderDao {
 
     @Query("UPDATE orders SET status = :status WHERE id = :orderId")
     suspend fun updateOrderStatus(orderId: Long, status: OrderStatus)
+
+    @Query("UPDATE orders SET status = :status, captainId = :captainId WHERE id = :orderId")
+    suspend fun updateOrderStatusAndCaptain(orderId: Long, status: OrderStatus, captainId: String)
 
     @Query("UPDATE orders SET status = :status, cancelledAt = :cancelledAt, cancellationReason = :reason WHERE id = :orderId")
     suspend fun markOrderCancelled(
@@ -86,8 +103,26 @@ interface OrderDao {
     @Query("UPDATE orders SET status = :status, captainId = :captainId, completedAt = :completedAt WHERE id = :orderId")
     suspend fun markOrderDelivered(orderId: Long, captainId: String, completedAt: Long, status: OrderStatus = OrderStatus.DELIVERED)
 
+    @Query(
+        "UPDATE orders SET storeLocationUrl = :locationUrl, " +
+            "merchantId = CASE WHEN :merchantId != '' THEN :merchantId ELSE merchantId END, " +
+            "restaurantLatitude = COALESCE(:lat, restaurantLatitude), " +
+            "restaurantLongitude = COALESCE(:lng, restaurantLongitude) " +
+            "WHERE id = :orderId"
+    )
+    suspend fun updateMerchantLocationInfo(
+        orderId: Long,
+        locationUrl: String,
+        merchantId: String = "",
+        lat: Double? = null,
+        lng: Double? = null
+    )
+
     @Query("DELETE FROM orders WHERE id = :orderId")
     suspend fun deleteOrderById(orderId: Long)
+
+    @Query("DELETE FROM orders WHERE status = 'PENDING'")
+    suspend fun deleteAllPendingOrders()
 
     @Query("DELETE FROM orders")
     suspend fun clearAll()

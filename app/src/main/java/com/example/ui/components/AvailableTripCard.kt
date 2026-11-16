@@ -65,11 +65,14 @@ fun AvailableTripCard(
     onAcceptOrder: (Long) -> Unit
 ) {
     val context = LocalContext.current
-    var isAcceptingThisOrder by remember { mutableStateOf(false) }
+    var isAcceptingThisOrder by remember(order.id) { mutableStateOf(false) }
 
-    LaunchedEffect(isLoading) {
-        if (!isLoading) {
-            isAcceptingThisOrder = false
+    LaunchedEffect(isAcceptingThisOrder, isLoading) {
+        if (!isLoading && isAcceptingThisOrder) {
+            kotlinx.coroutines.delay(350)
+            if (!isLoading) {
+                isAcceptingThisOrder = false
+            }
         }
     }
 
@@ -85,13 +88,16 @@ fun AvailableTripCard(
                 .fillMaxWidth()
                 .padding(18.dp)
         ) {
-            // Header Bar: Order Number & Delivery Fee
+            // Header Bar: Trip Label & Delivery Fee
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f)
+                ) {
                     Box(
                         modifier = Modifier
                             .size(10.dp)
@@ -100,11 +106,14 @@ fun AvailableTripCard(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "رحلة متاحة: #${order.cleanOrderNumber}",
+                        text = "رحلة متاحة",
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                        color = Color.White
+                        color = Color.White,
+                        maxLines = 1
                     )
                 }
+
+                Spacer(modifier = Modifier.width(8.dp))
 
                 Text(
                     text = "${order.deliveryFee.toInt()} ج.م",
@@ -112,7 +121,18 @@ fun AvailableTripCard(
                         fontWeight = FontWeight.Black,
                         fontSize = 20.sp
                     ),
-                    color = HeroYellow
+                    color = HeroYellow,
+                    maxLines = 1,
+                    softWrap = false
+                )
+            }
+
+            if (order.cleanOrderCode.isNotBlank()) {
+                Spacer(modifier = Modifier.height(10.dp))
+                OrderCodeBadge(
+                    orderCode = order.cleanOrderCode,
+                    modifier = Modifier.fillMaxWidth(),
+                    badgeTag = "available_order_code_badge"
                 )
             }
 

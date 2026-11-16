@@ -2,9 +2,11 @@ package com.example.ui.navigation
 
 import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import android.provider.Settings
 import android.widget.Toast
+import androidx.core.content.ContextCompat
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -165,12 +167,21 @@ fun AppNavigation(viewModel: CaptainViewModel) {
     val profileUploadState by viewModel.profileUploadState.collectAsStateWithLifecycle()
     val idFrontUploadState by viewModel.idFrontUploadState.collectAsStateWithLifecycle()
     val idBackUploadState by viewModel.idBackUploadState.collectAsStateWithLifecycle()
+    val licenseUploadState by viewModel.licenseUploadState.collectAsStateWithLifecycle()
     val receiptUploadState by viewModel.receiptUploadState.collectAsStateWithLifecycle()
     val orderActionError by viewModel.orderActionError.collectAsStateWithLifecycle()
+    val pendingNavigateTab by viewModel.pendingNavigateTab.collectAsStateWithLifecycle()
 
     var currentRoute by remember { mutableStateOf<String>(ScreenRoute.Splash.route) }
     var selectedBottomTab by remember { mutableIntStateOf(0) }
     var unverifiedEmail by remember { mutableStateOf("") }
+
+    LaunchedEffect(pendingNavigateTab) {
+        pendingNavigateTab?.let { targetTab ->
+            selectedBottomTab = targetTab
+            viewModel.consumePendingNavigateTab()
+        }
+    }
 
     val locationPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
@@ -181,6 +192,22 @@ fun AppNavigation(viewModel: CaptainViewModel) {
             viewModel.onLocationPermissionGranted()
         } else {
             viewModel.onLocationPermissionDenied()
+        }
+    }
+
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { _ -> }
+
+    LaunchedEffect(currentRoute) {
+        if (currentRoute == ScreenRoute.Main.route && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val granted = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!granted) {
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
         }
     }
 
@@ -229,7 +256,9 @@ fun AppNavigation(viewModel: CaptainViewModel) {
             SplashScreen(
                 isLoggedIn = captain?.isLoggedIn == true,
                 onNavigateNext = {
-                    currentRoute = if (captain?.isLoggedIn == true) ScreenRoute.Main.route else ScreenRoute.Login.route
+                    viewModel.validateSession { isValid ->
+                        currentRoute = if (isValid) ScreenRoute.Main.route else ScreenRoute.Login.route
+                    }
                 }
             )
         }
@@ -264,13 +293,14 @@ fun AppNavigation(viewModel: CaptainViewModel) {
             }
             SignUpScreen(
                 isLoading = isLoading,
-                onSignUpClick = { fullName, phone, email, pass, confirmPass, avatarUri, avatarIndex, vehicleType, nationalIdUri, idBackUri, licenseUri, onError ->
+                onSignUpClick = { fullName, phone, email, pass, confirmPass, address, avatarUri, avatarIndex, vehicleType, nationalIdUri, idBackUri, licenseUri, onError ->
                     viewModel.signUp(
                         fullName = fullName,
                         phone = phone,
                         email = email,
                         pass = pass,
                         confirmPass = confirmPass,
+                        address = address,
                         avatarUri = avatarUri,
                         avatarPresetIndex = avatarIndex,
                         vehicleType = vehicleType,
@@ -361,6 +391,7 @@ fun AppNavigation(viewModel: CaptainViewModel) {
                                 onAdvanceOrderStatus = { viewModel.advanceActiveOrderStatus(it) },
                                 onSimulateMerchantConfirm = null,
                                 onRefreshOrders = { viewModel.refreshOrders() },
+                                onRefreshMerchantLocation = { viewModel.refreshMerchantLocationForOrder(it) },
                                 shiftStatus = shiftStatus,
                                 shifts = shifts,
                                 currentCairoTime = currentCairoTime,
@@ -423,6 +454,7 @@ fun AppNavigation(viewModel: CaptainViewModel) {
                                 profileUploadState = profileUploadState,
                                 idFrontUploadState = idFrontUploadState,
                                 idBackUploadState = idBackUploadState,
+                                licenseUploadState = licenseUploadState,
                                 onUploadProfilePhoto = { uri, onDone ->
                                     viewModel.uploadCaptainProfilePhoto(uri, onDone)
                                 },
@@ -432,14 +464,22 @@ fun AppNavigation(viewModel: CaptainViewModel) {
                                 onUploadIdBack = { uri, onDone ->
                                     viewModel.uploadCaptainIdBack(uri, onDone)
                                 },
+                                onUploadLicensePhoto = { uri, onDone ->
+                                    viewModel.uploadCaptainLicensePhoto(uri, onDone)
+                                },
                                 onResetProfileUploadState = { viewModel.resetProfileUploadState() },
                                 onResetIdFrontUploadState = { viewModel.resetIdFrontUploadState() },
                                 onResetIdBackUploadState = { viewModel.resetIdBackUploadState() },
+                                onResetLicenseUploadState = { viewModel.resetLicenseUploadState() },
                                 onSaveProfile = { name, phone, email, vehicle, plate, avatarUri ->
                                     viewModel.updateProfileInfo(name, phone, email, vehicle, plate, avatarUri)
                                 },
+                                onSaveProfileDetails = { name, phone, email, address, vehicle, plate, avatarUri ->
+                                    viewModel.updateProfileInfo(name, phone, email, vehicle, plate, avatarUri, address)
+                                },
                                 onLogout = {
                                     viewModel.logout {
+                                        selectedBottomTab = 0
                                         currentRoute = ScreenRoute.Login.route
                                     }
                                 }

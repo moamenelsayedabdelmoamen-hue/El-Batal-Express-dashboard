@@ -21,6 +21,7 @@ enum class OrderStatus {
 data class OrderEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val orderNumber: String,
+    val orderCode: String = "",
     val customerName: String,
     val customerPhone: String,
     val storeName: String,
@@ -28,6 +29,8 @@ data class OrderEntity(
     val storeImage: String = "",
     val pickupAddress: String,
     val deliveryAddress: String,
+    val merchantId: String = "",
+    val storeLocationUrl: String = "",
     val restaurantLatitude: Double? = null,
     val restaurantLongitude: Double? = null,
     val itemsSummary: String,
@@ -63,4 +66,10 @@ data class OrderEntity(
 
     val cleanOrderNumber: String
         get() = orderNumber.trim().trimStart('#').trim()
+
+    val cleanOrderCode: String
+        get() = orderCode.trim().trimStart('#').trim()
+
+    val effectiveStoreLocationUrl: String
+        get() = storeLocationUrl.trim()
 }

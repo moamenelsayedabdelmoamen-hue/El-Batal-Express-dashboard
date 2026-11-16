@@ -29,6 +29,7 @@ import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.DriveEta
 import androidx.compose.material.icons.filled.Email
+import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MarkEmailRead
 import androidx.compose.material.icons.filled.Person
@@ -90,6 +91,7 @@ fun SignUpScreen(
         email: String,
         pass: String,
         confirmPass: String,
+        address: String,
         avatarUri: String,
         avatarPresetIndex: Int,
         vehicleType: String,
@@ -103,6 +105,7 @@ fun SignUpScreen(
     var fullName by remember { mutableStateOf("") }
     var phone by remember { mutableStateOf("") }
     var email by remember { mutableStateOf("") }
+    var address by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var confirmPassword by remember { mutableStateOf("") }
     var isPasswordVisible by remember { mutableStateOf(false) }
@@ -284,7 +287,7 @@ fun SignUpScreen(
 
                     Text(
                         text = if (avatarUri.isNotBlank()) {
-                            "✓ معاينة الصورة الشخصية جاهزة للرفع إلى Firebase Storage (اضغط للتغيير)"
+                            "✓ معاينة الصورة الشخصية جاهزة للحفظ والتوثيق (اضغط للتغيير)"
                         } else {
                             "اضغط لالتقاط صورتك بالكاميرا أو اختيارها من المعرض 📷"
                         },
@@ -400,6 +403,37 @@ fun SignUpScreen(
                         ),
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier.fillMaxWidth()
+                    )
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Text(
+                        text = "العنوان *",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    OutlinedTextField(
+                        value = address,
+                        onValueChange = {
+                            address = it
+                            errorMessage = null
+                        },
+                        placeholder = { Text("مثال: القاهرة - مدينة نصر", color = Color.Gray) },
+                        leadingIcon = {
+                            Icon(Icons.Default.LocationOn, contentDescription = null, tint = HeroYellow)
+                        },
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = ExpressRed,
+                            unfocusedBorderColor = DarkSurfaceVariant,
+                            focusedContainerColor = DarkSurfaceVariant,
+                            unfocusedContainerColor = DarkSurfaceVariant
+                        ),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("signup_address_input")
                     )
 
                     Spacer(modifier = Modifier.height(16.dp))
@@ -598,6 +632,7 @@ fun SignUpScreen(
                             val trimmedName = fullName.trim()
                             val trimmedPhone = phone.trim()
                             val trimmedEmail = email.trim()
+                            val trimmedAddress = address.trim()
 
                             if (trimmedName.isBlank()) {
                                 errorMessage = "يرجى إدخال اسم الكابتن الكامل"
@@ -613,6 +648,10 @@ fun SignUpScreen(
                             }
                             if (!android.util.Patterns.EMAIL_ADDRESS.matcher(trimmedEmail).matches()) {
                                 errorMessage = "صيغة البريد الإلكتروني غير صحيحة (مثال: name@example.com)"
+                                return@Button
+                            }
+                            if (trimmedAddress.isBlank()) {
+                                errorMessage = "يرجى إدخال العنوان"
                                 return@Button
                             }
                             if (password.length < 6) {
@@ -636,6 +675,7 @@ fun SignUpScreen(
                                 trimmedEmail,
                                 password,
                                 confirmPassword,
+                                trimmedAddress,
                                 avatarUri,
                                 selectedAvatarIndex,
                                 selectedVehicle,

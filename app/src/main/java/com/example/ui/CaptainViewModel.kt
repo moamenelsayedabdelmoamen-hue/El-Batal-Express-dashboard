@@ -24,6 +24,8 @@ import com.example.data.location.GpsStatus
 import com.example.data.storage.ImageUploadState
 import android.util.Log
 import com.example.data.extractAllShifts
+import com.example.notifications.CaptainNotificationManager
+import com.example.notifications.ShiftNotificationScheduler
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
@@ -36,6 +38,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -104,19 +107,26 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
     val activeOrder: StateFlow<OrderEntity?> = repository.activeOrderFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
-    // Orders filtered by shift working hours: captain receives available orders ONLY during active shift
+    // Orders filtered by BOTH captain online status AND active working shift:
+    // if captain is offline or outside shift hours, zero pending/offered orders are shown or assigned.
     val availableOrders: StateFlow<List<OrderEntity>> = combine(
         repository.availableOrdersFlow,
+        captainState,
         _shiftStatus
-    ) { orders, status ->
-        if (status.isAvailableForOrders) orders else emptyList()
+    ) { orders, captain, status ->
+        val isOnline = captain?.isOnline == true
+        val isAccountActive = captain?.status?.trim()?.lowercase() !in listOf("banned", "suspended", "disabled", "blocked", "pending", "inactive")
+        if (isOnline && isAccountActive && status.isAvailableForOrders) orders else emptyList()
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val pendingIncomingOrder: StateFlow<OrderEntity?> = combine(
         repository.pendingOrderFlow,
+        captainState,
         _shiftStatus
-    ) { order, status ->
-        if (status.isAvailableForOrders) order else null
+    ) { order, captain, status ->
+        val isOnline = captain?.isOnline == true
+        val isAccountActive = captain?.status?.trim()?.lowercase() !in listOf("banned", "suspended", "disabled", "blocked", "pending", "inactive")
+        if (isOnline && isAccountActive && status.isAvailableForOrders) order else null
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
     val allOrders: StateFlow<List<OrderEntity>> = repository.allOrdersFlow
@@ -335,23 +345,70 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
     private val _idBackUploadState = MutableStateFlow<ImageUploadState>(ImageUploadState.Idle)
     val idBackUploadState: StateFlow<ImageUploadState> = _idBackUploadState.asStateFlow()
 
+    private val _licenseUploadState = MutableStateFlow<ImageUploadState>(ImageUploadState.Idle)
+    val licenseUploadState: StateFlow<ImageUploadState> = _licenseUploadState.asStateFlow()
+
     private val _receiptUploadState = MutableStateFlow<ImageUploadState>(ImageUploadState.Idle)
     val receiptUploadState: StateFlow<ImageUploadState> = _receiptUploadState.asStateFlow()
 
     private val _orderActionError = MutableStateFlow<OrderActionError?>(null)
     val orderActionError: StateFlow<OrderActionError?> = _orderActionError.asStateFlow()
 
+    private val _pendingNavigateTab = MutableStateFlow<Int?>(null)
+    val pendingNavigateTab: StateFlow<Int?> = _pendingNavigateTab.asStateFlow()
+
+    private val expiredOfferNotifiedIds = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+
+    fun consumePendingNavigateTab() {
+        _pendingNavigateTab.value = null
+    }
+
     fun dismissOrderActionError() {
         _orderActionError.value = null
     }
 
     init {
-        // Dynamic live ticker updating Cairo clock, shift status, and 1:00 PM wallet rollover every second
+        val appContext = getApplication<Application>()
+        CaptainNotificationManager.ensureNotificationChannels(appContext)
+
+        // Dynamic live ticker updating Cairo clock, shift status transitions, and 1:00 PM wallet rollover every second
         viewModelScope.launch {
+            var previousLoadedShiftStatus: ShiftStatus? = null
             while (true) {
                 _currentCairoTime.value = ShiftManager.getCurrentCairoTimeFormatted()
                 _currentCairoDate.value = ShiftManager.getCurrentCairoDateFormatted()
-                _shiftStatus.value = ShiftManager.calculateShiftStatus(shifts.value)
+                val currentShiftsList = shifts.value
+                val latestShiftStatus = ShiftManager.calculateShiftStatus(currentShiftsList)
+                _shiftStatus.value = latestShiftStatus
+
+                if (currentShiftsList.isNotEmpty() && captainState.value?.isLoggedIn == true) {
+                    val prev = previousLoadedShiftStatus
+                    if (prev != null) {
+                        if (prev !is ShiftStatus.Active && latestShiftStatus is ShiftStatus.Active) {
+                            CaptainNotificationManager.showShiftStartNotification(
+                                context = appContext,
+                                dayNameArabic = latestShiftStatus.shift.dayNameArabic,
+                                startFormatted = latestShiftStatus.startFormatted,
+                                endFormatted = latestShiftStatus.endFormatted,
+                                dedupeKey = ShiftNotificationScheduler.buildTodayDedupeKey(latestShiftStatus.shift, isStart = true)
+                            )
+                            _eventFlow.emit(
+                                UiEvent.ShowToast("بدأ شفت عملك الآن (${latestShiftStatus.startFormatted} - ${latestShiftStatus.endFormatted})")
+                            )
+                        } else if (prev is ShiftStatus.Active && latestShiftStatus !is ShiftStatus.Active) {
+                            CaptainNotificationManager.showShiftEndNotification(
+                                context = appContext,
+                                dayNameArabic = prev.shift.dayNameArabic,
+                                endFormatted = prev.endFormatted,
+                                dedupeKey = ShiftNotificationScheduler.buildTodayDedupeKey(prev.shift, isStart = false)
+                            )
+                            _eventFlow.emit(
+                                UiEvent.ShowToast("انتهى شفت عملك اليوم (${prev.endFormatted}). تم إيقاف استقبال الطلبات.")
+                            )
+                        }
+                    }
+                    previousLoadedShiftStatus = latestShiftStatus
+                }
 
                 val latestCalendarToday = OrderHistoryHelper.getTodayDateKey()
                 if (latestCalendarToday != _todayCalendarDateKey.value) {
@@ -373,13 +430,100 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
                 delay(1000L)
             }
         }
-        // Auto-sync shifts & historical captain orders on launch/initialization
+        // Auto-sync shifts, historical orders & FCM token on launch/initialization only for verified users
         viewModelScope.launch {
-            repository.syncShiftsFromFirestore()
             repository.reconcileDailyWallets()
-            if (auth.currentUser != null) {
+            if (auth.currentUser?.isEmailVerified == true) {
+                repository.syncShiftsFromFirestore()
+                repository.syncFcmToken()
                 repository.syncCaptainOrdersHistoryFromFirestore()
             }
+        }
+        // Keep persistent AlarmManager shift start/end notifications synced with latest schedule
+        viewModelScope.launch {
+            combine(captainState, shifts) { captain, shiftList ->
+                Triple(captain?.uid.orEmpty().ifBlank { auth.currentUser?.uid.orEmpty() }, captain?.isLoggedIn == true, shiftList)
+            }
+                .distinctUntilChanged()
+                .collect { (uid, isLoggedIn, shiftList) ->
+                    if (isLoggedIn && uid.isNotBlank() && shiftList.isNotEmpty()) {
+                        ShiftNotificationScheduler.scheduleShiftNotifications(appContext, shiftList, uid)
+                    } else if (!isLoggedIn) {
+                        ShiftNotificationScheduler.cancelAllShiftAlarms(appContext)
+                    }
+                }
+        }
+        // Notify captain immediately with continuous bell + 60s countdown when a new eligible order arrives
+        viewModelScope.launch {
+            combine(availableOrders, pendingIncomingOrder, captainState, _shiftStatus) { avail, incoming, captain, status ->
+                val canNotify = captain?.isLoggedIn == true &&
+                    captain.isOnline &&
+                    status.isAvailableForOrders
+                if (canNotify) {
+                    (avail + listOfNotNull(incoming)).distinctBy { it.id }
+                } else {
+                    emptyList()
+                }
+            }.collect { eligiblePendingOrders ->
+                if (eligiblePendingOrders.isEmpty()) {
+                    CaptainNotificationManager.stopIncomingOrderBell(appContext)
+                } else {
+                    for (order in eligiblePendingOrders) {
+                        val orderKey = order.firestoreDocId.ifBlank { order.id.toString() }
+                        CaptainNotificationManager.showNewOrderNotification(
+                            context = appContext,
+                            orderKey = orderKey,
+                            storeName = order.storeName,
+                            pickupAddress = order.pickupAddress,
+                            deliveryAddress = order.deliveryAddress,
+                            deliveryFee = order.deliveryFee,
+                            orderCode = order.cleanOrderCode,
+                            orderId = order.id,
+                            offerExpiresAtMs = order.offerExpiresAt,
+                            distanceKm = order.distanceKm,
+                            startContinuousBell = true
+                        )
+                    }
+                }
+            }
+        }
+        // Watchdog: enforce 60-second expiry + transfer to nearest captain even if alert dialog isn't mounted
+        viewModelScope.launch {
+            while (true) {
+                val incoming = pendingIncomingOrder.value
+                if (incoming != null && incoming.status == OrderStatus.PENDING && incoming.offerExpiresAt > 0L) {
+                    val now = System.currentTimeMillis()
+                    if (now >= incoming.offerExpiresAt) {
+                        val key = incoming.firestoreDocId.ifBlank { incoming.id.toString() }
+                        CaptainNotificationManager.stopIncomingOrderBell(appContext, key)
+                        expireIncomingOrder(incoming.id)
+                    }
+                }
+                delay(1000L)
+            }
+        }
+        // Auto-clear lingering pending order offers whenever captain becomes offline or exits shift hours,
+        // and re-sync orders when becoming online inside an active shift.
+        viewModelScope.launch {
+            combine(captainState, _shiftStatus, shifts) { captain, status, shiftList ->
+                if (captain == null) {
+                    null
+                } else {
+                    val online = captain.isOnline
+                    val accountActive = captain.status.trim().lowercase() !in listOf("banned", "suspended", "disabled", "blocked", "pending", "inactive")
+                    val shiftAllows = if (shiftList.isNotEmpty()) status.isAvailableForOrders else false
+                    online && accountActive && shiftAllows
+                }
+            }
+                .distinctUntilChanged()
+                .collect { isEligible ->
+                    if (isEligible == false) {
+                        CaptainNotificationManager.stopIncomingOrderBell(appContext)
+                        repository.clearPendingOrdersLocally()
+                    } else if (isEligible == true && auth.currentUser?.isEmailVerified == true) {
+                        repository.syncOrdersDetailedFromFirestore()
+                    }
+                }
         }
         // Set up real-time SnapshotListener on Firestore for captain shifts
         setupRealtimeShiftListener()
@@ -395,7 +539,7 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
         _selectedHistoryDateKey.value = today
         _selectedHistoryTab.value = OrderHistoryTab.ALL
         _historySyncError.value = null
-        if (auth.currentUser != null) {
+        if (auth.currentUser?.isEmailVerified == true) {
             syncOrdersHistory(silentSuccess = true)
         }
     }
@@ -412,7 +556,7 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
         val clamped = OrderHistoryHelper.clampToMaxToday(dateKey, today)
         _selectedHistoryDateKey.value = clamped
         _historySyncError.value = null
-        if (auth.currentUser != null) {
+        if (auth.currentUser?.isEmailVerified == true) {
             syncOrdersHistory(silentSuccess = true)
         }
     }
@@ -422,7 +566,7 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
         _todayCalendarDateKey.value = today
         _selectedHistoryDateKey.value = today
         _historySyncError.value = null
-        if (auth.currentUser != null) {
+        if (auth.currentUser?.isEmailVerified == true) {
             syncOrdersHistory(silentSuccess = true)
         }
     }
@@ -493,14 +637,22 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
             CaptainLocationTracker.startService(app)
             viewModelScope.launch {
                 repository.setOnlineStatus(true)
-                _eventFlow.emit(UiEvent.ShowToast("أنت الآن متصل ومتاح لاستقبال الرحلات عبر الـ GPS ⚡"))
+                if (_shiftStatus.value.isAvailableForOrders) {
+                    if (auth.currentUser?.isEmailVerified == true) {
+                        repository.syncOrdersDetailedFromFirestore()
+                    }
+                    _eventFlow.emit(UiEvent.ShowToast("أنت الآن متصل ومتاح لاستقبال الرحلات عبر الـ GPS ⚡"))
+                } else {
+                    _eventFlow.emit(UiEvent.ShowToast("تم تفعيل الاتصال، لكن استقبال الطلبات متوقف حالياً لأنك خارج ساعات الشفت"))
+                }
             }
         } else {
-            // Stop GPS Tracking Service
+            // Stop GPS Tracking Service & incoming order bell immediately
+            CaptainNotificationManager.stopIncomingOrderBell(app)
             CaptainLocationTracker.stopService(app)
             viewModelScope.launch {
                 repository.setOnlineStatus(false)
-                _eventFlow.emit(UiEvent.ShowToast("أنت الآن غير متصل. تم إيقاف بث وتتبع الموقع."))
+                _eventFlow.emit(UiEvent.ShowToast("أنت الآن غير متصل. تم إيقاف استقبال الطلبات وتتبع الموقع."))
             }
         }
     }
@@ -516,7 +668,14 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
             CaptainLocationTracker.startService(app)
             viewModelScope.launch {
                 repository.setOnlineStatus(true)
-                _eventFlow.emit(UiEvent.ShowToast("تم تفعيل الـ GPS والاتصال بنجاح! ⚡"))
+                if (_shiftStatus.value.isAvailableForOrders) {
+                    if (auth.currentUser?.isEmailVerified == true) {
+                        repository.syncOrdersDetailedFromFirestore()
+                    }
+                    _eventFlow.emit(UiEvent.ShowToast("تم تفعيل الـ GPS والاتصال بنجاح! ⚡"))
+                } else {
+                    _eventFlow.emit(UiEvent.ShowToast("تم تفعيل الاتصال، لكن لا يتم إسناد طلبات خارج ساعات الشفت"))
+                }
             }
         }
     }
@@ -543,6 +702,7 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
             try {
                 when (val outcome = repository.login(phoneOrEmail, pass)) {
                     is LoginOutcome.Success -> {
+                        repository.syncFcmToken()
                         _eventFlow.emit(UiEvent.ShowToast("أهلاً بك يا كابتن! تم تسجيل الدخول بنجاح"))
                         onSuccess()
                     }
@@ -595,6 +755,7 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
         email: String,
         pass: String,
         confirmPass: String = "",
+        address: String = "",
         avatarUri: String = "",
         avatarPresetIndex: Int = 0,
         vehicleType: String = "سكوتر / دراجة نارية",
@@ -641,6 +802,7 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
                     phone = phone,
                     email = email,
                     pass = pass,
+                    address = address,
                     avatarPresetIndex = avatarPresetIndex,
                     avatarUri = avatarUri,
                     vehicleType = vehicleType,
@@ -717,13 +879,52 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    fun handleNotificationIntent(intent: android.content.Intent?) {
+        if (intent == null) return
+        val navTarget = intent.getStringExtra(CaptainNotificationManager.EXTRA_NAVIGATE_TARGET).orEmpty()
+        val acceptOrderId = intent.getLongExtra(CaptainNotificationManager.EXTRA_ACCEPT_ORDER_ID, 0L)
+        val orderKey = intent.getStringExtra(CaptainNotificationManager.EXTRA_ORDER_KEY).orEmpty()
+
+        if (orderKey.isNotBlank() || acceptOrderId > 0L) {
+            CaptainNotificationManager.stopIncomingOrderBell(getApplication(), orderKey)
+        }
+
+        when (navTarget) {
+            CaptainNotificationManager.TARGET_SHIFTS -> _pendingNavigateTab.value = 2
+            CaptainNotificationManager.TARGET_DASHBOARD -> _pendingNavigateTab.value = 0
+        }
+
+        if (acceptOrderId > 0L || (orderKey.isNotBlank() && intent.hasExtra(CaptainNotificationManager.EXTRA_ACCEPT_ORDER_ID))) {
+            viewModelScope.launch {
+                // Allow Room/shifts initial emissions up to ~2.5s on cold start from notification action
+                var attempts = 0
+                while ((captainState.value == null || (!_shiftStatus.value.isAvailableForOrders && shifts.value.isEmpty())) && attempts < 25) {
+                    delay(100L)
+                    attempts++
+                }
+                val resolvedId = if (acceptOrderId > 0L) {
+                    acceptOrderId
+                } else {
+                    allOrders.value.firstOrNull {
+                        orderKey.isNotBlank() && (it.firestoreDocId == orderKey || it.cleanOrderNumber == orderKey)
+                    }?.id ?: 0L
+                }
+                if (resolvedId > 0L) {
+                    acceptIncomingOrder(resolvedId)
+                }
+            }
+        }
+    }
+
     fun logout(onLoggedOut: () -> Unit) {
         val app = getApplication<Application>()
+        CaptainNotificationManager.stopIncomingOrderBell(app)
         CaptainLocationTracker.stopService(app)
         viewModelScope.launch {
             _profileUploadState.value = ImageUploadState.Idle
             _idFrontUploadState.value = ImageUploadState.Idle
             _idBackUploadState.value = ImageUploadState.Idle
+            _licenseUploadState.value = ImageUploadState.Idle
             _receiptUploadState.value = ImageUploadState.Idle
             _orderActionError.value = null
             repository.logout()
@@ -732,6 +933,15 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun acceptIncomingOrder(orderId: Long, onResult: (Boolean, String) -> Unit = { _, _ -> }) {
+        CaptainNotificationManager.stopIncomingOrderBell(getApplication())
+        if (captainState.value?.isOnline != true) {
+            val offlineMsg = "لا يمكنك قبول أو استلام طلبات وأنت في وضع غير متصل."
+            viewModelScope.launch {
+                _eventFlow.emit(UiEvent.ShowToast(offlineMsg))
+            }
+            onResult(false, offlineMsg)
+            return
+        }
         if (!_shiftStatus.value.isAvailableForOrders) {
             viewModelScope.launch {
                 _eventFlow.emit(UiEvent.ShowToast("عفواً، أنت خارج ساعات العمل الرسمية ولا يمكنك قبول طلبات جديدة حالياً."))
@@ -753,11 +963,29 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
                 val err = res.exceptionOrNull()
                 val cfEx = err as? com.example.data.remote.CloudFunctionException
                 val errorMsg = err?.localizedMessage ?: "تعذر الاتصال بالخادم لقبول الطلب. يرجى إعادة المحاولة."
+                val isEndpointMissing = cfEx?.isEndpointNotFound == true
+                val isOrderGone = !isEndpointMissing && (cfEx?.isNotFound == true)
                 _orderActionError.value = OrderActionError(
                     message = errorMsg,
-                    actionLabel = "إعادة محاولة قبول الطلب",
-                    isRetryable = cfEx?.isRetryable ?: true,
-                    onRetry = { acceptIncomingOrder(orderId, onResult) }
+                    actionLabel = if (isOrderGone) "تحديث الطلبات" else "إعادة محاولة قبول الطلب",
+                    isRetryable = if (isOrderGone) false else (cfEx?.isRetryable ?: true),
+                    isNotFound = isOrderGone,
+                    onRetry = {
+                        if (isOrderGone) {
+                            removeStaleOrder(orderId)
+                            refreshOrders()
+                        } else {
+                            acceptIncomingOrder(orderId, onResult)
+                        }
+                    },
+                    onDismissOrClear = {
+                        if (isOrderGone) {
+                            removeStaleOrder(orderId)
+                            refreshOrders()
+                        } else {
+                            dismissOrderActionError()
+                        }
+                    }
                 )
                 _eventFlow.emit(UiEvent.ShowToast(errorMsg))
                 onResult(false, errorMsg)
@@ -783,6 +1011,14 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    fun refreshMerchantLocationForOrder(order: OrderEntity) {
+        viewModelScope.launch {
+            runCatching {
+                repository.resolveMerchantLocationForOrder(order, forceRefresh = true)
+            }
+        }
+    }
+
     fun removeStaleOrder(orderId: Long) {
         viewModelScope.launch {
             repository.removeStaleOrder(orderId)
@@ -803,10 +1039,12 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
                 val err = res.exceptionOrNull()
                 val cfEx = err as? com.example.data.remote.CloudFunctionException
                 val errorMsg = err?.message ?: "تعذر الاتصال بالخادم لتسجيل الوصول للتاجر."
-                val isNotFound = cfEx?.isNotFound == true ||
-                    cfEx?.httpCode in listOf(404, 410) ||
-                    errorMsg.contains("الطلب غير موجود") ||
-                    errorMsg.contains("لم يعد متاحاً")
+                val isEndpointMissing = cfEx?.isEndpointNotFound == true
+                val isNotFound = !isEndpointMissing && (
+                    cfEx?.isNotFound == true ||
+                        errorMsg.contains("الطلب غير موجود") ||
+                        errorMsg.contains("لم يعد متاحاً")
+                    )
 
                 _orderActionError.value = OrderActionError(
                     message = if (isNotFound) "الطلب غير موجود أو لم يعد متاحاً على الخادم." else errorMsg,
@@ -841,10 +1079,12 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
                 val err = res.exceptionOrNull()
                 val cfEx = err as? com.example.data.remote.CloudFunctionException
                 val errorMsg = err?.message ?: "تعذر الاتصال بالخادم لتأكيد استلام الطلب."
-                val isNotFound = cfEx?.isNotFound == true ||
-                    cfEx?.httpCode in listOf(404, 410) ||
-                    errorMsg.contains("الطلب غير موجود") ||
-                    errorMsg.contains("لم يعد متاحاً")
+                val isEndpointMissing = cfEx?.isEndpointNotFound == true
+                val isNotFound = !isEndpointMissing && (
+                    cfEx?.isNotFound == true ||
+                        errorMsg.contains("الطلب غير موجود") ||
+                        errorMsg.contains("لم يعد متاحاً")
+                    )
 
                 _orderActionError.value = OrderActionError(
                     message = if (isNotFound) "الطلب غير موجود أو لم يعد متاحاً على الخادم." else errorMsg,
@@ -923,11 +1163,21 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun expireIncomingOrder(orderId: Long) {
+        val currentOrder = allOrders.value.firstOrNull { it.id == orderId }
+        val dedupeKey = "${orderId}_${currentOrder?.offerExpiresAt ?: 0L}"
+        if (!expiredOfferNotifiedIds.add(dedupeKey)) {
+            return
+        }
+        CaptainNotificationManager.stopIncomingOrderBell(
+            getApplication(),
+            currentOrder?.firestoreDocId.orEmpty()
+        )
         viewModelScope.launch {
             val res = repository.expireDeliveryOffer(orderId)
             if (res.isSuccess) {
-                _eventFlow.emit(UiEvent.ShowToast("انتهت مهلة قبول الطلب وتم تحويله إلى كابتن آخر"))
+                _eventFlow.emit(UiEvent.ShowToast("انتهت مهلة قبول الطلب وتم تحويله إلى أقرب كابتن للتاجر"))
             } else {
+                expiredOfferNotifiedIds.remove(dedupeKey)
                 val errMsg = res.exceptionOrNull()?.localizedMessage ?: "تعذر إبلاغ الخادم بانتهاء مهلة العرض"
                 _orderActionError.value = OrderActionError(
                     message = errMsg,
@@ -941,6 +1191,7 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun declineIncomingOrder(orderId: Long) {
+        CaptainNotificationManager.stopIncomingOrderBell(getApplication())
         viewModelScope.launch {
             _orderActionError.value = null
             val res = repository.declineOrder(orderId)
@@ -980,10 +1231,12 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
                         val err = res.exceptionOrNull()
                         val cfEx = err as? com.example.data.remote.CloudFunctionException
                         val errorMsg = err?.message ?: "تعذر الاتصال بالخادم لتأكيد تسليم الطلب."
-                        val isNotFound = cfEx?.isNotFound == true ||
-                            cfEx?.httpCode in listOf(404, 410) ||
-                            errorMsg.contains("الطلب غير موجود") ||
-                            errorMsg.contains("لم يعد متاحاً")
+                        val isEndpointMissing = cfEx?.isEndpointNotFound == true
+                        val isNotFound = !isEndpointMissing && (
+                            cfEx?.isNotFound == true ||
+                                errorMsg.contains("الطلب غير موجود") ||
+                                errorMsg.contains("لم يعد متاحاً")
+                            )
 
                         _orderActionError.value = OrderActionError(
                             message = if (isNotFound) "الطلب غير موجود أو لم يعد متاحاً على الخادم." else errorMsg,
@@ -1012,11 +1265,21 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
     fun refreshOrders(onResult: (Boolean, String) -> Unit = { _, _ -> }) {
         viewModelScope.launch {
             _isLoading.value = true
-            val res = repository.syncOrdersFromFirestore()
+            val res = repository.syncOrdersDetailedFromFirestore()
             _isLoading.value = false
             if (res.isSuccess) {
-                val count = res.getOrDefault(0)
-                val msg = if (count > 0) "تم تحديث وجلب $count طلب جديد بنجاح" else "تم التحديث: لا توجد طلبات جديدة متاحة حالياً"
+                val summary = res.getOrNull()
+                val pending = summary?.pendingCount ?: 0
+                val active = summary?.activeCount ?: 0
+                val isOnline = captainState.value?.isOnline == true
+                val isInShift = _shiftStatus.value.isAvailableForOrders
+                val msg = when {
+                    !isOnline -> "تم التحديث: أنت في وضع غير متصل ولا يتم إسناد طلبات جديدة لك حالياً"
+                    !isInShift -> "تم التحديث: أنت خارج ساعات الشفت ولا يتم إسناد طلبات جديدة حالياً"
+                    pending > 0 -> "تم تحديث وجلب $pending طلب جديد متاح للاستلام"
+                    active > 0 -> "تم التحديث: لديك طلب نشط قيد التنفيذ (لا توجد رحلات جديدة)"
+                    else -> "تم التحديث: لا توجد طلبات جديدة متاحة حالياً"
+                }
                 _eventFlow.emit(UiEvent.ShowToast(msg))
                 onResult(true, msg)
             } else {
@@ -1027,13 +1290,21 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun updateProfileInfo(fullName: String, phoneNumber: String, email: String, vehicleType: String, licensePlate: String, avatarUri: String = "") {
+    fun updateProfileInfo(
+        fullName: String,
+        phoneNumber: String,
+        email: String,
+        vehicleType: String,
+        licensePlate: String,
+        avatarUri: String = "",
+        address: String? = null
+    ) {
         viewModelScope.launch {
             _isLoading.value = true
-            val res = repository.updateProfile(fullName, phoneNumber, email, vehicleType, licensePlate, avatarUri)
+            val res = repository.updateProfile(fullName, phoneNumber, email, vehicleType, licensePlate, avatarUri, address)
             _isLoading.value = false
             if (res.isSuccess) {
-                _eventFlow.emit(UiEvent.ShowToast("تم تحديث بيانات الكابتن ورقم الهاتف بنجاح"))
+                _eventFlow.emit(UiEvent.ShowToast("تم تحديث بيانات الكابتن بنجاح"))
             } else {
                 val err = res.exceptionOrNull()?.localizedMessage ?: "فشل تحديث البيانات"
                 _eventFlow.emit(UiEvent.ShowToast(err))
@@ -1047,7 +1318,7 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
                 _profileUploadState.value = state
             }
             if (res.isSuccess) {
-                _eventFlow.emit(UiEvent.ShowToast("تم رفع وحفظ الصورة الشخصية في Firebase Storage بنجاح ✓"))
+                _eventFlow.emit(UiEvent.ShowToast("تم حفظ الصورة الشخصية بنجاح ✓"))
                 onCompleted()
             } else {
                 val err = res.exceptionOrNull()?.localizedMessage ?: "تعذر رفع الصورة الشخصية"
@@ -1062,7 +1333,7 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
                 _idFrontUploadState.value = state
             }
             if (res.isSuccess) {
-                _eventFlow.emit(UiEvent.ShowToast("تم رفع وحفظ الوجه الأمامي للبطاقة الشخصية بنجاح ✓"))
+                _eventFlow.emit(UiEvent.ShowToast("تم الحفظ والتوثيق بنجاح للوجه الأمامي 🔒"))
                 onCompleted()
             } else {
                 val err = res.exceptionOrNull()?.localizedMessage ?: "تعذر رفع الوجه الأمامي للبطاقة"
@@ -1077,7 +1348,7 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
                 _idBackUploadState.value = state
             }
             if (res.isSuccess) {
-                _eventFlow.emit(UiEvent.ShowToast("تم رفع وحفظ الوجه الخلفي للبطاقة الشخصية بنجاح ✓"))
+                _eventFlow.emit(UiEvent.ShowToast("تم الحفظ والتوثيق بنجاح للوجه الخلفي 🔒"))
                 onCompleted()
             } else {
                 val err = res.exceptionOrNull()?.localizedMessage ?: "تعذر رفع الوجه الخلفي للبطاقة"
@@ -1098,16 +1369,37 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
         _idBackUploadState.value = ImageUploadState.Idle
     }
 
+    fun uploadCaptainLicensePhoto(uri: Uri, onCompleted: () -> Unit = {}) {
+        viewModelScope.launch {
+            val res = repository.uploadAndSaveLicensePhoto(uri) { state ->
+                _licenseUploadState.value = state
+            }
+            if (res.isSuccess) {
+                _eventFlow.emit(UiEvent.ShowToast("تم حفظ صورة الرخصة بنجاح ✓"))
+                onCompleted()
+            } else {
+                val err = res.exceptionOrNull()?.localizedMessage ?: "تعذر رفع صورة الرخصة"
+                _eventFlow.emit(UiEvent.ShowToast(err))
+            }
+        }
+    }
+
+    fun resetLicenseUploadState() {
+        _licenseUploadState.value = ImageUploadState.Idle
+    }
+
     fun setupRealtimeShiftListener() {
         val user = auth.currentUser
-        if (user != null) {
+        if (user != null && user.isEmailVerified) {
             attachShiftSnapshotListeners(user.uid)
+        } else {
+            detachShiftSnapshotListeners()
         }
         if (authStateListener == null) {
             authStateListener = FirebaseAuth.AuthStateListener { firebaseAuth ->
-                val uid = firebaseAuth.currentUser?.uid
-                if (uid != null) {
-                    attachShiftSnapshotListeners(uid)
+                val current = firebaseAuth.currentUser
+                if (current != null && current.isEmailVerified) {
+                    attachShiftSnapshotListeners(current.uid)
                 } else {
                     detachShiftSnapshotListeners()
                 }

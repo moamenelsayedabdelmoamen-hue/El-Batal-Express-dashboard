@@ -19,21 +19,27 @@ import androidx.compose.ui.test.assertIsNotSelected
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.AppDatabase
+import com.example.data.CaptainEntity
 import com.example.data.OrderEntity
 import com.example.data.OrderHistoryHelper
 import com.example.data.OrderHistoryTab
 import com.example.data.OrderStatus
+import com.example.data.ShiftEntity
 import com.example.data.ShiftStatus
 import com.example.data.location.CaptainLocationService
 import com.example.data.location.GpsConfig
+import com.example.ui.components.ActiveOrderCard
+import com.example.ui.components.AvailableTripCard
 import com.example.ui.navigation.CaptainBottomNavigationBar
 import com.example.ui.navigation.bottomNavItems
+import com.example.ui.screens.DashboardScreen
 import com.example.ui.screens.OrdersScreen
 import com.example.ui.screens.ShiftsScreen
 import com.example.ui.theme.ElBatalTheme
@@ -75,6 +81,7 @@ class OrderHistoryAndBottomNavTest {
     private fun buildSampleOrder(
         id: Long,
         orderNumber: String,
+        orderCode: String = "",
         storeName: String,
         status: OrderStatus,
         captainId: String = loggedInCaptainUid,
@@ -88,6 +95,7 @@ class OrderHistoryAndBottomNavTest {
         return OrderEntity(
             id = id,
             orderNumber = orderNumber,
+            orderCode = orderCode,
             customerName = "أحمد محمود",
             customerPhone = "01012345678",
             storeName = storeName,
@@ -437,6 +445,7 @@ class OrderHistoryAndBottomNavTest {
         val acceptedOrder = buildSampleOrder(
             id = 701L,
             orderNumber = "CANC-701",
+            orderCode = "CODE-701",
             storeName = "حلواني العبد",
             status = OrderStatus.ACCEPTED,
             createdAt = timestampInDate(fixedTodayKey, 17, 0),
@@ -475,12 +484,23 @@ class OrderHistoryAndBottomNavTest {
         }
 
         composeTestRule.onNodeWithText("حلواني العبد").assertIsDisplayed()
+        composeTestRule.onNodeWithText("كود الطلب: CODE-701").assertIsDisplayed()
         composeTestRule.onNodeWithText("سبب الإلغاء: تأخر تجهيز الطلب").assertIsDisplayed()
+        assertTrue(
+            composeTestRule.onAllNodesWithText("CANC-701", substring = true)
+                .fetchSemanticsNodes()
+                .isEmpty()
+        )
 
         // Open full details sheet
         composeTestRule.onNodeWithTag("view_order_details_button_701").performClick()
         composeTestRule.onNodeWithTag("archived_order_details_sheet").assertIsDisplayed()
-        composeTestRule.onNodeWithText("تفاصيل الطلب #CANC-701").assertIsDisplayed()
+        composeTestRule.onNodeWithText("تفاصيل الطلب").assertIsDisplayed()
+        assertTrue(
+            composeTestRule.onAllNodesWithText("CANC-701", substring = true)
+                .fetchSemanticsNodes()
+                .isEmpty()
+        )
         Unit
     }
 
@@ -765,5 +785,197 @@ class OrderHistoryAndBottomNavTest {
         assertEquals("ELB-9468", client.sanitizeOrderId("##ELB-9468"))
         assertEquals("ELB-9468", client.sanitizeOrderId("  #ELB-9468  "))
         assertEquals("ELB-9468", client.sanitizeOrderId("ELB-9468"))
+    }
+
+    // 16. التحقق من حذف رقم الطلب من كارت الطلبات في واجهة المستخدم (الطلب النشط والمتاح)
+    @Test
+    fun scenario16_orderCardsHideOrderNumberInUi() {
+        val uuidOrderNumber = "a28620ba-9e00-4ae7-b87a-15b342de150b"
+        val activeOrder = buildSampleOrder(
+            id = 801L,
+            orderNumber = uuidOrderNumber,
+            storeName = "McDonald's",
+            status = OrderStatus.ACCEPTED,
+            deliveryFee = 25.0
+        )
+        val availableOrder = buildSampleOrder(
+            id = 802L,
+            orderNumber = "ORD-HIDE-99",
+            storeName = "KFC",
+            status = OrderStatus.PENDING,
+            deliveryFee = 30.0
+        )
+
+        composeTestRule.setContent {
+            ElBatalTheme {
+                androidx.compose.foundation.layout.Column {
+                    ActiveOrderCard(
+                        order = activeOrder,
+                        onMarkArrivedAtMerchant = {},
+                        onConfirmPickup = {},
+                        onOpenCustomerDataEntry = {},
+                        onCompleteDelivery = {}
+                    )
+                    AvailableTripCard(
+                        order = availableOrder,
+                        onAcceptOrder = {}
+                    )
+                }
+            }
+        }
+
+        composeTestRule.onNodeWithText("طلب نشط").assertIsDisplayed()
+        composeTestRule.onNodeWithText("25 ج.م").assertIsDisplayed()
+        composeTestRule.onNodeWithText("رحلة متاحة").assertIsDisplayed()
+        composeTestRule.onNodeWithText("30 ج.م").assertIsDisplayed()
+
+        assertTrue(
+            composeTestRule.onAllNodesWithText(uuidOrderNumber, substring = true)
+                .fetchSemanticsNodes()
+                .isEmpty()
+        )
+        assertTrue(
+            composeTestRule.onAllNodesWithText("ORD-HIDE-99", substring = true)
+                .fetchSemanticsNodes()
+                .isEmpty()
+        )
+    }
+
+    // 17أ. عدم إسناد أو عرض أي طلبات متاحة أو تنبيه طلب جديد عند وضع (غير متصل)
+    @Test
+    fun scenario17a_dashboardBlocksOrdersWhenCaptainIsOffline() {
+        val offlineCaptain = CaptainEntity(
+            id = 1,
+            uid = loggedInCaptainUid,
+            fullName = "كابتن تجريبي",
+            phoneNumber = "01000000000",
+            isOnline = false,
+            isLoggedIn = true,
+            status = "active"
+        )
+        val activeShift = ShiftStatus.Active(
+            shift = ShiftEntity(
+                id = "shift_1",
+                captainUid = loggedInCaptainUid,
+                dayOfWeek = 1,
+                dayNameArabic = "الأحد",
+                startTime = "12:00",
+                endTime = "20:00",
+                isDayOff = false
+            ),
+            remainingMillis = 3600_000L,
+            remainingFormatted = "1 س",
+            startFormatted = "12:00 م",
+            endFormatted = "08:00 م"
+        )
+        val blockedTrip = buildSampleOrder(
+            id = 950L,
+            orderNumber = "OFF-950",
+            storeName = "مطعم محظور أوفلاين",
+            status = OrderStatus.PENDING
+        )
+        val blockedIncoming = buildSampleOrder(
+            id = 951L,
+            orderNumber = "OFF-951",
+            storeName = "مطعم عرض فوري أوفلاين",
+            status = OrderStatus.PENDING
+        )
+
+        composeTestRule.setContent {
+            ElBatalTheme {
+                DashboardScreen(
+                    captain = offlineCaptain,
+                    activeOrder = null,
+                    availableOrders = listOf(blockedTrip),
+                    pendingIncomingOrder = blockedIncoming,
+                    completedCount = 0,
+                    totalEarnings = 0.0,
+                    shiftStatus = activeShift,
+                    onToggleOnline = {},
+                    onAcceptOrder = {}
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("offline_orders_blocked_card").assertIsDisplayed()
+        assertTrue(
+            composeTestRule.onAllNodesWithText("مطعم محظور أوفلاين", substring = true)
+                .fetchSemanticsNodes()
+                .isEmpty()
+        )
+        assertTrue(
+            composeTestRule.onAllNodesWithText("طلب جديد متاح الآن!", substring = true)
+                .fetchSemanticsNodes()
+                .isEmpty()
+        )
+        assertTrue(
+            composeTestRule.onAllNodesWithText("قبول الطلب", substring = true)
+                .fetchSemanticsNodes()
+                .isEmpty()
+        )
+    }
+
+    // 17ب. عدم إسناد أو عرض أي طلبات متاحة أو تنبيه طلب جديد عند وجود الكابتن خارج ساعات الشفت
+    @Test
+    fun scenario17b_dashboardBlocksOrdersWhenCaptainIsOutsideShift() {
+        val onlineCaptain = CaptainEntity(
+            id = 1,
+            uid = loggedInCaptainUid,
+            fullName = "كابتن تجريبي",
+            phoneNumber = "01000000000",
+            isOnline = true,
+            isLoggedIn = true,
+            status = "active"
+        )
+        val outsideShift = ShiftStatus.OutsideShift(
+            nextShift = null,
+            nextShiftDescription = "انتهى شفت اليوم",
+            isDayOffToday = false
+        )
+        val blockedTrip = buildSampleOrder(
+            id = 952L,
+            orderNumber = "SHIFT-952",
+            storeName = "مطعم خارج الشفت",
+            status = OrderStatus.PENDING
+        )
+        val blockedIncoming = buildSampleOrder(
+            id = 953L,
+            orderNumber = "SHIFT-953",
+            storeName = "مطعم عرض فوري خارج الشفت",
+            status = OrderStatus.PENDING
+        )
+
+        composeTestRule.setContent {
+            ElBatalTheme {
+                DashboardScreen(
+                    captain = onlineCaptain,
+                    activeOrder = null,
+                    availableOrders = listOf(blockedTrip),
+                    pendingIncomingOrder = blockedIncoming,
+                    completedCount = 0,
+                    totalEarnings = 0.0,
+                    shiftStatus = outsideShift,
+                    onToggleOnline = {},
+                    onAcceptOrder = {}
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("outside_shift_orders_blocked_card").assertIsDisplayed()
+        assertTrue(
+            composeTestRule.onAllNodesWithText("مطعم خارج الشفت", substring = true)
+                .fetchSemanticsNodes()
+                .isEmpty()
+        )
+        assertTrue(
+            composeTestRule.onAllNodesWithText("طلب جديد متاح الآن!", substring = true)
+                .fetchSemanticsNodes()
+                .isEmpty()
+        )
+        assertTrue(
+            composeTestRule.onAllNodesWithText("قبول الطلب", substring = true)
+                .fetchSemanticsNodes()
+                .isEmpty()
+        )
     }
 }

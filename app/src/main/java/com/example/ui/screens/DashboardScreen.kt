@@ -110,6 +110,7 @@ fun DashboardScreen(
     onSimulateMerchantConfirm: ((Long, Boolean) -> Unit)? = null,
     onRefreshOrders: () -> Unit = {},
     onRefreshShifts: () -> Unit = {},
+    onRefreshMerchantLocation: (OrderEntity) -> Unit = {},
     onNavigateToShifts: () -> Unit = {}
 ) {
     val scrollState = rememberScrollState()
@@ -222,7 +223,7 @@ fun DashboardScreen(
                     // Online/Offline Switch
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Switch(
-                            checked = captain?.isOnline ?: true,
+                            checked = captain?.isOnline == true,
                             onCheckedChange = { onToggleOnline() },
                             colors = SwitchDefaults.colors(
                                 checkedThumbColor = Color.White,
@@ -486,12 +487,14 @@ fun DashboardScreen(
                         orderForDataEntry = it
                     },
                     onCompleteDelivery = onAdvanceOrderStatus,
-                    onSimulateMerchantConfirm = onSimulateMerchantConfirm
+                    onSimulateMerchantConfirm = onSimulateMerchantConfirm,
+                    onRefreshMerchantLocation = onRefreshMerchantLocation
                 )
                 Spacer(modifier = Modifier.height(24.dp))
             }
 
             // 2. AVAILABLE TRIPS & ORDERS SECTION
+            val isCaptainOnline = captain?.isOnline == true
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -513,7 +516,7 @@ fun DashboardScreen(
                 }
 
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (availableOrders.isNotEmpty() && shiftStatus.isAvailableForOrders) {
+                    if (availableOrders.isNotEmpty() && isCaptainOnline && shiftStatus.isAvailableForOrders) {
                         Box(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(8.dp))
@@ -524,6 +527,20 @@ fun DashboardScreen(
                                 text = "${availableOrders.size} متاح",
                                 style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                                 color = Color.Black
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(6.dp))
+                    } else if (!isCaptainOnline) {
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(Color.Gray.copy(alpha = 0.22f))
+                                .padding(horizontal = 8.dp, vertical = 2.dp)
+                        ) {
+                            Text(
+                                text = "غير متصل",
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                color = Color.LightGray
                             )
                         }
                         Spacer(modifier = Modifier.width(6.dp))
@@ -567,10 +584,67 @@ fun DashboardScreen(
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            if (!shiftStatus.isAvailableForOrders) {
+            if (!isCaptainOnline) {
+                // Captain is offline: strictly block assigning or showing available orders
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("offline_orders_blocked_card"),
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = DarkSurface)
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(20.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(50.dp)
+                                .clip(CircleShape)
+                                .background(Color.Gray.copy(alpha = 0.18f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Lock,
+                                contentDescription = null,
+                                tint = Color.LightGray,
+                                modifier = Modifier.size(28.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            text = "أنت في وضع غير متصل حالياً",
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                            color = Color.White
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "لا يتم إسناد أو عرض أي طلبات جديدة لك أثناء وضع (غير متصل). فعّل زر الاتصال في أعلى الشاشة لتصبح متاحاً لاستقبال الرحلات.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.LightGray,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                        )
+                        Spacer(modifier = Modifier.height(14.dp))
+                        OutlinedButton(
+                            onClick = onToggleOnline,
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Text(
+                                text = "تفعيل وضع متصل",
+                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                color = HeroYellow
+                            )
+                        }
+                    }
+                }
+            } else if (!shiftStatus.isAvailableForOrders) {
                 // Outside working shift hours: Show clear notice
                 Card(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("outside_shift_orders_blocked_card"),
                     shape = RoundedCornerShape(20.dp),
                     colors = CardDefaults.cardColors(containerColor = DarkSurface)
                 ) {
@@ -647,16 +721,13 @@ fun DashboardScreen(
                         )
                         Spacer(modifier = Modifier.height(10.dp))
                         Text(
-                            text = if (captain?.isOnline == true) "لا توجد رحلات جديدة حالياً" else "أنت في وضع غير متصل",
+                            text = "لا توجد رحلات جديدة حالياً",
                             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                             color = Color.White
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = if (captain?.isOnline == true)
-                                "في انتظار إسناد أو وصول رحلات توصيل جديدة من المطاعم المسجلة"
-                            else
-                                "قم بتشغيل وضع الاتصال أعلاه لاستقبال وتصفح رحلات التوصيل المتاحة",
+                            text = "في انتظار إسناد أو وصول رحلات توصيل جديدة من المطاعم المسجلة",
                             style = MaterialTheme.typography.bodySmall,
                             color = Color.Gray,
                             textAlign = androidx.compose.ui.text.style.TextAlign.Center
@@ -734,7 +805,12 @@ fun DashboardScreen(
         }
 
         // Incoming Order Offer Alert (Single "قبول الطلب" button + 60s countdown timer)
-        if (pendingIncomingOrder != null && activeOrder == null && availableOrders.none { it.id == pendingIncomingOrder.id }) {
+        if (captain?.isOnline == true &&
+            shiftStatus.isAvailableForOrders &&
+            pendingIncomingOrder != null &&
+            activeOrder == null &&
+            availableOrders.none { it.id == pendingIncomingOrder.id }
+        ) {
             IncomingOrderAlert(
                 order = pendingIncomingOrder,
                 onAccept = { onAcceptOrder(pendingIncomingOrder.id) },

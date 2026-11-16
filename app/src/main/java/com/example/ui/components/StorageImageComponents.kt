@@ -34,6 +34,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -103,14 +104,19 @@ fun StorageAsyncImage(
     }
 
     val revision = repo.getPathRevision(trimmed)
+    var retryTick by remember(trimmed, revision) { mutableStateOf(0) }
     var resolvedModel by remember(trimmed, revision) { mutableStateOf<Any?>(null) }
     var isLoading by remember(trimmed, revision) { mutableStateOf(true) }
     var loadError by remember(trimmed, revision) { mutableStateOf(false) }
 
-    LaunchedEffect(trimmed, revision) {
+    LaunchedEffect(trimmed, revision, retryTick) {
         isLoading = true
         loadError = false
-        val result = repo.resolveDisplayModel(trimmed)
+        var result = repo.resolveDisplayModel(trimmed)
+        if (result.isFailure) {
+            kotlinx.coroutines.delay(450L)
+            result = repo.resolveDisplayModel(trimmed)
+        }
         if (result.isSuccess) {
             resolvedModel = result.getOrNull()
             isLoading = false
@@ -141,12 +147,17 @@ fun StorageAsyncImage(
                 if (fallback != null) {
                     fallback()
                 } else {
-                    Icon(
-                        imageVector = Icons.Default.BrokenImage,
-                        contentDescription = contentDescription,
-                        tint = Color.Gray,
-                        modifier = Modifier.size(28.dp)
-                    )
+                    IconButton(
+                        onClick = { retryTick++ },
+                        modifier = Modifier.size(48.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = contentDescription ?: "إعادة تحميل الصورة",
+                            tint = Color.Gray,
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
                 }
             }
         }
@@ -338,7 +349,7 @@ fun UploadStatusBanner(
         }
         is ImageUploadState.Uploading -> {
             UploadProgressCard(
-                label = "جاري الرفع إلى Firebase Storage (${state.progressPercent}%)",
+                label = "جاري رفع وتوثيق الصورة بأمان (${state.progressPercent}%)",
                 progressPercent = state.progressPercent,
                 tagPrefix = tagPrefix
             )
@@ -373,7 +384,7 @@ fun UploadStatusBanner(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "تم رفع وحفظ الصورة بنجاح في Firebase Storage ✓",
+                        text = "تم الحفظ والتوثيق بنجاح 🔒",
                         style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
                         color = StatusOnlineGreen
                     )

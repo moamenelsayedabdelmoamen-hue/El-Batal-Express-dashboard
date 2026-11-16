@@ -71,6 +71,7 @@ async function seedBaseEcosystem() {
       fullName: 'كابتن أحمد',
       phone: '01011111111',
       email: 'captain1@elbatal.com',
+      accountType: 'captain',
       role: 'captain',
       status: 'active',
       presenceStatus: 'on_trip',
@@ -90,6 +91,7 @@ async function seedBaseEcosystem() {
       fullName: 'كابتن محمد',
       phone: '01022222222',
       email: 'captain2@elbatal.com',
+      accountType: 'captain',
       role: 'captain',
       status: 'active',
       presenceStatus: 'available',
@@ -459,10 +461,20 @@ describe('El-Batal Express Real Firebase Emulator Security Audit (Firestore + St
     await assertFails(updateDoc(doc(cap1Db, 'orders', 'order_pending_open'), { status: 'accepted', captainId: 'captain_1' }));
     await assertFails(updateDoc(doc(cap1Db, 'orders', 'order_picked_up_c1'), { status: 'delivered' }));
 
-    // Regular users and captains CANNOT create/modify/delete restaurants
+    // Regular users and captains CANNOT create/modify/delete restaurants, merchants, or legacy drivers
     await assertFails(updateDoc(doc(user1Db, 'restaurants', 'merchant_1'), { name: 'Hacked' }));
     await assertFails(updateDoc(doc(cap1Db, 'restaurants', 'merchant_1'), { isOpen: false }));
     await assertFails(setDoc(doc(user1Db, 'restaurants', 'fake_rest'), { name: 'Fake' }));
+    await assertFails(setDoc(doc(cap1Db, 'merchants', 'captain_1'), { name: 'Spoof Merchant' }));
+    await assertFails(setDoc(doc(cap1Db, 'drivers', 'captain_1'), { uid: 'captain_1', accountType: 'captain' }));
+
+    // Merchant CANNOT read captain PII docs or register themselves in captains
+    await assertFails(getDoc(doc(merch1Db, 'captains', 'captain_1')));
+    await assertFails(setDoc(doc(merch1Db, 'captains', 'merchant_1'), { uid: 'merchant_1', accountType: 'captain', status: 'pending' }));
+
+    // Captain CANNOT mutate accountType or claim emailVerified=true without verified token
+    await assertFails(updateDoc(doc(cap1Db, 'captains', 'captain_1'), { accountType: 'merchant' }));
+    await assertFails(updateDoc(doc(cap1Db, 'captains', 'captain_1'), { emailVerified: true }));
 
     // Merchant 1 CAN update allowed store info on their own restaurant, CANNOT update Merchant 2's restaurant
     await assertSucceeds(updateDoc(doc(merch1Db, 'restaurants', 'merchant_1'), { isOpen: false }));

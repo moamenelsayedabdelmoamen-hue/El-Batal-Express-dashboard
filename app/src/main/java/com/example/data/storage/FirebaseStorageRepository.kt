@@ -625,16 +625,41 @@ class FirebaseStorageRepository(
 
     private fun resolveMimeType(context: Context, uri: Uri): String {
         val resolverType = context.contentResolver.getType(uri)?.lowercase()?.trim()
-        if (!resolverType.isNullOrBlank()) return resolverType
+        if (!resolverType.isNullOrBlank() &&
+            resolverType != "image/*" &&
+            resolverType != "application/octet-stream"
+        ) {
+            return resolverType
+        }
 
         val path = uri.path.orEmpty()
         val ext = path.substringAfterLast('.', "").lowercase()
-        return when (ext) {
+        val extMime = when (ext) {
             "jpg", "jpeg" -> "image/jpeg"
             "png" -> "image/png"
             "webp" -> "image/webp"
-            else -> MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext)?.lowercase() ?: "application/octet-stream"
+            "heic" -> "image/heic"
+            "heif" -> "image/heif"
+            else -> MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext)?.lowercase()
         }
+        if (!extMime.isNullOrBlank() && extMime != "application/octet-stream") {
+            return extMime
+        }
+
+        // Some Android Photo Picker / gallery URIs omit extension and report generic MIME;
+        // inspect actual decoded image bounds safely before rejecting.
+        val headerMime = runCatching {
+            ImageCompressor.openUriInputStream(context, uri)?.use { stream ->
+                val opts = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                android.graphics.BitmapFactory.decodeStream(stream, null, opts)
+                opts.outMimeType?.lowercase()?.trim()
+            }
+        }.getOrNull()
+        if (!headerMime.isNullOrBlank()) {
+            return headerMime
+        }
+
+        return resolverType ?: "application/octet-stream"
     }
 
     private fun resolveFileSizeBytes(context: Context, uri: Uri): Long {
@@ -770,7 +795,9 @@ class FirebaseStorageRepository(
             "image/jpeg",
             "image/jpg",
             "image/png",
-            "image/webp"
+            "image/webp",
+            "image/heic",
+            "image/heif"
         )
 
         @Volatile

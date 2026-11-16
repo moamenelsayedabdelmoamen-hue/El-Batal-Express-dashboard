@@ -96,7 +96,7 @@ fun EnterOrderDataBottomSheet(
 
     val receiptSourceLauncher = rememberImageSourceLauncher(
         filePrefix = "order_receipt_${order.id}",
-        dialogTitle = "صورة إيصال الطلب #${order.cleanOrderNumber}"
+        dialogTitle = "صورة إيصال الطلب"
     ) { uri: Uri ->
         selectedLocalReceiptUri = uri
         validationError = null
@@ -143,7 +143,7 @@ fun EnterOrderDataBottomSheet(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = "تسجيل بيانات العميل والإيصال",
                         style = MaterialTheme.typography.titleLarge.copy(
@@ -153,11 +153,14 @@ fun EnterOrderDataBottomSheet(
                         color = Color.White
                     )
                     Text(
-                        text = "طلب رقم: #${order.cleanOrderNumber} • ${order.storeName}",
+                        text = "التاجر: ${order.storeName}",
                         style = MaterialTheme.typography.bodySmall,
-                        color = HeroYellow
+                        color = HeroYellow,
+                        maxLines = 1
                     )
                 }
+
+                Spacer(modifier = Modifier.width(12.dp))
 
                 Box(
                     modifier = Modifier
@@ -278,7 +281,7 @@ fun EnterOrderDataBottomSheet(
                 color = HeroYellow
             )
             Text(
-                text = "التقط صورة الإيصال بالكاميرا أو اخترها من المعرض ليتم رفعها بأمان إلى Firebase Storage",
+                text = "التقط صورة الإيصال بالكاميرا أو اخترها من المعرض ليتم رفعها وحفظها بأمان",
                 style = MaterialTheme.typography.bodySmall,
                 color = Color.LightGray
             )
