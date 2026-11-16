@@ -140,6 +140,7 @@ export const RestaurantService = {
         const docRef = doc(db, COLLECTIONS.RESTAURANTS, id);
         await updateDoc(docRef, {
           isActive: newStatus,
+          isApproved: newStatus,
           status: newStatus ? 'active' : 'inactive',
           updatedAt: serverTimestamp(),
         });
