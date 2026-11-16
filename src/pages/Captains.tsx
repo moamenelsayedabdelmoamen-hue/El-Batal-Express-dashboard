@@ -126,6 +126,11 @@ export const CaptainsPage: React.FC = () => {
   };
 
   const handleToggleOrderReception = async (captain: Captain) => {
+    if (captain.status === 'pending') {
+      toastError('يجب اعتماد حساب الكابتن من قائمة الحالة أولاً قبل تفعيل استقبال الطلبات.');
+      return;
+    }
+
     const currentCanReceive = captain.canReceiveOrders !== false;
     const nextCanReceive = !currentCanReceive;
     const nowIso = new Date().toISOString();
@@ -549,7 +554,7 @@ export const CaptainsPage: React.FC = () => {
                           {/* زر تفعيل / إيقاف استقبال الطلبات للكابتن */}
                           <button
                             type="button"
-                            disabled={togglingReceptionId === captain.id}
+                            disabled={togglingReceptionId === captain.id || captain.status === 'pending'}
                             onClick={() => handleToggleOrderReception(captain)}
                             className={`inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-xl text-[11px] font-extrabold border transition-all cursor-pointer disabled:opacity-50 ${
                               canReceive
