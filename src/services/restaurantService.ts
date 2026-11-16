@@ -201,55 +201,10 @@ export const RestaurantService = {
     }
   },
 
-  async create(data: Omit<Restaurant, 'id'>): Promise<Restaurant> {
-    const newId = `rest_${Date.now()}`;
-    const parsedFromUrl = data.locationUrl
-      ? extractCoordinatesFromText(data.locationUrl)
-      : null;
-    const coords = data.coords || parsedFromUrl || null;
-
-    const newRestaurant: Restaurant = {
-      ...data,
-      id: newId,
-      coords,
-      createdAt: new Date().toISOString(),
-    };
-
-    localRestaurantsCache = [newRestaurant, ...localRestaurantsCache];
-
-    if (isFirebaseConfigured) {
-      try {
-        const docRef = doc(db, COLLECTIONS.RESTAURANTS, newId);
-        await setDoc(docRef, {
-          name: data.name,
-          category: data.category || 'عام',
-          phone: data.phone || '',
-          ownerEmail: data.ownerEmail || '',
-          email: data.ownerEmail || '',
-          logo: data.logo || '',
-          image: data.logo || '',
-          rating: data.rating || 5.0,
-          subscriptionStatus: data.subscriptionStatus || 'Active',
-          isActive: data.isActive,
-          address: data.address || '',
-          locationUrl: data.locationUrl || '',
-          mapUrl: data.locationUrl || '',
-          ...(coords
-            ? {
-                lat: coords.lat,
-                lng: coords.lng,
-                coords,
-              }
-            : {}),
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-      } catch (error) {
-        handleFirestoreError(error, OperationType.CREATE, `${COLLECTIONS.RESTAURANTS}/${newId}`);
-      }
-    }
-
-    return newRestaurant;
+  // Merchant accounts must be created by the Merchant Android app so the document ID
+  // always equals the Firebase Authentication UID. The dashboard must never mint fake IDs.
+  async create(_data: Omit<Restaurant, 'id'>): Promise<Restaurant> {
+    throw new Error('يجب تسجيل التاجر من تطبيق التاجر حتى يرتبط المستند بمعرّف Firebase Authentication الصحيح.');
   },
 
   async delete(id: string): Promise<void> {
