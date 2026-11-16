@@ -5,7 +5,9 @@
  */
 
 export const COLLECTIONS = {
-  RESTAURANTS: 'restaurants',
+  MERCHANTS: 'merchants',
+  /** @deprecated Use MERCHANTS. Kept as an in-code alias while UI terminology is migrated. */
+  RESTAURANTS: 'merchants',
   CAPTAINS: 'captains',
   ORDERS: 'orders',
   ORDER_CODES: 'order_codes',
