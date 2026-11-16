@@ -1,22 +1,37 @@
 {
   "indexes": [
-    { "collectionGroup": "orders", "queryScope": "COLLECTION", "fields": [
-      { "fieldPath": "merchantId", "order": "ASCENDING" },
-      { "fieldPath": "status", "order": "ASCENDING" }
-    ]},
-    { "collectionGroup": "orders", "queryScope": "COLLECTION", "fields": [
-      { "fieldPath": "restaurantId", "order": "ASCENDING" },
-      { "fieldPath": "status", "order": "ASCENDING" }
-    ]},
-    { "collectionGroup": "orders", "queryScope": "COLLECTION", "fields": [
-      { "fieldPath": "offeredCaptainId", "order": "ASCENDING" },
-      { "fieldPath": "status", "order": "ASCENDING" }
-    ]},
-    { "collectionGroup": "orders", "queryScope": "COLLECTION", "fields": [
-      { "fieldPath": "status", "order": "ASCENDING" },
-      { "fieldPath": "dispatchStatus", "order": "ASCENDING" }
-    ]}
-  ]}
+    {
+      "collectionGroup": "orders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "merchantId", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "orders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "restaurantId", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "orders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "offeredCaptainId", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "orders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "dispatchStatus", "order": "ASCENDING" }
+      ]
+    }
   ],
   "fieldOverrides": []
 }
