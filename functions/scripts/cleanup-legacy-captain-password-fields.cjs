@@ -30,7 +30,15 @@ async function main() {
   }
 
   const db = admin.firestore();
-  const targets = [];
+  const targetMap = new Map();
+  const addTarget = (ref, fields) => {
+    const existing = targetMap.get(ref.path);
+    if (existing) {
+      existing.fields = [...new Set([...existing.fields, ...fields])];
+    } else {
+      targetMap.set(ref.path, { ref, fields: [...new Set(fields)] });
+    }
+  };
   const totals = { captains: {}, drivers: {}, linkedUserProfiles: 0 };
 
   for (const collectionName of COLLECTIONS) {
@@ -44,7 +52,7 @@ async function main() {
 
       if (fields.length > 0) {
         affected += 1;
-        targets.push({ ref: document.ref, fields });
+        addTarget(document.ref, fields);
       }
 
       // The legacy dashboard also copied the password into users/{captainUid}.
@@ -56,7 +64,7 @@ async function main() {
           Object.prototype.hasOwnProperty.call(linkedUser.data() || {}, field)
         );
         if (linkedFields.length > 0) {
-          targets.push({ ref: linkedUser.ref, fields: linkedFields });
+          addTarget(linkedUser.ref, linkedFields);
           totals.linkedUserProfiles += 1;
         }
       }
@@ -67,6 +75,8 @@ async function main() {
       documentsWithLegacyCredentials: affected,
     };
   }
+
+  const targets = Array.from(targetMap.values());
 
   process.stdout.write(
     JSON.stringify(
