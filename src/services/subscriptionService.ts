@@ -370,7 +370,7 @@ export const SubscriptionService = {
             ...(targetSub
               ? {
                   merchantId: targetSub.restaurantId,
-                  restaurantName: targetSub.restaurantName,
+                  merchantName: targetSub.restaurantName,
                   plan: targetSub.plan,
                   captainsCount: targetSub.captainsCount || 2,
                   price: targetSub.price || 400,
@@ -418,7 +418,7 @@ export const SubscriptionService = {
           docRef,
           {
             merchantId: targetRestId,
-            restaurantName: updates.restaurantName || existing?.restaurantName || '',
+            merchantName: updates.restaurantName || existing?.restaurantName || '',
             captainsCount: updates.captainsCount,
             price: updates.price,
             plan: updates.plan,
@@ -472,7 +472,7 @@ export const SubscriptionService = {
           docRef,
           {
             merchantId: data.restaurantId,
-            restaurantName: data.restaurantName,
+            merchantName: data.restaurantName,
             plan: data.plan,
             captainsCount: data.captainsCount || 2,
             price: data.price,
