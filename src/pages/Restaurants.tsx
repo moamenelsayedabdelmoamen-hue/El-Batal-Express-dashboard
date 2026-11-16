@@ -139,7 +139,7 @@ export const RestaurantsPage: React.FC = () => {
     try {
       const folderId = merchantId || `merchant_${Date.now()}`;
       const ext = file.name.split('.').pop() || 'png';
-      const storagePath = `restaurants/${folderId}/logo_${Date.now()}.${ext}`;
+      const storagePath = `merchants/${folderId}/logo_${Date.now()}.${ext}`;
       const downloadUrl = await uploadImageToFirebaseStorage(file, storagePath);
       setFormData((prev) => ({ ...prev, logo: downloadUrl }));
       success('تم رفع صورة اللوجو للتاجر بنجاح');
@@ -260,7 +260,7 @@ export const RestaurantsPage: React.FC = () => {
         isActive: true,
       });
     } catch (err) {
-      toastError('فشل إضافة التاجر');
+      toastError('يجب إنشاء حساب التاجر من تطبيق التاجر حتى يرتبط المستند بمعرّف Firebase Authentication الصحيح.');
     } finally {
       setActionLoading(false);
     }
@@ -436,9 +436,8 @@ export const RestaurantsPage: React.FC = () => {
                     0;
 
                   const storageFallbacks = [
-                    `restaurants/${restaurant.id}`,
                     `merchants/${restaurant.id}`,
-                    `logos/${restaurant.id}`,
+                    `merchants/${restaurant.id}`,
                     `users/${restaurant.id}`,
                   ];
 
@@ -637,9 +636,8 @@ export const RestaurantsPage: React.FC = () => {
               <FirebaseImage
                 src={viewingRestaurant.logo || viewingRestaurant.image}
                 fallbackStoragePaths={[
-                  `restaurants/${viewingRestaurant.id}`,
                   `merchants/${viewingRestaurant.id}`,
-                  `logos/${viewingRestaurant.id}`,
+                  `merchants/${viewingRestaurant.id}`,
                 ]}
                 alt={viewingRestaurant.name}
                 className="w-16 h-16 rounded-2xl border border-amber-500/30"

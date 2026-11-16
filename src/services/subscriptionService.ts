@@ -123,11 +123,11 @@ function normalizeStatus(rawStatus: any, endDateYMD?: string, isActiveMerchant?:
   }
   if (s === 'Pending' || s === 'pending' || s === 'معلق' || s === 'قيد الانتظار') return 'Pending';
   if (s === 'Expired' || s === 'expired' || s === 'منتهي') return 'Expired';
-  if (s === 'Suspended' || s === 'suspended' || s === 'موقوف' || s === 'inactive') return 'Suspended';
+  if (s === 'Suspended' || s === 'suspended' || s === 'موقوف' || s === 'inactive' || ['unsubscribed', 'none', 'payment_failed', 'failed', 'not_subscribed'].includes(s.toLowerCase())) return 'Suspended';
 
   if (isActiveMerchant === false) return 'Suspended';
   if (endDateYMD && endDateYMD < new Date().toISOString().split('T')[0]) return 'Expired';
-  return 'Active';
+  return 'Suspended';
 }
 
 function mapDocToSubscription(
@@ -286,7 +286,7 @@ export const SubscriptionService = {
         list.push(mapDocToSubscription(docSnap.id, subData, matchedMerchant));
       });
 
-      // 2. Also include every registered merchant in `restaurants` that doesn't have a separate doc in `subscriptions`
+      // 2. Also include every registered merchant in `merchants` that doesn't have a separate doc in `subscriptions`
       merchantsSnap.forEach((docSnap) => {
         if (!coveredMerchantIds.has(docSnap.id)) {
           const mData = docSnap.data();
@@ -349,7 +349,7 @@ export const SubscriptionService = {
       }
       await updateDoc(restRef, payload);
     } catch {
-      // Ignore if restaurantId doc doesn't exist in restaurants collection
+      // Ignore if merchant UID does not exist in merchants collection
     }
   },
 
@@ -369,8 +369,8 @@ export const SubscriptionService = {
           {
             ...(targetSub
               ? {
-                  restaurantId: targetSub.restaurantId,
-                  restaurantName: targetSub.restaurantName,
+                  merchantId: targetSub.restaurantId,
+                  merchantName: targetSub.restaurantName,
                   plan: targetSub.plan,
                   captainsCount: targetSub.captainsCount || 2,
                   price: targetSub.price || 400,
@@ -417,8 +417,8 @@ export const SubscriptionService = {
         await setDoc(
           docRef,
           {
-            restaurantId: targetRestId,
-            restaurantName: updates.restaurantName || existing?.restaurantName || '',
+            merchantId: targetRestId,
+            merchantName: updates.restaurantName || existing?.restaurantName || '',
             captainsCount: updates.captainsCount,
             price: updates.price,
             plan: updates.plan,
@@ -471,8 +471,8 @@ export const SubscriptionService = {
         await setDoc(
           docRef,
           {
-            restaurantId: data.restaurantId,
-            restaurantName: data.restaurantName,
+            merchantId: data.restaurantId,
+            merchantName: data.restaurantName,
             plan: data.plan,
             captainsCount: data.captainsCount || 2,
             price: data.price,
@@ -525,7 +525,7 @@ export const SubscriptionService = {
           {
             ...(existing
               ? {
-                  restaurantId: existing.restaurantId,
+                  merchantId: existing.restaurantId,
                   restaurantName: existing.restaurantName,
                   plan: existing.plan,
                   captainsCount: existing.captainsCount || 2,

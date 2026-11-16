@@ -478,9 +478,7 @@ export const SubscriptionsPage: React.FC = () => {
                 {filteredSubscriptions.map((sub) => {
                   const remainingInfo = getRemainingDaysInfo(sub.endDate);
                   const storageFallbacks = [
-                    `restaurants/${sub.restaurantId}`,
                     `merchants/${sub.restaurantId}`,
-                    `logos/${sub.restaurantId}`,
                   ];
 
                   return (

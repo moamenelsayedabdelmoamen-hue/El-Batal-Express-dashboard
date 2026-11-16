@@ -27,7 +27,7 @@ function mapDocToPayment(id: string, data: Record<string, any>): Payment {
     id,
     transactionId: txnId,
     transactionNumber: txnId,
-    restaurantId: data.restaurantId || '',
+    restaurantId: data.merchantId || data.restaurantId || '',
     restaurantName: data.restaurantName || data.merchantName || 'تاجر غير محدد',
     amount: typeof data.amount === 'number' ? data.amount : Number(data.amount) || 0,
     paymentMethod: (data.paymentMethod as PaymentMethod) || (data.method === 'card' ? 'Visa' : 'Mobile Wallet'),
@@ -73,8 +73,8 @@ export const PaymentService = {
     const payload = {
       transactionId: txnId,
       transactionNumber: txnId,
-      restaurantId: data.restaurantId || '',
-      restaurantName: data.restaurantName,
+      merchantId: (data as any).merchantId || data.restaurantId || '',
+      merchantName: data.restaurantName,
       amount: Number(data.amount) || 0,
       paymentMethod: data.paymentMethod,
       status: data.status || 'success',
@@ -91,6 +91,8 @@ export const PaymentService = {
         });
         const created: Payment = {
           ...payload,
+          restaurantId: payload.merchantId,
+          restaurantName: payload.merchantName,
           id: docRef.id,
         };
         localPaymentsCache = [created, ...localPaymentsCache];
@@ -102,6 +104,8 @@ export const PaymentService = {
 
     const newPayment: Payment = {
       ...payload,
+      restaurantId: payload.merchantId,
+      restaurantName: payload.merchantName,
       id: `pay_${Date.now()}`,
     };
 
