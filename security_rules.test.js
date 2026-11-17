@@ -50,19 +50,30 @@ async function seedBaseEcosystem() {
       email: 'admin@elbatal.com',
     });
 
-    // Provision two Merchant / Restaurant accounts
-    await setDoc(doc(adminDb, 'restaurants', 'merchant_1'), {
-      name: 'مطعم البطل الأول',
-      phone: '01000000001',
-      address: 'مدينة نصر',
-      isOpen: true,
-    });
-    await setDoc(doc(adminDb, 'restaurants', 'merchant_2'), {
-      name: 'مطعم الشرق الثاني',
-      phone: '01000000002',
-      address: 'المعادي',
-      isOpen: true,
-    });
+  // Provision two canonical Merchant accounts
+await setDoc(doc(adminDb, 'merchants', 'merchant_1'), {
+  uid: 'merchant_1',
+  accountType: 'merchant',
+  role: 'merchant',
+  name: 'مطعم البطل الأول',
+  email: 'merchant1@elbatal.com',
+  phone: '01000000001',
+  address: 'مدينة نصر',
+  status: 'active',
+  isOpen: true,
+});
+
+await setDoc(doc(adminDb, 'merchants', 'merchant_2'), {
+  uid: 'merchant_2',
+  accountType: 'merchant',
+  role: 'merchant',
+  name: 'مطعم الشرق الثاني',
+  email: 'merchant2@elbatal.com',
+  phone: '01000000002',
+  address: 'المعادي',
+  status: 'active',
+  isOpen: true,
+});
 
     // Provision two distinct Captain accounts (captain_1 actively linked to merchant_1; captain_2 unlinked)
     await setDoc(doc(adminDb, 'captains', 'captain_1'), {
