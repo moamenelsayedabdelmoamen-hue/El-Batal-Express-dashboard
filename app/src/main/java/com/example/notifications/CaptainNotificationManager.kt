@@ -56,67 +56,72 @@ object CaptainNotificationManager {
 
     fun ensureNotificationChannels(context: Context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
-        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
-            ?: return
+        runCatching {
+            val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+                ?: return@runCatching
 
-        val soundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
-        val audioAttrs = AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_NOTIFICATION)
-            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-            .build()
+            val soundUri = runCatching { RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION) }.getOrNull()
+            val audioAttrs = AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .build()
 
-        val bellSoundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
-            ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
-            ?: soundUri
-        val bellAudioAttrs = AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
-            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-            .build()
+            val bellSoundUri = runCatching {
+                RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+                    ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+            }.getOrNull() ?: soundUri
+            val bellAudioAttrs = AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .build()
 
-        val ordersChannel = NotificationChannel(
-            CHANNEL_NEW_ORDERS_ID,
-            CHANNEL_NEW_ORDERS_NAME,
-            NotificationManager.IMPORTANCE_HIGH
-        ).apply {
-            description = "تنبيه فوري عند ظهور طلب توصيل جديد للكابتن"
-            enableVibration(true)
-            vibrationPattern = longArrayOf(0, 350, 180, 350)
-            enableLights(true)
-            setShowBadge(true)
-            setSound(soundUri, audioAttrs)
+            val ordersChannel = NotificationChannel(
+                CHANNEL_NEW_ORDERS_ID,
+                CHANNEL_NEW_ORDERS_NAME,
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "تنبيه فوري عند ظهور طلب توصيل جديد للكابتن"
+                enableVibration(true)
+                vibrationPattern = longArrayOf(0, 350, 180, 350)
+                enableLights(true)
+                setShowBadge(true)
+                if (soundUri != null) setSound(soundUri, audioAttrs)
+            }
+
+            val ordersBellChannel = NotificationChannel(
+                CHANNEL_NEW_ORDERS_BELL_ID,
+                CHANNEL_NEW_ORDERS_BELL_NAME,
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "جرس متواصل وعدّاد 60 ثانية للطلبات الجديدة عند التواجد خارج التطبيق"
+                enableVibration(true)
+                vibrationPattern = longArrayOf(0, 600, 350, 600, 650)
+                enableLights(true)
+                setShowBadge(true)
+                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+                runCatching { setBypassDnd(true) }
+                if (bellSoundUri != null) setSound(bellSoundUri, bellAudioAttrs)
+            }
+
+            val shiftsChannel = NotificationChannel(
+                CHANNEL_SHIFT_ALERTS_ID,
+                CHANNEL_SHIFT_ALERTS_NAME,
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "إشعارات بداية ونهاية شفت العمل الرسمي للكابتن"
+                enableVibration(true)
+                vibrationPattern = longArrayOf(0, 250, 150, 250)
+                enableLights(true)
+                setShowBadge(true)
+                if (soundUri != null) setSound(soundUri, audioAttrs)
+            }
+
+            manager.createNotificationChannel(ordersChannel)
+            manager.createNotificationChannel(ordersBellChannel)
+            manager.createNotificationChannel(shiftsChannel)
+        }.onFailure { e ->
+            Log.w(TAG, "Non-fatal error creating notification channels: ${e.message}")
         }
-
-        val ordersBellChannel = NotificationChannel(
-            CHANNEL_NEW_ORDERS_BELL_ID,
-            CHANNEL_NEW_ORDERS_BELL_NAME,
-            NotificationManager.IMPORTANCE_HIGH
-        ).apply {
-            description = "جرس متواصل وعدّاد 60 ثانية للطلبات الجديدة عند التواجد خارج التطبيق"
-            enableVibration(true)
-            vibrationPattern = longArrayOf(0, 600, 350, 600, 650)
-            enableLights(true)
-            setShowBadge(true)
-            lockscreenVisibility = Notification.VISIBILITY_PUBLIC
-            runCatching { setBypassDnd(true) }
-            setSound(bellSoundUri, bellAudioAttrs)
-        }
-
-        val shiftsChannel = NotificationChannel(
-            CHANNEL_SHIFT_ALERTS_ID,
-            CHANNEL_SHIFT_ALERTS_NAME,
-            NotificationManager.IMPORTANCE_HIGH
-        ).apply {
-            description = "إشعارات بداية ونهاية شفت العمل الرسمي للكابتن"
-            enableVibration(true)
-            vibrationPattern = longArrayOf(0, 250, 150, 250)
-            enableLights(true)
-            setShowBadge(true)
-            setSound(soundUri, audioAttrs)
-        }
-
-        manager.createNotificationChannel(ordersChannel)
-        manager.createNotificationChannel(ordersBellChannel)
-        manager.createNotificationChannel(shiftsChannel)
     }
 
     private fun markIfNotNotified(
@@ -277,16 +282,15 @@ object CaptainNotificationManager {
     }
 
     fun stopIncomingOrderBell(context: Context, orderKey: String = "") {
-        IncomingOrderBellService.stop(context, orderKey)
+        val activeKey = IncomingOrderBellService.activeRingingOrderKey
+        if (IncomingOrderBellService.isBellActive || orderKey.isNotBlank() || activeKey.isNotBlank()) {
+            IncomingOrderBellService.stop(context, orderKey)
+        }
         if (orderKey.isNotBlank()) {
             val notifId = computeOrderNotificationId(orderKey)
             runCatching { NotificationManagerCompat.from(context).cancel(notifId) }
-        } else {
-            // Cancel any pending order notification IDs if known
-            val activeKey = IncomingOrderBellService.activeRingingOrderKey
-            if (activeKey.isNotBlank()) {
-                runCatching { NotificationManagerCompat.from(context).cancel(computeOrderNotificationId(activeKey)) }
-            }
+        } else if (activeKey.isNotBlank()) {
+            runCatching { NotificationManagerCompat.from(context).cancel(computeOrderNotificationId(activeKey)) }
         }
     }
 
@@ -458,7 +462,7 @@ object CaptainNotificationManager {
 
     private fun resolveNotificationIcon(): Int {
         return try {
-            R.drawable.ic_launcher_foreground
+            R.drawable.ic_notification_captain
         } catch (_: Exception) {
             android.R.drawable.ic_dialog_info
         }

@@ -16,18 +16,18 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        captainViewModel.handleNotificationIntent(intent)
         setContent {
             ElBatalTheme {
                 AppNavigation(viewModel = captainViewModel)
             }
         }
+        runCatching { captainViewModel.handleNotificationIntent(intent) }
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        captainViewModel.handleNotificationIntent(intent)
+        runCatching { captainViewModel.handleNotificationIntent(intent) }
     }
 }
 

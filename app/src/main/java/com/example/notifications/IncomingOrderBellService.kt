@@ -542,7 +542,7 @@ class IncomingOrderBellService : Service() {
 
     private fun resolveSmallIcon(): Int {
         return try {
-            R.drawable.ic_launcher_foreground
+            R.drawable.ic_notification_captain
         } catch (_: Exception) {
             android.R.drawable.ic_dialog_info
         }

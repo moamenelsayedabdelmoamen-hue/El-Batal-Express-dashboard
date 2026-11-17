@@ -64,8 +64,26 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
     private val db = AppDatabase.getDatabase(application)
     val repository = CaptainRepository(db.captainDao(), db.orderDao(), db.shiftDao(), application.applicationContext)
 
-    private val firestore: FirebaseFirestore = FirebaseFirestore.getInstance()
-    private val auth: FirebaseAuth = FirebaseAuth.getInstance()
+    private fun ensureFirebaseInitialized(): Boolean {
+        return runCatching {
+            val app = getApplication<Application>()
+            if (com.google.firebase.FirebaseApp.getApps(app).isEmpty()) {
+                com.google.firebase.FirebaseApp.initializeApp(app)
+            }
+            com.google.firebase.FirebaseApp.getApps(app).isNotEmpty()
+        }.getOrDefault(false)
+    }
+
+    private val firestore: FirebaseFirestore? by lazy {
+        if (ensureFirebaseInitialized()) {
+            runCatching { FirebaseFirestore.getInstance() }.getOrNull()
+        } else null
+    }
+    private val auth: FirebaseAuth? by lazy {
+        if (ensureFirebaseInitialized()) {
+            runCatching { FirebaseAuth.getInstance() }.getOrNull()
+        } else null
+    }
     private var shiftDocListener: ListenerRegistration? = null
     private var shiftQueryListener: ListenerRegistration? = null
     private var captainDocListener: ListenerRegistration? = null
@@ -139,7 +157,7 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
         allOrders,
         captainState
     ) { orders, captain ->
-        val uid = auth.currentUser?.uid ?: captain?.uid ?: ""
+        val uid = auth?.currentUser?.uid ?: captain?.uid ?: ""
         val phone = captain?.phoneNumber ?: ""
         val fromOrders = orders.count {
             it.status == OrderStatus.DELIVERED &&
@@ -152,7 +170,7 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
         allOrders,
         captainState
     ) { orders, captain ->
-        val uid = auth.currentUser?.uid ?: captain?.uid ?: ""
+        val uid = auth?.currentUser?.uid ?: captain?.uid ?: ""
         val phone = captain?.phoneNumber ?: ""
         val fromOrders = orders
             .filter {
@@ -194,7 +212,7 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
         allOrders,
         captainState
     ) { orders, captain ->
-        val uid = auth.currentUser?.uid ?: captain?.uid ?: ""
+        val uid = auth?.currentUser?.uid ?: captain?.uid ?: ""
         val phone = captain?.phoneNumber ?: ""
         orders
             .filter { DailyWalletManager.isCaptainOwnOrder(it, uid, phone) }
@@ -211,7 +229,7 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
         captainState,
         _selectedHistoryDateKey
     ) { orders, captain, dateKey ->
-        val uid = auth.currentUser?.uid ?: captain?.uid ?: ""
+        val uid = auth?.currentUser?.uid ?: captain?.uid ?: ""
         val phone = captain?.phoneNumber ?: ""
         OrderHistoryHelper.filterArchivedOrdersForDate(
             allOrders = orders,
@@ -243,7 +261,7 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
         captainState,
         _currentOperationalDayKey
     ) { orders, captain, currentDayKey ->
-        val uid = auth.currentUser?.uid ?: captain?.uid ?: ""
+        val uid = auth?.currentUser?.uid ?: captain?.uid ?: ""
         val phone = captain?.phoneNumber ?: ""
         val todayCalendarKey = DailyWalletManager.getCalendarDateKey(System.currentTimeMillis())
 
@@ -264,7 +282,7 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
         captainState,
         _currentOperationalDayKey
     ) { orders, captain, currentDayKey ->
-        val uid = auth.currentUser?.uid ?: captain?.uid ?: ""
+        val uid = auth?.currentUser?.uid ?: captain?.uid ?: ""
         val phone = captain?.phoneNumber ?: ""
         val todayCalendarKey = DailyWalletManager.getCalendarDateKey(System.currentTimeMillis())
 
@@ -369,6 +387,7 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
 
     init {
         val appContext = getApplication<Application>()
+        ensureFirebaseInitialized()
         CaptainNotificationManager.ensureNotificationChannels(appContext)
 
         // Dynamic live ticker updating Cairo clock, shift status transitions, and 1:00 PM wallet rollover every second
@@ -433,7 +452,7 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
         // Auto-sync shifts, historical orders & FCM token on launch/initialization only for verified users
         viewModelScope.launch {
             repository.reconcileDailyWallets()
-            if (auth.currentUser?.isEmailVerified == true) {
+            if (auth?.currentUser?.isEmailVerified == true) {
                 repository.syncShiftsFromFirestore()
                 repository.syncFcmToken()
                 repository.syncCaptainOrdersHistoryFromFirestore()
@@ -442,7 +461,7 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
         // Keep persistent AlarmManager shift start/end notifications synced with latest schedule
         viewModelScope.launch {
             combine(captainState, shifts) { captain, shiftList ->
-                Triple(captain?.uid.orEmpty().ifBlank { auth.currentUser?.uid.orEmpty() }, captain?.isLoggedIn == true, shiftList)
+                Triple(captain?.uid.orEmpty().ifBlank { auth?.currentUser?.uid.orEmpty() }, captain?.isLoggedIn == true, shiftList)
             }
                 .distinctUntilChanged()
                 .collect { (uid, isLoggedIn, shiftList) ->
@@ -520,7 +539,7 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
                     if (isEligible == false) {
                         CaptainNotificationManager.stopIncomingOrderBell(appContext)
                         repository.clearPendingOrdersLocally()
-                    } else if (isEligible == true && auth.currentUser?.isEmailVerified == true) {
+                    } else if (isEligible == true && auth?.currentUser?.isEmailVerified == true) {
                         repository.syncOrdersDetailedFromFirestore()
                     }
                 }
@@ -539,7 +558,7 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
         _selectedHistoryDateKey.value = today
         _selectedHistoryTab.value = OrderHistoryTab.ALL
         _historySyncError.value = null
-        if (auth.currentUser?.isEmailVerified == true) {
+        if (auth?.currentUser?.isEmailVerified == true) {
             syncOrdersHistory(silentSuccess = true)
         }
     }
@@ -556,7 +575,7 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
         val clamped = OrderHistoryHelper.clampToMaxToday(dateKey, today)
         _selectedHistoryDateKey.value = clamped
         _historySyncError.value = null
-        if (auth.currentUser?.isEmailVerified == true) {
+        if (auth?.currentUser?.isEmailVerified == true) {
             syncOrdersHistory(silentSuccess = true)
         }
     }
@@ -566,7 +585,7 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
         _todayCalendarDateKey.value = today
         _selectedHistoryDateKey.value = today
         _historySyncError.value = null
-        if (auth.currentUser?.isEmailVerified == true) {
+        if (auth?.currentUser?.isEmailVerified == true) {
             syncOrdersHistory(silentSuccess = true)
         }
     }
@@ -638,7 +657,7 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
             viewModelScope.launch {
                 repository.setOnlineStatus(true)
                 if (_shiftStatus.value.isAvailableForOrders) {
-                    if (auth.currentUser?.isEmailVerified == true) {
+                    if (auth?.currentUser?.isEmailVerified == true) {
                         repository.syncOrdersDetailedFromFirestore()
                     }
                     _eventFlow.emit(UiEvent.ShowToast("أنت الآن متصل ومتاح لاستقبال الرحلات عبر الـ GPS ⚡"))
@@ -669,7 +688,7 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
             viewModelScope.launch {
                 repository.setOnlineStatus(true)
                 if (_shiftStatus.value.isAvailableForOrders) {
-                    if (auth.currentUser?.isEmailVerified == true) {
+                    if (auth?.currentUser?.isEmailVerified == true) {
                         repository.syncOrdersDetailedFromFirestore()
                     }
                     _eventFlow.emit(UiEvent.ShowToast("تم تفعيل الـ GPS والاتصال بنجاح! ⚡"))
@@ -1389,7 +1408,8 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun setupRealtimeShiftListener() {
-        val user = auth.currentUser
+        val currentAuth = auth ?: return
+        val user = currentAuth.currentUser
         if (user != null && user.isEmailVerified) {
             attachShiftSnapshotListeners(user.uid)
         } else {
@@ -1404,16 +1424,17 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
                     detachShiftSnapshotListeners()
                 }
             }
-            auth.addAuthStateListener(authStateListener!!)
+            currentAuth.addAuthStateListener(authStateListener!!)
         }
     }
 
     private fun attachShiftSnapshotListeners(uid: String) {
         detachShiftSnapshotListeners()
+        val dbFirestore = firestore ?: return
         Log.i("CaptainViewModel", "[ShiftSnapshotListener] Attaching live Firestore listener for UID: $uid (target: captain_schedules/$uid)")
 
         // 1. Direct document listener on captain_schedules/{uid}
-        shiftDocListener = firestore.collection("captain_schedules").document(uid)
+        shiftDocListener = dbFirestore.collection("captain_schedules").document(uid)
             .addSnapshotListener { snapshot, error ->
                 if (error != null) {
                     Log.w("CaptainViewModel", "[ShiftSnapshotListener] captain_schedules/$uid error: ${error.message}")
@@ -1433,7 +1454,7 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
             }
 
         // 2. Query listener on captain_schedules where captainId == uid
-        shiftQueryListener = firestore.collection("captain_schedules")
+        shiftQueryListener = dbFirestore.collection("captain_schedules")
             .whereEqualTo("captainId", uid)
             .addSnapshotListener { snapshot, error ->
                 if (error != null) return@addSnapshotListener
@@ -1454,7 +1475,7 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
             }
 
         // 3. Document listener on captains/{uid} (profile doc fallback)
-        captainDocListener = firestore.collection("captains").document(uid)
+        captainDocListener = dbFirestore.collection("captains").document(uid)
             .addSnapshotListener { snapshot, error ->
                 if (error != null) return@addSnapshotListener
                 if (snapshot != null && snapshot.exists()) {
@@ -1483,6 +1504,8 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
     override fun onCleared() {
         super.onCleared()
         detachShiftSnapshotListeners()
-        authStateListener?.let { auth.removeAuthStateListener(it) }
+        authStateListener?.let { listener ->
+            runCatching { auth?.removeAuthStateListener(listener) }
+        }
     }
 }

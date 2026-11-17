@@ -25,6 +25,9 @@
     <uses-feature
         android:name="android.hardware.camera"
         android:required="false" />
+    <uses-feature
+        android:name="android.hardware.location"
+        android:required="false" />
 
     <!-- Package visibility for opening merchant location links directly in Google Maps -->
     <queries>
@@ -60,6 +63,36 @@
                 android:resource="@xml/file_paths" />
         </provider>
 
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:theme="@style/Theme.MyApplication">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Compatibility alias so explicit launches targeting ${applicationId}/.MainActivity route to MainActivity -->
+        <activity-alias
+            android:name="${applicationId}.MainActivity"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:targetActivity="com.example.MainActivity" />
+
+        <!-- Full-Screen Incoming Order Alert (shown over lock screen / when outside app) -->
+        <activity
+            android:name=".notifications.IncomingOrderActivity"
+            android:enabled="true"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
+            android:theme="@style/Theme.MyApplication" />
+
         <!-- Live GPS Foreground Location Service -->
         <service
             android:name=".data.location.CaptainLocationService"
@@ -73,17 +106,6 @@
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />
-
-        <!-- Full-Screen Incoming Order Alert (shown over lock screen / when outside app) -->
-        <activity
-            android:name=".notifications.IncomingOrderActivity"
-            android:enabled="true"
-            android:excludeFromRecents="true"
-            android:exported="false"
-            android:launchMode="singleTop"
-            android:showWhenLocked="true"
-            android:turnScreenOn="true"
-            android:theme="@style/Theme.MyApplication" />
 
         <!-- Firebase Cloud Messaging Service for closed & open app notifications -->
         <service
@@ -112,18 +134,6 @@
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
-
-        <activity
-            android:name=".MainActivity"
-            android:exported="true"
-            android:label="@string/app_name"
-            android:theme="@style/Theme.MyApplication">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity>
     </application>
 
 </manifest>

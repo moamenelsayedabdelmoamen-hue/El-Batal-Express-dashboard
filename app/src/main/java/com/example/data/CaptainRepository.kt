@@ -14,9 +14,11 @@ import com.google.firebase.auth.UserProfileChangeRequest
 import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.FirebaseFirestoreException
 import com.google.firebase.firestore.GeoPoint
 import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.SetOptions
+import com.google.firebase.firestore.Source
 import com.example.data.storage.FirebaseStorageRepository
 import com.example.data.storage.ImageUploadState
 import com.example.notifications.CaptainNotificationManager
@@ -213,11 +215,27 @@ class CaptainRepository(
             }
 
             override suspend fun createCaptainDoc(uid: String, data: Map<String, Any>) {
+                require(uid.isNotBlank()) { "Captain UID must not be blank" }
+                require(data["accountType"]?.toString()?.trim()?.lowercase() == CAPTAIN_ACCOUNT_TYPE) {
+                    "New captain document in captains/$uid MUST define accountType = '$CAPTAIN_ACCOUNT_TYPE'"
+                }
+                require(data["role"]?.toString()?.trim()?.lowercase() == CAPTAIN_ROLE) {
+                    "New captain document in captains/$uid MUST define role = '$CAPTAIN_ROLE'"
+                }
                 firestore.collection("captains").document(uid).set(data).await()
             }
 
             override suspend fun getCaptainDoc(uid: String): Map<String, Any?>? {
-                val snap = firestore.collection("captains").document(uid).get().await()
+                val docRef = firestore.collection("captains").document(uid)
+                val snap = try {
+                    docRef.get(Source.SERVER).await()
+                } catch (serverErr: Exception) {
+                    val fsEx = serverErr as? FirebaseFirestoreException
+                    if (fsEx?.code == FirebaseFirestoreException.Code.PERMISSION_DENIED) {
+                        throw serverErr
+                    }
+                    docRef.get(Source.DEFAULT).await()
+                }
                 return if (snap.exists()) (snap.data ?: emptyMap()) else null
             }
 
@@ -244,14 +262,14 @@ class CaptainRepository(
 
                             if (!querySnap.isEmpty) {
                                 val doc = querySnap.documents[0]
-                                if (doc.safeString("accountType").trim().lowercase() == "captain") {
+                                if (isEligibleCaptainIdentity(doc.safeString("accountType"), doc.safeString("role"))) {
                                     val em = doc.safeString("email")
                                     if (em.isNotBlank()) return em
                                 }
                             }
                         } catch (e: Exception) {
-                            val fsEx = e as? com.google.firebase.firestore.FirebaseFirestoreException
-                            if (fsEx?.code == com.google.firebase.firestore.FirebaseFirestoreException.Code.PERMISSION_DENIED) {
+                            val fsEx = e as? FirebaseFirestoreException
+                            if (fsEx?.code == FirebaseFirestoreException.Code.PERMISSION_DENIED) {
                                 permissionDenied = true
                                 break
                             }
@@ -269,14 +287,14 @@ class CaptainRepository(
                                 .await()
                             if (!numSnap.isEmpty) {
                                 val doc = numSnap.documents[0]
-                                if (doc.safeString("accountType").trim().lowercase() == "captain") {
+                                if (isEligibleCaptainIdentity(doc.safeString("accountType"), doc.safeString("role"))) {
                                     val em = doc.safeString("email")
                                     if (em.isNotBlank()) return em
                                 }
                             }
                         } catch (e: Exception) {
-                            val fsEx = e as? com.google.firebase.firestore.FirebaseFirestoreException
-                            if (fsEx?.code == com.google.firebase.firestore.FirebaseFirestoreException.Code.PERMISSION_DENIED) {
+                            val fsEx = e as? FirebaseFirestoreException
+                            if (fsEx?.code == FirebaseFirestoreException.Code.PERMISSION_DENIED) {
                                 permissionDenied = true
                                 break
                             }
@@ -288,7 +306,7 @@ class CaptainRepository(
                     try {
                         val scanSnap = firestore.collection("captains").limit(100).get().await()
                         for (doc in scanSnap.documents) {
-                            if (doc.safeString("accountType").trim().lowercase() != "captain") continue
+                            if (!isEligibleCaptainIdentity(doc.safeString("accountType"), doc.safeString("role"))) continue
                             val p = doc.safeString("phone", "phoneNumber", "phone_number", "mobile", "driverPhone")
                                 .ifBlank { doc.get("phone")?.toString() ?: doc.get("phoneNumber")?.toString() ?: "" }
                             if (isSamePhone(p, normalizedLocal)) {
@@ -533,7 +551,11 @@ class CaptainRepository(
     }
 
     private val firestoreOrderFallbackPort: FirestoreOrderFallbackPort? by lazy {
-        firestoreOrderFallbackOverride ?: createDefaultFirestoreOrderFallbackPortIfReady()
+        firestoreOrderFallbackOverride ?: if (cloudFunctionsClientOverride == null) {
+            createDefaultFirestoreOrderFallbackPortIfReady()
+        } else {
+            null
+        }
     }
 
     private fun createDefaultFirestoreOrderFallbackPortIfReady(): FirestoreOrderFallbackPort? {
@@ -1714,8 +1736,10 @@ class CaptainRepository(
 
     /**
      * Validates that a Firestore document retrieved from 'captains/{uid}' is a genuine Captain account.
-     * Strictly rejects missing documents, missing/non-'captain' accountType (e.g. merchants), UID mismatches,
-     * and suspended/disabled/blocked/banned accounts.
+     * - If 'accountType' is present: it MUST equal "captain" (rejects merchants even if role='captain').
+     * - If 'accountType' is missing/blank on a legacy captains/{uid} document: accepts ONLY if 'role' == "captain",
+     *   preserving existing legacy fields without performing any unapproved Firestore mutation.
+     * - Strictly rejects missing documents, UID mismatches, merchant accounts, and suspended/banned accounts.
      */
     private fun validateCaptainDoc(
         docData: Map<String, Any?>?,
@@ -1733,13 +1757,21 @@ class CaptainRepository(
             )
         }
         val accountType = docData.mapString("accountType").lowercase()
-        if (accountType != "captain") {
-            val msg = if (accountType in listOf("merchant", "restaurant", "vendor", "store")) {
+        val role = docData.mapString("role").lowercase()
+        if (!isEligibleCaptainIdentity(accountType, role)) {
+            val conflictingValue = accountType.ifBlank { role }
+            val msg = if (conflictingValue in listOf("merchant", "restaurant", "vendor", "store")) {
                 "هذا الحساب مسجل كحساب تاجر وليس كابتن. ممنوع دخول حسابات التجار إلى تطبيق الكابتن."
             } else {
-                "هذا الحساب غير مسجل ككابتن (accountType يجب أن يساوي captain)."
+                "هذا الحساب غير مسجل ككابتن (يجب أن يساوي accountType أو role القيمة captain)."
             }
             return Result.failure(IllegalStateException(msg))
+        }
+        if (accountType.isBlank() && role == CAPTAIN_ROLE) {
+            Log.w(
+                "CaptainRepository",
+                "Legacy captain document captains/$uid uses role='captain' without accountType; allowing login without altering Firestore schema."
+            )
         }
         val docStatus = docData.mapString("status", default = "active").lowercase()
         if (docStatus in listOf("disabled", "blocked", "suspended", "banned")) {
@@ -1770,6 +1802,8 @@ class CaptainRepository(
         val avatarUri = profilePath.ifBlank {
             docData.mapString("profileImageUrl", "photoUrl", "avatarUri")
         }
+        val resolvedRole = docData.mapString("role", default = CAPTAIN_ROLE).lowercase()
+        val resolvedAccountType = docData.mapString("accountType", default = resolvedRole).lowercase()
         return CaptainEntity(
             id = 1,
             uid = uid,
@@ -1786,8 +1820,8 @@ class CaptainRepository(
             idBackImagePath = idBackPath,
             licenseImagePath = licensePath,
             address = docData.mapString("address"),
-            accountType = "captain",
-            role = "captain",
+            accountType = resolvedAccountType.ifBlank { CAPTAIN_ACCOUNT_TYPE },
+            role = resolvedRole.ifBlank { CAPTAIN_ROLE },
             status = docData.mapString("status", default = "active").lowercase(),
             availabilityStatus = docData.mapString("availabilityStatus", default = if (isOnline) "available" else "offline"),
             shiftStatus = docData.mapString("shiftStatus", default = "outside_shift"),
@@ -1885,7 +1919,13 @@ class CaptainRepository(
             Log.e("CaptainRepository", "Failed reading captains/$uid during login: ${e.message}", e)
             authBackend.signOut()
             captainDao.updateLoginState(false)
-            return LoginOutcome.Error("تعذر التحقق من بيانات حساب الكابتن في قاعدة البيانات. يرجى التحقق من الاتصال والمحاولة مجدداً.")
+            val fsEx = e as? FirebaseFirestoreException
+            val errMessage = if (fsEx?.code == FirebaseFirestoreException.Code.PERMISSION_DENIED) {
+                "تم رفض قراءة بيانات الكابتن من قواعد الأمان (PERMISSION_DENIED) للمسار captains/$uid."
+            } else {
+                "تعذر التحقق من بيانات حساب الكابتن في قاعدة البيانات. يرجى التحقق من الاتصال والمحاولة مجدداً."
+            }
+            return LoginOutcome.Error(errMessage)
         }
 
         val validDoc = validateCaptainDoc(rawCaptainDoc, uid).getOrElse { err ->
@@ -2364,50 +2404,28 @@ class CaptainRepository(
                 storageRepository.uploadCaptainLicenseImage(uid, it)
             }
 
-            // Step 3: Create single document ONLY in captains/{uid}
+            // Step 3: Create single document ONLY in captains/{uid} with canonical accountType + role
             val now = System.currentTimeMillis()
-            val captainDocData = hashMapOf<String, Any>(
-                "uid" to uid,
-                "name" to trimmedName,
-                "fullName" to trimmedName,
-                "email" to trimmedEmail,
-                "phone" to trimmedPhone,
-                "phoneNumber" to trimmedPhone,
-                "personalImage" to profilePath,
-                "profileImagePath" to profilePath,
-                "idCardFront" to idFrontPath,
-                "idFrontImagePath" to idFrontPath,
-                "idCardBack" to idBackPath,
-                "idBackImagePath" to idBackPath,
-                "licenseImagePath" to licensePath,
-                "idDocumentsComplete" to (idFrontPath.isNotBlank() && idBackPath.isNotBlank()),
-                "address" to trimmedAddress,
-                "accountType" to "captain",
-                "role" to "captain",
-                "status" to "pending",
-                "emailVerified" to false,
-                "isEmailVerified" to false,
-                "createdAt" to now,
-                "updatedAt" to FieldValue.serverTimestamp(),
-                "availabilityStatus" to "offline",
-                "presenceStatus" to "offline",
-                "shiftStatus" to "outside_shift",
-                "vehicleType" to vehicleType,
-                "licensePlate" to "ب ط ل 1 0 0",
-                "avatarUri" to profilePath,
-                "avatarPresetIndex" to avatarPresetIndex,
-                "totalOrdersCount" to 0,
-                "walletBalance" to 0.0,
-                "rating" to 5.0,
-                "isOnline" to false,
-                "isLoggedIn" to false
+            val captainDocData = buildNewCaptainDocumentData(
+                uid = uid,
+                name = trimmedName,
+                email = trimmedEmail,
+                phone = trimmedPhone,
+                profilePath = profilePath,
+                idFrontPath = idFrontPath,
+                idBackPath = idBackPath,
+                licensePath = licensePath,
+                address = trimmedAddress,
+                vehicleType = vehicleType,
+                avatarPresetIndex = avatarPresetIndex,
+                createdAtMs = now
             )
 
             try {
                 authBackend.createCaptainDoc(uid, captainDocData)
                 Log.i("CaptainRepository", "FIRESTORE CAPTAIN CREATE SUCCESS: captains/$uid")
             } catch (fsEx: Exception) {
-                val firestoreCode = (fsEx as? com.google.firebase.firestore.FirebaseFirestoreException)?.code?.name ?: "UNKNOWN"
+                val firestoreCode = (fsEx as? FirebaseFirestoreException)?.code?.name ?: "UNKNOWN"
                 Log.e("CaptainRepository", "FIRESTORE CAPTAIN CREATE ERROR - code: $firestoreCode, message: ${fsEx.message}", fsEx)
                 if (createdAuthUser) {
                     runCatching { authBackend.deleteCurrentUser() }
@@ -3667,13 +3685,78 @@ class CaptainRepository(
         ): Result<Unit> {
             return try {
                 val orderRef = resolveOrderRef(order) ?: return Result.success(Unit)
+                val excludedSet = mutableSetOf(captainUid)
+
+                val orderSnap = runCatching { orderRef.get().await() }.getOrNull()
+                if (orderSnap != null && orderSnap.exists()) {
+                    val existingExcluded = (orderSnap.get("excludedCaptainIds") as? Iterable<*>)
+                        ?.mapNotNull { it?.toString()?.trim()?.takeIf { s -> s.isNotEmpty() } }
+                        .orEmpty()
+                    excludedSet.addAll(existingExcluded)
+                }
+
+                // Best-effort lookup of nearest online captain to the merchant
+                val nearestMatch = runCatching {
+                    val onlineSnap = db.collection("captains")
+                        .whereEqualTo("isOnline", true)
+                        .limit(50)
+                        .get()
+                        .await()
+
+                    val candidates = onlineSnap.documents.map { doc ->
+                        val uid = doc.id
+                        val lat = doc.safeDouble("lat", "latitude", "currentLat", default = Double.NaN)
+                            .takeIf { !it.isNaN() }
+                        val lng = doc.safeDouble("lng", "longitude", "currentLng", default = Double.NaN)
+                            .takeIf { !it.isNaN() }
+                        val statusStr = doc.safeString("status", default = "active").trim().lowercase()
+                        val accountActive = statusStr !in listOf("banned", "suspended", "disabled", "blocked", "pending", "inactive")
+                        val embeddedShifts = doc.extractAllShifts(uid)
+                        val inShift = if (embeddedShifts.isNotEmpty()) {
+                            ShiftManager.calculateShiftStatus(embeddedShifts).isAvailableForOrders
+                        } else {
+                            true
+                        }
+                        com.example.data.dispatch.NearestCaptainMatcher.CaptainCandidate(
+                            uid = uid,
+                            latitude = lat,
+                            longitude = lng,
+                            isOnline = doc.getBoolean("isOnline") == true,
+                            accountActive = accountActive,
+                            inActiveShift = inShift,
+                            hasOngoingOrder = false
+                        )
+                    }
+
+                    val mLat = orderSnap?.safeDouble("pickupLat", "storeLat", "merchantLat", "restaurantLat", default = Double.NaN)
+                        ?.takeIf { !it.isNaN() }
+                        ?: order.restaurantLatitude
+                    val mLng = orderSnap?.safeDouble("pickupLng", "storeLng", "merchantLng", "restaurantLng", default = Double.NaN)
+                        ?.takeIf { !it.isNaN() }
+                        ?: order.restaurantLongitude
+
+                    com.example.data.dispatch.NearestCaptainMatcher.findNearestEligibleCaptain(
+                        merchantLat = mLat,
+                        merchantLng = mLng,
+                        candidates = candidates,
+                        excludedCaptainIds = excludedSet
+                    )
+                }.getOrNull()
+
                 db.runTransaction { tx ->
                     val snap = tx.get(orderRef)
                     if (!snap.exists()) return@runTransaction
                     val status = snap.safeString("status", "order_status", "orderStatus", "state", default = "pending").trim().lowercase()
-                    if (status !in listOf("pending", "searching", "offered")) return@runTransaction
-                    tx.update(
-                        orderRef,
+                    if (status !in listOf("pending", "searching", "offered", "new", "ready", "ready_for_pickup", "waiting_driver")) return@runTransaction
+                    val updates = if (nearestMatch != null) {
+                        mapOf(
+                            "excludedCaptainIds" to FieldValue.arrayUnion(captainUid),
+                            "status" to "pending",
+                            "offeredCaptainId" to nearestMatch.uid,
+                            "offerExpiresAt" to (System.currentTimeMillis() + 60_000L),
+                            "updatedAt" to FieldValue.serverTimestamp()
+                        )
+                    } else {
                         mapOf(
                             "excludedCaptainIds" to FieldValue.arrayUnion(captainUid),
                             "status" to "searching",
@@ -3681,7 +3764,8 @@ class CaptainRepository(
                             "offerExpiresAt" to null,
                             "updatedAt" to FieldValue.serverTimestamp()
                         )
-                    )
+                    }
+                    tx.update(orderRef, updates)
                 }.await()
                 Result.success(Unit)
             } catch (e: CancellationException) {
