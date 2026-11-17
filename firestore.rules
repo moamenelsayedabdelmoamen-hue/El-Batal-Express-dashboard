@@ -319,12 +319,12 @@ service cloud.firestore {
         && (request.auth.uid == merchantId || isAdmin());
       allow list: if isAdmin();
 
-      // A merchant may create only their own minimal, pending, non-privileged account.
-      allow create: if isSignedIn()
-        && isValidId(merchantId)
-        && request.auth.uid == merchantId
-        && isSafeInitialMerchantDoc(incoming(), merchantId);
-
+    allow create: if isAdmin() || (
+  isSignedIn()
+  && isValidId(merchantId)
+  && request.auth.uid == merchantId
+  && isSafeInitialMerchantDoc(incoming(), merchantId)
+);
       allow update: if isSignedIn()
         && isValidId(merchantId)
         && (
