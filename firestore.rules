@@ -408,25 +408,21 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/merchants/$(request.auth.uid)).data.status in ['approved', 'active']
       );
 
-      // The merchant cannot assign/change the captain or dispatch state. Captains can update
-      // delivery progress only on orders already assigned to their UID.
-      allow update: if isAdmin() ||
-        (
-          isOrderOwnedByMerchant(existing())
-          && incoming().merchantId == existing().merchantId
-          && incoming().userId == existing().userId
-          && incoming().orderCode == existing().orderCode
-          && incoming().captainId == existing().captainId
-          && !incoming().diff(existing()).affectedKeys().hasAny(['captainId', 'captainUid', 'driverId', 'assignedCaptainId', 'offeredCaptainId', 'dispatchStatus', 'assignedAt'])
-        ) ||
-        (
-          isCaptainAccount()
-          && existing().captainId == request.auth.uid
-          && incoming().captainId == existing().captainId
-          && incoming().merchantId == existing().merchantId
-          && incoming().userId == existing().userId
-          && incoming().orderCode == existing().orderCode
-        );
+      // All captain order lifecycle mutations must execute via Cloud Functions (Admin SDK).
+      // Merchants may only update non-dispatch/non-captain fields on their own orders.
+      allow update: if isAdmin() || (
+        isOrderOwnedByMerchant(existing())
+        && incoming().merchantId == existing().merchantId
+        && incoming().userId == existing().userId
+        && incoming().orderCode == existing().orderCode
+        && incoming().captainId == existing().captainId
+        && !incoming().diff(existing()).affectedKeys().hasAny([
+          'captainId', 'captainUid', 'driverId', 'assignedCaptainId',
+          'offeredCaptainId', 'eligibleCaptainIds', 'excludedCaptainIds',
+          'timedOutCaptainIds', 'dispatchStatus', 'assignedAt', 'acceptedAt',
+          'deliveredAt', 'completedAt', 'captainEarning', 'platformCommission'
+        ])
+      );
       allow delete: if isAdmin();
     }
 

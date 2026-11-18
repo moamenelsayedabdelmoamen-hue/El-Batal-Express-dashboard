@@ -21,7 +21,6 @@ import com.example.data.CaptainAuthBackendPort
 import com.example.data.CaptainCloudMetadataPort
 import com.example.data.CaptainEntity
 import com.example.data.CaptainRepository
-import com.example.data.FirestoreOrderFallbackPort
 import com.example.data.LoginOutcome
 import com.example.data.OrderEntity
 import com.example.data.OrderStatus
@@ -30,6 +29,7 @@ import com.example.data.ShiftEntity
 import com.example.data.ShiftManager
 import com.example.data.ShiftStatus
 import com.example.data.remote.CloudFunctionsOrderClient
+import com.example.data.remote.OrderCallableGateway
 import com.example.data.storage.AuthUidProvider
 import com.example.data.storage.FirebaseStorageRepository
 import com.example.data.storage.NetworkConnectivityChecker
@@ -43,12 +43,6 @@ import com.google.firebase.auth.FirebaseAuthInvalidCredentialsException
 import com.google.firebase.auth.FirebaseAuthUserCollisionException
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
-import okhttp3.Interceptor
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
-import okhttp3.Protocol
-import okhttp3.Response
-import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -296,34 +290,16 @@ class CaptainAuthAndIsolationTest {
                 notes: String
             ): Result<String> = Result.success("ok")
         }
-        val mockHttp = OkHttpClient.Builder()
-            .addInterceptor(Interceptor { chain ->
-                Response.Builder()
-                    .request(chain.request())
-                    .protocol(Protocol.HTTP_1_1)
-                    .code(200)
-                    .message("OK")
-                    .body("""{"success":true,"message":"ok"}""".toResponseBody("application/json".toMediaType()))
-                    .build()
-            })
-            .build()
         val cfClient = CloudFunctionsOrderClient(
             firebaseAuth = null,
-            baseUrl = "https://us-central1-el-batal-express-956ae.cloudfunctions.net",
-            httpClient = mockHttp,
-            authCredentialsProvider = { activeUidProvider() to "mock_jwt" }
+            callableGateway = object : OrderCallableGateway {
+                override suspend fun callFunction(
+                    functionName: String,
+                    payload: Map<String, Any?>
+                ): Map<String, Any?> = mapOf("success" to true, "message" to "ok", "earnedAmount" to 30.0)
+            },
+            authUidProvider = { activeUidProvider() }
         )
-        val fallbackPort = object : FirestoreOrderFallbackPort {
-            override suspend fun acceptOrder(order: OrderEntity, captainUid: String, captainPhone: String) = Result.success("ok")
-            override suspend fun markArrivedAtMerchant(order: OrderEntity, captainUid: String, captainPhone: String) = Result.success("ok")
-            override suspend fun confirmPickup(order: OrderEntity, captainUid: String, captainPhone: String) = Result.success("ok")
-            override suspend fun submitCustomerDeliveryDetails(
-                order: OrderEntity, captainUid: String, captainPhone: String,
-                customerName: String, customerPhone: String, receiptImagePath: String, notes: String
-            ) = Result.success("ok")
-            override suspend fun confirmDelivery(order: OrderEntity, captainUid: String, captainPhone: String) = Result.success(30.0)
-            override suspend fun expireOrDeclineOffer(order: OrderEntity, captainUid: String, reason: String) = Result.success(Unit)
-        }
 
         return CaptainRepository(
             captainDao = db.captainDao(),
@@ -333,7 +309,6 @@ class CaptainAuthAndIsolationTest {
             storageRepository = storageRepo,
             cloudMetadataPortOverride = metadataPort,
             cloudFunctionsClientOverride = cfClient,
-            firestoreOrderFallbackOverride = fallbackPort,
             authBackendOverride = backend
         )
     }

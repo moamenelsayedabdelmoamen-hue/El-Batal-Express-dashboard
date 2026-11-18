@@ -97,6 +97,7 @@ dependencies {
   implementation(libs.converter.moshi)
   implementation(libs.firebase.ai)
   implementation(libs.firebase.firestore)
+  implementation(libs.firebase.functions)
 
   // Firebase Auth with Google Sign-In requires all of the following to be uncommented together.
   // If you are using Firebase Auth with other providers (e.g. Email/Password), you may only need

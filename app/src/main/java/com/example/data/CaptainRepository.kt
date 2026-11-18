@@ -63,47 +63,7 @@ interface CaptainCloudMetadataPort {
     ): Result<String>
 }
 
-interface FirestoreOrderFallbackPort {
-    suspend fun acceptOrder(
-        order: OrderEntity,
-        captainUid: String,
-        captainPhone: String
-    ): Result<String>
 
-    suspend fun markArrivedAtMerchant(
-        order: OrderEntity,
-        captainUid: String,
-        captainPhone: String
-    ): Result<String>
-
-    suspend fun confirmPickup(
-        order: OrderEntity,
-        captainUid: String,
-        captainPhone: String
-    ): Result<String>
-
-    suspend fun submitCustomerDeliveryDetails(
-        order: OrderEntity,
-        captainUid: String,
-        captainPhone: String,
-        customerName: String,
-        customerPhone: String,
-        receiptImagePath: String,
-        notes: String
-    ): Result<String>
-
-    suspend fun confirmDelivery(
-        order: OrderEntity,
-        captainUid: String,
-        captainPhone: String
-    ): Result<Double>
-
-    suspend fun expireOrDeclineOffer(
-        order: OrderEntity,
-        captainUid: String,
-        reason: String
-    ): Result<Unit>
-}
 
 data class AuthUserSnapshot(
     val uid: String,
@@ -140,7 +100,6 @@ class CaptainRepository(
     val storageRepository: FirebaseStorageRepository = FirebaseStorageRepository.getInstance(context),
     private val cloudMetadataPortOverride: CaptainCloudMetadataPort? = null,
     private val cloudFunctionsClientOverride: com.example.data.remote.CloudFunctionsOrderClient? = null,
-    private val firestoreOrderFallbackOverride: FirestoreOrderFallbackPort? = null,
     private val authBackendOverride: CaptainAuthBackendPort? = null
 ) {
     suspend fun saveShiftsLocally(uid: String, shifts: List<ShiftEntity>) {
@@ -550,27 +509,6 @@ class CaptainRepository(
         cloudFunctionsClientOverride ?: com.example.data.remote.CloudFunctionsOrderClient(firebaseAuth)
     }
 
-    private val firestoreOrderFallbackPort: FirestoreOrderFallbackPort? by lazy {
-        firestoreOrderFallbackOverride ?: if (cloudFunctionsClientOverride == null) {
-            createDefaultFirestoreOrderFallbackPortIfReady()
-        } else {
-            null
-        }
-    }
-
-    private fun createDefaultFirestoreOrderFallbackPortIfReady(): FirestoreOrderFallbackPort? {
-        val appInitialized = runCatching {
-            if (context != null) {
-                com.google.firebase.FirebaseApp.getApps(context).isNotEmpty()
-            } else {
-                runCatching { com.google.firebase.FirebaseApp.getInstance() }.isSuccess
-            }
-        }.getOrDefault(false)
-        if (!appInitialized) return null
-        val db = runCatching { firestore }.getOrNull() ?: return null
-        return DefaultFirestoreOrderFallbackPort(db)
-    }
-
     init {
         if (cloudMetadataPortOverride == null && cloudFunctionsClientOverride == null && authBackendOverride == null) {
             try {
@@ -829,9 +767,10 @@ class CaptainRepository(
                 }
             }
 
-            // 1. Available pending orders (matches firestore.rules isAvailablePendingOrder)
+            // 1. Available pending orders scoped to this captain (matches firestore.rules isAvailablePendingOrder)
             ordersListenerRegistrations += firestore.collection("orders")
                 .whereEqualTo("status", "pending")
+                .whereArrayContains("eligibleCaptainIds", authUid)
                 .addSnapshotListener { snapshot, error ->
                     if (error != null) {
                         Log.w("CaptainRepository", "[FirestoreOrdersListener] pending query notice: ${error.message}")
@@ -877,9 +816,15 @@ class CaptainRepository(
                 return Result.success(emptyList())
             }
 
-            Log.i("CaptainRepository", "[FirestoreQuery] Executing query on 'orders' collection filtering by: status == 'pending'...")
+            val myUid = currentCaptain?.uid?.takeIf { it.isNotBlank() }
+                ?: runCatching { firebaseAuth.currentUser?.uid }.getOrNull().orEmpty()
+            if (myUid.isBlank()) {
+                return Result.success(emptyList())
+            }
+            Log.i("CaptainRepository", "[FirestoreQuery] Executing scoped query on 'orders' where status == 'pending' and eligibleCaptainIds array-contains captain...")
             val querySnapshot = firestore.collection("orders")
                 .whereEqualTo("status", "pending")
+                .whereArrayContains("eligibleCaptainIds", myUid)
                 .get()
                 .await()
 
@@ -947,13 +892,14 @@ class CaptainRepository(
                 try {
                     val pendingSnapshot = firestore.collection("orders")
                         .whereEqualTo("status", "pending")
+                        .whereArrayContains("eligibleCaptainIds", myUid)
                         .get()
                         .await()
                     for (doc in pendingSnapshot.documents) {
                         matchedDocs[doc.id] = doc
                     }
                 } catch (e: Exception) {
-                    Log.w("CaptainRepository", "[FirestoreSync] status=='pending' query notice: ${e.message}")
+                    Log.w("CaptainRepository", "[FirestoreSync] scoped pending query notice: ${e.message}")
                 }
             }
 
@@ -2847,19 +2793,7 @@ class CaptainRepository(
         }
 
         val orderDocId = resolveCleanOrderDocId(order)
-        val primaryRes = cloudFunctionsOrderClient.acceptDeliveryOffer(orderDocId)
-        val finalRes = if (primaryRes.isFailure) {
-            val cfEx = primaryRes.exceptionOrNull() as? com.example.data.remote.CloudFunctionException
-            val fallback = firestoreOrderFallbackPort
-            if (cfEx != null && cfEx.isEndpointNotFound && fallback != null) {
-                Log.i("CaptainRepository", "[acceptOrder] Cloud Function endpoint unavailable (404); falling back to atomic Firestore transaction.")
-                fallback.acceptOrder(order, currentUid, currentPhone)
-            } else {
-                primaryRes
-            }
-        } else {
-            primaryRes
-        }
+        val finalRes = cloudFunctionsOrderClient.acceptDeliveryOffer(orderDocId)
 
         return if (finalRes.isSuccess) {
             context?.let { CaptainNotificationManager.stopIncomingOrderBell(it, orderDocId) }
@@ -2901,7 +2835,7 @@ class CaptainRepository(
     }
 
     /**
-     * 2. Arrived at merchant: calls Cloud Function captainArrivedAtMerchant (or atomic Firestore fallback ONLY on bare HTTP 404).
+     * 2. Arrived at merchant: calls Cloud Function `captainArrivedAtMerchant` (Server-only; zero direct Firestore fallback).
      */
     suspend fun markAtStore(orderId: Long): Result<String> {
         val orders = allOrdersFlow.firstOrNull() ?: emptyList()
@@ -2914,19 +2848,7 @@ class CaptainRepository(
         }
 
         val orderDocId = resolveCleanOrderDocId(order)
-        val primaryRes = cloudFunctionsOrderClient.captainArrivedAtMerchant(orderDocId)
-        val finalRes = if (primaryRes.isFailure) {
-            val cfEx = primaryRes.exceptionOrNull() as? com.example.data.remote.CloudFunctionException
-            val fallback = firestoreOrderFallbackPort
-            if (cfEx != null && cfEx.isEndpointNotFound && fallback != null) {
-                Log.i("CaptainRepository", "[markAtStore] Cloud Function endpoint unavailable (404); falling back to atomic Firestore transaction.")
-                fallback.markArrivedAtMerchant(order, currentUid, currentPhone)
-            } else {
-                primaryRes
-            }
-        } else {
-            primaryRes
-        }
+        val finalRes = cloudFunctionsOrderClient.captainArrivedAtMerchant(orderDocId)
 
         if (finalRes.isSuccess) {
             orderDao.updateOrderStatusAndCaptain(orderId, OrderStatus.AT_STORE, currentUid)
@@ -2941,7 +2863,7 @@ class CaptainRepository(
     }
 
     /**
-     * 3. Confirm pickup from merchant: calls Cloud Function confirmPickup (or atomic Firestore fallback ONLY on bare HTTP 404).
+     * 3. Confirm pickup from merchant: calls Cloud Function `confirmPickup` (Server-only; zero direct Firestore fallback).
      */
     suspend fun confirmPickup(orderId: Long): Result<String> {
         val orders = allOrdersFlow.firstOrNull() ?: emptyList()
@@ -2954,19 +2876,7 @@ class CaptainRepository(
         }
 
         val orderDocId = resolveCleanOrderDocId(order)
-        val primaryRes = cloudFunctionsOrderClient.confirmPickup(orderDocId)
-        val finalRes = if (primaryRes.isFailure) {
-            val cfEx = primaryRes.exceptionOrNull() as? com.example.data.remote.CloudFunctionException
-            val fallback = firestoreOrderFallbackPort
-            if (cfEx != null && cfEx.isEndpointNotFound && fallback != null) {
-                Log.i("CaptainRepository", "[confirmPickup] Cloud Function endpoint unavailable (404); falling back to atomic Firestore transaction.")
-                fallback.confirmPickup(order, currentUid, currentPhone)
-            } else {
-                primaryRes
-            }
-        } else {
-            primaryRes
-        }
+        val finalRes = cloudFunctionsOrderClient.confirmPickup(orderDocId)
 
         if (finalRes.isSuccess) {
             orderDao.updateOrderStatusAndCaptain(orderId, OrderStatus.PICKED_UP, currentUid)
@@ -2983,8 +2893,8 @@ class CaptainRepository(
     /**
      * 4. Submit customer details & receipt image to Firebase Storage ("orders/{orderId}/receipts/{uniqueFileName}")
      * and link receiptImagePath, receiptUploadedAt (ServerTimestamp), and receiptUploadedBy via Cloud Functions
-     * (or atomic Firestore fallback ONLY on bare HTTP 404).
-     * Never marks receipt saved until BOTH Firebase Storage upload AND server/Firestore submission succeed.
+     * (`submitCustomerDeliveryDetails`, server-only; zero direct Firestore fallback).
+     * Never marks receipt saved until BOTH Firebase Storage upload AND Cloud Function submission succeed.
      */
     suspend fun saveOrderCustomerData(
         orderId: Long,
@@ -3026,34 +2936,13 @@ class CaptainRepository(
             return Result.failure(err)
         }
 
-        val primaryServerRes = cloudMetadataPort.submitOrderReceiptDetails(
+        val finalServerRes = cloudMetadataPort.submitOrderReceiptDetails(
             orderDocId = orderDocId,
             customerName = customerName,
             customerPhone = customerPhone,
             receiptImagePath = uploadedStoragePath,
             notes = notes
         )
-
-        val finalServerRes = if (primaryServerRes.isFailure) {
-            val cfEx = primaryServerRes.exceptionOrNull() as? com.example.data.remote.CloudFunctionException
-            val fallback = firestoreOrderFallbackPort
-            if (cfEx != null && cfEx.isEndpointNotFound && fallback != null) {
-                Log.i("CaptainRepository", "[saveOrderCustomerData] Cloud Function endpoint unavailable (404); falling back to atomic Firestore transaction.")
-                fallback.submitCustomerDeliveryDetails(
-                    order = order,
-                    captainUid = captainUid,
-                    captainPhone = currentCaptainPhone,
-                    customerName = customerName,
-                    customerPhone = customerPhone,
-                    receiptImagePath = uploadedStoragePath,
-                    notes = notes
-                )
-            } else {
-                primaryServerRes
-            }
-        } else {
-            primaryServerRes
-        }
 
         return if (finalServerRes.isSuccess) {
             val nowMs = System.currentTimeMillis()
@@ -3094,7 +2983,7 @@ class CaptainRepository(
     }
 
     /**
-     * 5. Complete delivery: calls Cloud Function confirmDelivery (or atomic Firestore fallback ONLY on bare HTTP 404)
+     * 5. Complete delivery: calls Cloud Function `confirmDelivery` (Server-only; zero direct Firestore fallback)
      * ONLY when merchant has confirmed (EN_ROUTE).
      * Never updates local order status or wallet if the backend call fails.
      */
@@ -3115,19 +3004,7 @@ class CaptainRepository(
         }
 
         val orderDocId = resolveCleanOrderDocId(order)
-        val primaryRes = cloudFunctionsOrderClient.confirmDelivery(orderDocId)
-        val finalRes = if (primaryRes.isFailure) {
-            val cfEx = primaryRes.exceptionOrNull() as? com.example.data.remote.CloudFunctionException
-            val fallback = firestoreOrderFallbackPort
-            if (cfEx != null && cfEx.isEndpointNotFound && fallback != null) {
-                Log.i("CaptainRepository", "[completeDelivery] Cloud Function endpoint unavailable (404); falling back to atomic Firestore transaction.")
-                fallback.confirmDelivery(order, currentUid, currentPhone)
-            } else {
-                primaryRes
-            }
-        } else {
-            primaryRes
-        }
+        val finalRes = cloudFunctionsOrderClient.confirmDelivery(orderDocId)
 
         if (finalRes.isSuccess) {
             val earnedFee = finalRes.getOrNull()?.takeIf { it > 0.0 } ?: order.deliveryFee
@@ -3156,624 +3033,39 @@ class CaptainRepository(
     }
 
     /**
-     * 6. Expire delivery offer after 60 seconds via Cloud Function (or Firestore fallback ONLY on bare HTTP 404)
+     * 6. Expire delivery offer after 60 seconds via server-verified Cloud Function.
+     * Client timer stops ringing locally and lets Cloud Tasks / server handle reassignment.
      */
     suspend fun expireDeliveryOffer(orderId: Long): Result<Unit> {
         val orders = allOrdersFlow.firstOrNull() ?: emptyList()
         val order = orders.find { it.id == orderId }
             ?: return Result.failure(Exception("الطلب غير موجود"))
-        val (currentUid, _) = resolveCaptainUidAndPhone()
         val orderDocId = resolveCleanOrderDocId(order)
         context?.let { CaptainNotificationManager.stopIncomingOrderBell(it, orderDocId) }
 
-        val primaryRes = cloudFunctionsOrderClient.expireDeliveryOffer(orderDocId, reason = "expired")
-        val finalRes = if (primaryRes.isFailure) {
-            val cfEx = primaryRes.exceptionOrNull() as? com.example.data.remote.CloudFunctionException
-            val fallback = firestoreOrderFallbackPort
-            if (cfEx != null && cfEx.isEndpointNotFound && fallback != null && currentUid.isNotBlank()) {
-                fallback.expireOrDeclineOffer(order, currentUid, "expired")
-            } else {
-                primaryRes
-            }
-        } else {
-            primaryRes
-        }
+        val finalRes = cloudFunctionsOrderClient.expireDeliveryOffer(orderDocId, reason = "expired")
 
         // Always mark EXPIRED locally once the 60s offer window finishes so the order leaves this
-        // captain's screen and never keeps ringing locally, while surfacing any server notice if needed.
+        // captain's screen and never keeps ringing locally.
         orderDao.updateOrderStatus(orderId, OrderStatus.EXPIRED)
         return if (finalRes.isSuccess) finalRes else Result.success(Unit)
     }
 
     /**
-     * 7. Decline incoming delivery offer via Cloud Function (or Firestore fallback ONLY on bare HTTP 404)
+     * 7. Decline incoming delivery offer via Cloud Function (zero direct Firestore fallback).
      */
     suspend fun declineOrder(orderId: Long): Result<Unit> {
         val orders = allOrdersFlow.firstOrNull() ?: emptyList()
         val order = orders.find { it.id == orderId }
             ?: return Result.failure(Exception("الطلب غير موجود"))
-        val (currentUid, _) = resolveCaptainUidAndPhone()
         val orderDocId = resolveCleanOrderDocId(order)
         context?.let { CaptainNotificationManager.stopIncomingOrderBell(it, orderDocId) }
-        val primaryRes = cloudFunctionsOrderClient.expireDeliveryOffer(orderDocId, reason = "declined")
-        val finalRes = if (primaryRes.isFailure) {
-            val cfEx = primaryRes.exceptionOrNull() as? com.example.data.remote.CloudFunctionException
-            val fallback = firestoreOrderFallbackPort
-            if (cfEx != null && cfEx.isEndpointNotFound && fallback != null && currentUid.isNotBlank()) {
-                fallback.expireOrDeclineOffer(order, currentUid, "declined")
-            } else {
-                primaryRes
-            }
-        } else {
-            primaryRes
-        }
+        val finalRes = cloudFunctionsOrderClient.expireDeliveryOffer(orderDocId, reason = "declined")
 
         if (finalRes.isSuccess) {
             orderDao.markOrderCancelled(orderId, System.currentTimeMillis(), "تم رفض العرض")
         }
         return finalRes
-    }
-
-    private class DefaultFirestoreOrderFallbackPort(
-        private val db: FirebaseFirestore
-    ) : FirestoreOrderFallbackPort {
-
-        private class TransactionDomainException(
-            message: String,
-            val httpCode: Int,
-            val isNotFound: Boolean,
-            val isRetryable: Boolean = false
-        ) : Exception(message)
-
-        private suspend fun resolveOrderRef(order: OrderEntity): com.google.firebase.firestore.DocumentReference? {
-            val candidates = linkedSetOf<String>()
-            val rawDoc = order.firestoreDocId.trim()
-            val cleanDoc = rawDoc.trimStart('#').trim()
-            val cleanNum = order.orderNumber.trim().trimStart('#').trim()
-            if (rawDoc.isNotBlank()) candidates.add(rawDoc)
-            if (cleanDoc.isNotBlank()) candidates.add(cleanDoc)
-            if (cleanNum.isNotBlank()) candidates.add(cleanNum)
-
-            for (candidateId in candidates) {
-                try {
-                    val ref = db.collection("orders").document(candidateId)
-                    val snap = ref.get().await()
-                    if (snap.exists()) return ref
-                } catch (e: com.google.firebase.firestore.FirebaseFirestoreException) {
-                    if (e.code != com.google.firebase.firestore.FirebaseFirestoreException.Code.NOT_FOUND) {
-                        throw e
-                    }
-                }
-            }
-
-            if (cleanNum.isNotBlank()) {
-                val lookupValues = listOf(cleanNum, "#$cleanNum").distinct()
-                for (field in listOf("orderNumber", "order_number")) {
-                    val found = runCatching {
-                        db.collection("orders").whereIn(field, lookupValues).limit(1).get().await()
-                    }.getOrNull()
-                    val firstDoc = found?.documents?.firstOrNull()
-                    if (firstDoc != null && firstDoc.exists()) {
-                        return firstDoc.reference
-                    }
-                }
-            }
-            return null
-        }
-
-        private fun evaluateOwnership(
-            snap: DocumentSnapshot,
-            captainUid: String,
-            captainPhone: String
-        ): Pair<Boolean, Boolean> {
-            val uidFields = listOf(
-                snap.safeString("captainId"),
-                snap.safeString("captain_id"),
-                snap.safeString("driverId"),
-                snap.safeString("driver_id"),
-                snap.safeString("assignedCaptainId"),
-                snap.safeString("assignedDriverId"),
-                snap.safeString("captainUid"),
-                snap.safeString("driverUid")
-            )
-            val phoneFields = listOf(
-                snap.safeString("assignedCaptainPhone"),
-                snap.safeString("driverPhone"),
-                snap.safeString("captain_phone")
-            )
-            val offeredUid = snap.safeString("offeredCaptainId")
-            val allAssigneeValues = uidFields + phoneFields
-            val isUnassigned = allAssigneeValues.all { isPlaceholderOrUnassigned(it) }
-            val matchesUid = captainUid.isNotBlank() && (uidFields.any { it == captainUid } || offeredUid == captainUid)
-            val matchesPhone = captainPhone.isNotBlank() && allAssigneeValues.any { !isPlaceholderOrUnassigned(it) && isSamePhone(it, captainPhone) }
-            val isOwnedByMe = !isUnassigned && (matchesUid || matchesPhone) || (matchesUid && offeredUid == captainUid)
-            return isUnassigned to isOwnedByMe
-        }
-
-        private suspend fun findActiveConflictDocId(targetDocId: String, captainUid: String): String? {
-            if (captainUid.isBlank()) return null
-            val activeOrderStatuses = setOf(
-                OrderStatus.ACCEPTED,
-                OrderStatus.AT_STORE,
-                OrderStatus.PICKED_UP,
-                OrderStatus.ORDER_DATA_ENTERED,
-                OrderStatus.AWAITING_MERCHANT_CONFIRMATION,
-                OrderStatus.MERCHANT_REJECTED,
-                OrderStatus.EN_ROUTE
-            )
-            for (field in listOf("captainId", "driverId", "assignedCaptainId", "captainUid")) {
-                val snap = runCatching {
-                    db.collection("orders").whereEqualTo(field, captainUid).get().await()
-                }.getOrNull() ?: continue
-                for (doc in snap.documents) {
-                    if (doc.id == targetDocId) continue
-                    val rawSt = doc.safeString("status", "order_status", "orderStatus", "state")
-                    val confirmedFlag = extractMerchantConfirmedFromFieldsMap(try { doc.data } catch (_: Exception) { null })
-                    val resolved = resolveOrderStatusFromFirestoreFields(
-                        rawStatus = rawSt,
-                        captainId = captainUid,
-                        merchantConfirmedFlag = confirmedFlag,
-                        hasReceiptOrOrderData = doc.safeString("receiptImagePath", "receipt_image_path", "receiptImageUrl", "orderImageUrl").isNotBlank(),
-                        hasAcceptedAt = doc.safeLong("acceptedAt", "accepted_at") > 0L,
-                        rejectionReason = doc.safeString("rejectionReason", "rejection_reason")
-                    )
-                    if (resolved.status in activeOrderStatuses) return doc.id
-                }
-            }
-            return null
-        }
-
-        private fun mapError(e: Exception, defaultMsg: String): com.example.data.remote.CloudFunctionException {
-            return when (e) {
-                is TransactionDomainException -> com.example.data.remote.CloudFunctionException(
-                    message = e.message ?: defaultMsg,
-                    httpCode = e.httpCode,
-                    isRetryable = e.isRetryable,
-                    isNotFound = e.isNotFound,
-                    isEndpointNotFound = false,
-                    cause = e
-                )
-                is com.google.firebase.firestore.FirebaseFirestoreException -> when (e.code) {
-                    com.google.firebase.firestore.FirebaseFirestoreException.Code.PERMISSION_DENIED ->
-                        com.example.data.remote.CloudFunctionException(
-                            message = "تعذر تحديث الطلب مباشرة من الهاتف بسبب قواعد أمان Firestore. يرجى نشر Cloud Functions على المشروع أو السماح للكابتن بتحديث الطلب.",
-                            httpCode = 403,
-                            isRetryable = true,
-                            isNotFound = false,
-                            isEndpointNotFound = false,
-                            cause = e
-                        )
-                    com.google.firebase.firestore.FirebaseFirestoreException.Code.NOT_FOUND ->
-                        com.example.data.remote.CloudFunctionException(
-                            message = "الطلب غير موجود أو لم يعد متاحاً.",
-                            httpCode = 404,
-                            isRetryable = false,
-                            isNotFound = true,
-                            isEndpointNotFound = false,
-                            cause = e
-                        )
-                    else ->
-                        com.example.data.remote.CloudFunctionException(
-                            message = "تعذر الاتصال بقاعدة البيانات لتنفيذ العملية. يرجى التحقق من الإنترنت وإعادة المحاولة.",
-                            httpCode = 503,
-                            isRetryable = true,
-                            isNotFound = false,
-                            isEndpointNotFound = false,
-                            cause = e
-                        )
-                }
-                else -> com.example.data.remote.CloudFunctionException(
-                    message = e.message ?: defaultMsg,
-                    httpCode = 500,
-                    isRetryable = true,
-                    isNotFound = false,
-                    isEndpointNotFound = false,
-                    cause = e
-                )
-            }
-        }
-
-        override suspend fun acceptOrder(
-            order: OrderEntity,
-            captainUid: String,
-            captainPhone: String
-        ): Result<String> {
-            return try {
-                val orderRef = resolveOrderRef(order)
-                    ?: throw TransactionDomainException("الطلب غير موجود أو لم يعد متاحاً.", 404, isNotFound = true)
-
-                val conflictId = findActiveConflictDocId(orderRef.id, captainUid)
-                if (conflictId != null) {
-                    throw TransactionDomainException(
-                        "لديك طلب نشط بالفعل قيد التنفيذ، لا يمكن قبول أكثر من طلب في وقت واحد.",
-                        httpCode = 409,
-                        isNotFound = false
-                    )
-                }
-
-                val captainDocSnap = runCatching {
-                    db.collection("captains").document(captainUid).get().await()
-                }.getOrNull()
-                if (captainDocSnap != null && captainDocSnap.exists()) {
-                    val remoteOnline = captainDocSnap.getBoolean("isOnline")
-                    val remotePresence = captainDocSnap.safeString("presenceStatus").trim().lowercase()
-                    val remoteStatus = captainDocSnap.safeString("status").trim().lowercase()
-                    if (remoteOnline == false || remotePresence == "offline") {
-                        throw TransactionDomainException(
-                            "لا يمكن إسناد أو قبول الطلب لأن حالة الكابتن غير متصل حالياً.",
-                            httpCode = 403,
-                            isNotFound = false
-                        )
-                    }
-                    if (remoteStatus in listOf("banned", "suspended", "disabled", "blocked", "pending", "inactive")) {
-                        throw TransactionDomainException(
-                            "حساب الكابتن غير مفعل حالياً لاستقبال أو قبول الطلبات.",
-                            httpCode = 403,
-                            isNotFound = false
-                        )
-                    }
-                }
-
-                db.runTransaction { tx ->
-                    val snap = tx.get(orderRef)
-                    if (!snap.exists()) {
-                        throw TransactionDomainException("الطلب غير موجود أو تم حذفه.", 404, isNotFound = true)
-                    }
-                    val status = snap.safeString("status", "order_status", "orderStatus", "state", default = "pending").trim().lowercase()
-                    val (isUnassigned, isOwnedByMe) = evaluateOwnership(snap, captainUid, captainPhone)
-
-                    if (status in listOf("cancelled", "canceled", "rejected", "declined", "expired", "delivered", "completed", "done")) {
-                        throw TransactionDomainException("عذراً، هذا الطلب لم يعد متاحاً حالياً.", 409, isNotFound = true)
-                    }
-                    if (!isUnassigned && !isOwnedByMe) {
-                        throw TransactionDomainException("عذراً، تم قبول هذا الطلب من كابتن آخر للتو.", 409, isNotFound = true)
-                    }
-                    val offerExpiresAtMs = snap.safeLong("offerExpiresAt", "offer_expires_at")
-                    if (offerExpiresAtMs > 0L && System.currentTimeMillis() > offerExpiresAtMs) {
-                        throw TransactionDomainException("انتهت مهلة قبول هذا الطلب وتم تحويله لكابتن آخر.", 409, isNotFound = true)
-                    }
-                    if (status in listOf("accepted", "assigned") && isOwnedByMe) {
-                        return@runTransaction
-                    }
-
-                    tx.update(
-                        orderRef,
-                        mapOf(
-                            "status" to "accepted",
-                            "captainId" to captainUid,
-                            "driverId" to captainUid,
-                            "assignedCaptainId" to captainUid,
-                            "acceptedAt" to FieldValue.serverTimestamp(),
-                            "updatedAt" to FieldValue.serverTimestamp()
-                        )
-                    )
-                }.await()
-                Result.success("تم قبول الطلب بنجاح")
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Result.failure(mapError(e, "تعذر قبول الطلب من قاعدة البيانات"))
-            }
-        }
-
-        override suspend fun markArrivedAtMerchant(
-            order: OrderEntity,
-            captainUid: String,
-            captainPhone: String
-        ): Result<String> {
-            return try {
-                val orderRef = resolveOrderRef(order)
-                    ?: throw TransactionDomainException("الطلب غير موجود أو تم حذفه.", 404, isNotFound = true)
-
-                db.runTransaction { tx ->
-                    val snap = tx.get(orderRef)
-                    if (!snap.exists()) {
-                        throw TransactionDomainException("الطلب غير موجود أو تم حذفه.", 404, isNotFound = true)
-                    }
-                    val status = snap.safeString("status", "order_status", "orderStatus", "state", default = "accepted").trim().lowercase()
-                    val (isUnassigned, isOwnedByMe) = evaluateOwnership(snap, captainUid, captainPhone)
-                    if (isUnassigned || !isOwnedByMe) {
-                        throw TransactionDomainException("غير مصرح: هذا الطلب غير مسند إلى حسابك.", 403, isNotFound = false)
-                    }
-                    if (status in listOf("at_store", "arrived_at_merchant", "arrived", "arrived_store")) {
-                        return@runTransaction
-                    }
-                    if (status !in listOf("accepted", "assigned")) {
-                        throw TransactionDomainException("حالة الطلب الحالية لا تسمح بتسجيل الوصول للتاجر.", 409, isNotFound = false)
-                    }
-                    tx.update(
-                        orderRef,
-                        mapOf(
-                            "status" to "arrived_at_merchant",
-                            "captainId" to captainUid,
-                            "driverId" to captainUid,
-                            "arrivedAtStoreTimestamp" to FieldValue.serverTimestamp(),
-                            "updatedAt" to FieldValue.serverTimestamp()
-                        )
-                    )
-                }.await()
-                Result.success("تم تسجيل الوصول إلى التاجر بنجاح")
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Result.failure(mapError(e, "تعذر تسجيل الوصول إلى التاجر"))
-            }
-        }
-
-        override suspend fun confirmPickup(
-            order: OrderEntity,
-            captainUid: String,
-            captainPhone: String
-        ): Result<String> {
-            return try {
-                val orderRef = resolveOrderRef(order)
-                    ?: throw TransactionDomainException("الطلب غير موجود أو تم حذفه.", 404, isNotFound = true)
-
-                db.runTransaction { tx ->
-                    val snap = tx.get(orderRef)
-                    if (!snap.exists()) {
-                        throw TransactionDomainException("الطلب غير موجود أو تم حذفه.", 404, isNotFound = true)
-                    }
-                    val status = snap.safeString("status", "order_status", "orderStatus", "state").trim().lowercase()
-                    val (isUnassigned, isOwnedByMe) = evaluateOwnership(snap, captainUid, captainPhone)
-                    if (isUnassigned || !isOwnedByMe) {
-                        throw TransactionDomainException("غير مصرح: هذا الطلب غير مسند إلى حسابك.", 403, isNotFound = false)
-                    }
-                    if (status == "picked_up") {
-                        return@runTransaction
-                    }
-                    if (status !in listOf("at_store", "arrived_at_merchant", "arrived", "arrived_store")) {
-                        throw TransactionDomainException("يجب تسجيل الوصول إلى التاجر أولاً قبل تأكيد استلام الطلب.", 409, isNotFound = false)
-                    }
-                    tx.update(
-                        orderRef,
-                        mapOf(
-                            "status" to "picked_up",
-                            "captainId" to captainUid,
-                            "driverId" to captainUid,
-                            "pickedUpAt" to FieldValue.serverTimestamp(),
-                            "updatedAt" to FieldValue.serverTimestamp()
-                        )
-                    )
-                }.await()
-                Result.success("تم تأكيد استلام الطلب من التاجر بنجاح")
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Result.failure(mapError(e, "تعذر تأكيد استلام الطلب"))
-            }
-        }
-
-        override suspend fun submitCustomerDeliveryDetails(
-            order: OrderEntity,
-            captainUid: String,
-            captainPhone: String,
-            customerName: String,
-            customerPhone: String,
-            receiptImagePath: String,
-            notes: String
-        ): Result<String> {
-            return try {
-                val orderRef = resolveOrderRef(order)
-                    ?: throw TransactionDomainException("الطلب غير موجود أو تم حذفه.", 404, isNotFound = true)
-
-                db.runTransaction { tx ->
-                    val snap = tx.get(orderRef)
-                    if (!snap.exists()) {
-                        throw TransactionDomainException("الطلب غير موجود أو تم حذفه.", 404, isNotFound = true)
-                    }
-                    val status = snap.safeString("status", "order_status", "orderStatus", "state").trim().lowercase()
-                    val (isUnassigned, isOwnedByMe) = evaluateOwnership(snap, captainUid, captainPhone)
-                    if (isUnassigned || !isOwnedByMe) {
-                        throw TransactionDomainException("غير مصرح: لا يمكنك تعديل بيانات طلب غير مسند إليك.", 403, isNotFound = false)
-                    }
-                    val allowedStatuses = listOf(
-                        "picked_up", "order_data_entered", "data_entered",
-                        "merchant_rejected", "awaiting_merchant_confirmation", "awaiting_confirmation"
-                    )
-                    if (status !in allowedStatuses) {
-                        throw TransactionDomainException("حالة الطلب الحالية لا تسمح برفع بيانات العميل والإيصال.", 409, isNotFound = false)
-                    }
-                    tx.update(
-                        orderRef,
-                        mapOf(
-                            "customerName" to customerName,
-                            "customerPhone" to customerPhone,
-                            "receiptImagePath" to receiptImagePath,
-                            "receiptImageUrl" to receiptImagePath,
-                            "orderImageUrl" to receiptImagePath,
-                            "receiptUploadedBy" to captainUid,
-                            "receiptUploadedAt" to FieldValue.serverTimestamp(),
-                            "receiptSubmittedAt" to FieldValue.serverTimestamp(),
-                            "notes" to notes,
-                            "status" to "awaiting_merchant_confirmation",
-                            "merchantConfirmed" to false,
-                            "rejectionReason" to FieldValue.delete(),
-                            "updatedAt" to FieldValue.serverTimestamp()
-                        )
-                    )
-                }.await()
-                Result.success("تم إرسال بيانات العميل والإيصال وبانتظار تأكيد التاجر")
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Result.failure(mapError(e, "تعذر حفظ بيانات العميل والإيصال"))
-            }
-        }
-
-        override suspend fun confirmDelivery(
-            order: OrderEntity,
-            captainUid: String,
-            captainPhone: String
-        ): Result<Double> {
-            return try {
-                val orderRef = resolveOrderRef(order)
-                    ?: throw TransactionDomainException("الطلب غير موجود أو تم حذفه.", 404, isNotFound = true)
-
-                val earnedFee = db.runTransaction { tx ->
-                    val snap = tx.get(orderRef)
-                    if (!snap.exists()) {
-                        throw TransactionDomainException("الطلب غير موجود أو تم حذفه.", 404, isNotFound = true)
-                    }
-                    val rawStatus = snap.safeString("status", "order_status", "orderStatus", "state")
-                    val docCaptainId = snap.safeString(
-                        "captainId", "captain_id", "driverId", "driver_id",
-                        "assignedCaptainId", "assignedDriverId", "captainUid", "driverUid"
-                    )
-                    val confirmedFlag = extractMerchantConfirmedFromFieldsMap(try { snap.data } catch (_: Exception) { null }) ||
-                        isTruthyConfirmationValue(snap.get("merchantConfirmed"))
-                    val resolved = resolveOrderStatusFromFirestoreFields(
-                        rawStatus = rawStatus,
-                        captainId = docCaptainId.ifBlank { captainUid },
-                        merchantConfirmedFlag = confirmedFlag,
-                        hasReceiptOrOrderData = snap.safeString("receiptImagePath", "receipt_image_path", "receiptImageUrl", "orderImageUrl").isNotBlank() ||
-                            snap.safeLong("receiptUploadedAt", "receipt_uploaded_at", "receiptSubmittedAt", "orderDataEnteredAt") > 0L,
-                        hasAcceptedAt = snap.safeLong("acceptedAt", "accepted_at") > 0L,
-                        rejectionReason = snap.safeString("rejectionReason", "rejection_reason")
-                    )
-                    val (isUnassigned, isOwnedByMe) = evaluateOwnership(snap, captainUid, captainPhone)
-                    if (isUnassigned || !isOwnedByMe) {
-                        throw TransactionDomainException("غير مصرح: هذا الطلب غير مسند إلى حسابك.", 403, isNotFound = false)
-                    }
-                    if (resolved.status == OrderStatus.DELIVERED) {
-                        throw TransactionDomainException("تم تأكيد تسليم هذا الطلب مسبقاً.", 409, isNotFound = false)
-                    }
-                    if (resolved.status != OrderStatus.EN_ROUTE) {
-                        throw TransactionDomainException("لا يمكن تأكيد التسليم قبل اعتماد التاجر لبيانات الإيصال.", 409, isNotFound = false)
-                    }
-                    val fee = snap.safeDouble("deliveryFee", "delivery_fee", "shippingFee", "fee", default = 0.0)
-                        .takeIf { it > 0.0 }
-                        ?: order.deliveryFee.takeIf { it > 0.0 }
-                        ?: 25.0
-
-                    tx.update(
-                        orderRef,
-                        mapOf(
-                            "status" to "delivered",
-                            "merchantConfirmed" to true,
-                            "deliveredAt" to FieldValue.serverTimestamp(),
-                            "completedAt" to FieldValue.serverTimestamp(),
-                            "updatedAt" to FieldValue.serverTimestamp()
-                        )
-                    )
-                    fee
-                }.await()
-
-                // Best-effort wallet sync on Firestore if client write rules allow it;
-                // never fail completed order if financial docs are read-only by rules.
-                runCatching {
-                    db.collection("captains").document(captainUid).update(
-                        mapOf(
-                            "walletBalance" to FieldValue.increment(earnedFee),
-                            "totalOrdersCount" to FieldValue.increment(1L),
-                            "updatedAt" to FieldValue.serverTimestamp()
-                        )
-                    ).await()
-                }
-                Result.success(earnedFee)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Result.failure(mapError(e, "تعذر تأكيد تسليم الطلب"))
-            }
-        }
-
-        override suspend fun expireOrDeclineOffer(
-            order: OrderEntity,
-            captainUid: String,
-            reason: String
-        ): Result<Unit> {
-            return try {
-                val orderRef = resolveOrderRef(order) ?: return Result.success(Unit)
-                val excludedSet = mutableSetOf(captainUid)
-
-                val orderSnap = runCatching { orderRef.get().await() }.getOrNull()
-                if (orderSnap != null && orderSnap.exists()) {
-                    val existingExcluded = (orderSnap.get("excludedCaptainIds") as? Iterable<*>)
-                        ?.mapNotNull { it?.toString()?.trim()?.takeIf { s -> s.isNotEmpty() } }
-                        .orEmpty()
-                    excludedSet.addAll(existingExcluded)
-                }
-
-                // Best-effort lookup of nearest online captain to the merchant
-                val nearestMatch = runCatching {
-                    val onlineSnap = db.collection("captains")
-                        .whereEqualTo("isOnline", true)
-                        .limit(50)
-                        .get()
-                        .await()
-
-                    val candidates = onlineSnap.documents.map { doc ->
-                        val uid = doc.id
-                        val lat = doc.safeDouble("lat", "latitude", "currentLat", default = Double.NaN)
-                            .takeIf { !it.isNaN() }
-                        val lng = doc.safeDouble("lng", "longitude", "currentLng", default = Double.NaN)
-                            .takeIf { !it.isNaN() }
-                        val statusStr = doc.safeString("status", default = "active").trim().lowercase()
-                        val accountActive = statusStr !in listOf("banned", "suspended", "disabled", "blocked", "pending", "inactive")
-                        val embeddedShifts = doc.extractAllShifts(uid)
-                        val inShift = if (embeddedShifts.isNotEmpty()) {
-                            ShiftManager.calculateShiftStatus(embeddedShifts).isAvailableForOrders
-                        } else {
-                            true
-                        }
-                        com.example.data.dispatch.NearestCaptainMatcher.CaptainCandidate(
-                            uid = uid,
-                            latitude = lat,
-                            longitude = lng,
-                            isOnline = doc.getBoolean("isOnline") == true,
-                            accountActive = accountActive,
-                            inActiveShift = inShift,
-                            hasOngoingOrder = false
-                        )
-                    }
-
-                    val mLat = orderSnap?.safeDouble("pickupLat", "storeLat", "merchantLat", "restaurantLat", default = Double.NaN)
-                        ?.takeIf { !it.isNaN() }
-                        ?: order.restaurantLatitude
-                    val mLng = orderSnap?.safeDouble("pickupLng", "storeLng", "merchantLng", "restaurantLng", default = Double.NaN)
-                        ?.takeIf { !it.isNaN() }
-                        ?: order.restaurantLongitude
-
-                    com.example.data.dispatch.NearestCaptainMatcher.findNearestEligibleCaptain(
-                        merchantLat = mLat,
-                        merchantLng = mLng,
-                        candidates = candidates,
-                        excludedCaptainIds = excludedSet
-                    )
-                }.getOrNull()
-
-                db.runTransaction { tx ->
-                    val snap = tx.get(orderRef)
-                    if (!snap.exists()) return@runTransaction
-                    val status = snap.safeString("status", "order_status", "orderStatus", "state", default = "pending").trim().lowercase()
-                    if (status !in listOf("pending", "searching", "offered", "new", "ready", "ready_for_pickup", "waiting_driver")) return@runTransaction
-                    val updates = if (nearestMatch != null) {
-                        mapOf(
-                            "excludedCaptainIds" to FieldValue.arrayUnion(captainUid),
-                            "status" to "pending",
-                            "offeredCaptainId" to nearestMatch.uid,
-                            "offerExpiresAt" to (System.currentTimeMillis() + 60_000L),
-                            "updatedAt" to FieldValue.serverTimestamp()
-                        )
-                    } else {
-                        mapOf(
-                            "excludedCaptainIds" to FieldValue.arrayUnion(captainUid),
-                            "status" to "searching",
-                            "offeredCaptainId" to null,
-                            "offerExpiresAt" to null,
-                            "updatedAt" to FieldValue.serverTimestamp()
-                        )
-                    }
-                    tx.update(orderRef, updates)
-                }.await()
-                Result.success(Unit)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Result.failure(mapError(e, "تعذر تحديث حالة عرض الطلب"))
-            }
-        }
     }
 
     companion object {

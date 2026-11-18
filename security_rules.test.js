@@ -127,6 +127,8 @@ await setDoc(doc(adminDb, 'merchants', 'merchant_2'), {
       orderNumber: 'EXP-100',
       status: 'pending',
       captainId: '',
+      offeredCaptainId: 'captain_1',
+      eligibleCaptainIds: ['captain_1', 'captain_2'],
       merchantId: 'merchant_1',
       customerId: 'user_1',
       deliveryFee: 30,
@@ -456,10 +458,16 @@ describe('El-Batal Express Real Firebase Emulator Security Audit (Firestore + St
       })
     );
 
-    // Captain 1 CAN run scoped queries for pending orders and own assigned orders,
+    // Captain 1 CAN run scoped queries for eligible pending orders and own assigned orders,
     // CANNOT read another captain's order, and CANNOT mutate ANY order directly in Firestore!
     const pendingSnap = await assertSucceeds(
-      getDocs(query(collection(cap1Db, 'orders'), where('status', '==', 'pending')))
+      getDocs(
+        query(
+          collection(cap1Db, 'orders'),
+          where('status', '==', 'pending'),
+          where('eligibleCaptainIds', 'array-contains', 'captain_1')
+        )
+      )
     );
     assert.equal(pendingSnap.size, 1);
 
@@ -470,7 +478,10 @@ describe('El-Batal Express Real Firebase Emulator Security Audit (Firestore + St
 
     await assertFails(getDoc(doc(cap1Db, 'orders', 'order_c2_m2')));
     await assertFails(updateDoc(doc(cap1Db, 'orders', 'order_pending_open'), { status: 'accepted', captainId: 'captain_1' }));
-    await assertFails(updateDoc(doc(cap1Db, 'orders', 'order_picked_up_c1'), { status: 'delivered' }));
+    await assertFails(updateDoc(doc(cap1Db, 'orders', 'order_picked_up_c1'), { status: 'arrived_at_merchant' }));
+    await assertFails(updateDoc(doc(cap1Db, 'orders', 'order_picked_up_c1'), { status: 'delivered', deliveryFee: 9999 }));
+    await assertFails(setDoc(doc(cap1Db, 'orders', 'forged_order'), { status: 'pending', merchantId: 'merchant_1' }));
+    await assertFails(deleteDoc(doc(cap1Db, 'orders', 'order_picked_up_c1')));
 
     // Regular users and captains CANNOT create/modify/delete restaurants, merchants, or legacy drivers
     await assertFails(updateDoc(doc(user1Db, 'restaurants', 'merchant_1'), { name: 'Hacked' }));
