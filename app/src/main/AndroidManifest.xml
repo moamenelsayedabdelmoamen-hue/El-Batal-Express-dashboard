@@ -80,7 +80,13 @@
             android:name="${applicationId}.MainActivity"
             android:exported="true"
             android:label="@string/app_name"
-            android:targetActivity="com.example.MainActivity" />
+            android:targetActivity="com.example.MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity-alias>
 
         <!-- Full-Screen Incoming Order Alert (shown over lock screen / when outside app) -->
         <activity

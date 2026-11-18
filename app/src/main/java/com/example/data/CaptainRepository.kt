@@ -3775,6 +3775,105 @@ class CaptainRepository(
             }
         }
     }
+
+    companion object {
+        const val CAPTAIN_ACCOUNT_TYPE = "captain"
+        const val CAPTAIN_ROLE = "captain"
+
+        /**
+         * Determines whether a document inside `captains/{uid}` has a valid Captain identity:
+         * - If `accountType` is present and non-blank: it MUST equal `"captain"` (blocks merchants even if `role` is set).
+         * - If `accountType` is missing/blank on a legacy document: accepts ONLY when `role` equals `"captain"`.
+         * - If `role` is also present alongside `accountType == "captain"`, `role` must not be a conflicting non-captain role.
+         */
+        fun isEligibleCaptainIdentity(rawAccountType: String?, rawRole: String?): Boolean {
+            val cleanAccountType = rawAccountType?.trim()?.lowercase().orEmpty()
+            val cleanRole = rawRole?.trim()?.lowercase().orEmpty()
+            if (cleanAccountType.isNotEmpty() && cleanAccountType != "null") {
+                if (cleanAccountType != CAPTAIN_ACCOUNT_TYPE) return false
+                if (cleanRole.isNotEmpty() && cleanRole != "null" && cleanRole !in listOf(CAPTAIN_ROLE, "driver")) {
+                    return false
+                }
+                return true
+            }
+            return cleanRole == CAPTAIN_ROLE
+        }
+
+        /**
+         * Builds the canonical Firestore payload for `captains/{uid}` on new captain registration,
+         * always writing both `accountType = "captain"` and `role = "captain"` uniformly.
+         */
+        fun buildNewCaptainDocumentData(
+            uid: String,
+            name: String,
+            email: String,
+            phone: String,
+            profilePath: String,
+            idFrontPath: String,
+            idBackPath: String,
+            licensePath: String,
+            address: String,
+            vehicleType: String,
+            avatarPresetIndex: Int,
+            createdAtMs: Long
+        ): HashMap<String, Any> {
+            return hashMapOf(
+                "uid" to uid,
+                "name" to name,
+                "fullName" to name,
+                "email" to email,
+                "phone" to phone,
+                "phoneNumber" to phone,
+                "personalImage" to profilePath,
+                "profileImagePath" to profilePath,
+                "idCardFront" to idFrontPath,
+                "idFrontImagePath" to idFrontPath,
+                "idCardBack" to idBackPath,
+                "idBackImagePath" to idBackPath,
+                "licenseImagePath" to licensePath,
+                "idDocumentsComplete" to (idFrontPath.isNotBlank() && idBackPath.isNotBlank()),
+                "address" to address,
+                "accountType" to CAPTAIN_ACCOUNT_TYPE,
+                "role" to CAPTAIN_ROLE,
+                "status" to "pending",
+                "emailVerified" to false,
+                "isEmailVerified" to false,
+                "createdAt" to createdAtMs,
+                "updatedAt" to FieldValue.serverTimestamp(),
+                "availabilityStatus" to "offline",
+                "presenceStatus" to "offline",
+                "shiftStatus" to "outside_shift",
+                "vehicleType" to vehicleType,
+                "licensePlate" to "ب ط ل 1 0 0",
+                "avatarUri" to profilePath,
+                "avatarPresetIndex" to avatarPresetIndex,
+                "totalOrdersCount" to 0,
+                "walletBalance" to 0.0,
+                "rating" to 5.0,
+                "isOnline" to false,
+                "isLoggedIn" to false
+            )
+        }
+
+        /**
+         * Read-only diagnostic auditor for existing `captains` documents:
+         * Identifies legacy documents that have `role = "captain"` without `accountType = "captain"`,
+         * without mutating any Firestore data.
+         */
+        fun auditLegacyRoleWithoutAccountType(
+            captainDocsById: Map<String, Map<String, Any?>>
+        ): List<String> {
+            return captainDocsById.entries.mapNotNull { (docId, fields) ->
+                val accountType = fields["accountType"]?.toString()?.trim()?.lowercase().orEmpty()
+                val role = fields["role"]?.toString()?.trim()?.lowercase().orEmpty()
+                if ((accountType.isEmpty() || accountType == "null") && role == CAPTAIN_ROLE) {
+                    docId
+                } else {
+                    null
+                }
+            }
+        }
+    }
 }
 
 fun DocumentSnapshot.safeDouble(vararg fields: String, default: Double = 0.0): Double {

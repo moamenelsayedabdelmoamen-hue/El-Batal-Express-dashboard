@@ -729,4 +729,66 @@ class CaptainAuthAndIsolationTest {
         composeTestRule.onNodeWithTag("verify_check_button").performScrollTo().performClick()
         assertTrue("Verified check must invoke onVerifiedSuccess", navigatedMain)
     }
+
+    @Test
+    fun legacyRoleOnlyCaptainDoc_allowsLoginAndPreservesExistingFields_whileConflictingMerchantRoleIsRejected() = runBlocking {
+        val backend = FakeCaptainAuthBackend()
+        val repo = buildRepository(backend)
+
+        // 1. Existing legacy captain in captains/{uid} with role = "captain" and NO accountType field
+        val legacyUid = "legacy_cap_901"
+        backend.seedAuthAccount(
+            uid = legacyUid,
+            email = "legacy.captain@elbatal.com",
+            password = "LegacyPass123",
+            isEmailVerified = true,
+            displayName = "كابتن قديم"
+        )
+        backend.captains[legacyUid] = mutableMapOf(
+            "uid" to legacyUid,
+            "name" to "كابتن قديم معتمد",
+            "email" to "legacy.captain@elbatal.com",
+            "phone" to "01011223344",
+            "role" to "captain",
+            "status" to "active",
+            "legacyCustomField" to "keep_me_intact"
+        )
+
+        // Read-only audit detects legacyUid as having role='captain' without accountType
+        val auditedLegacyIds = CaptainRepository.auditLegacyRoleWithoutAccountType(backend.captains)
+        assertEquals(listOf(legacyUid), auditedLegacyIds)
+
+        // Login succeeds for verified legacy captain in captains/{uid} without deleting or mutating legacy fields
+        val loginRes = repo.login("legacy.captain@elbatal.com", "LegacyPass123")
+        assertTrue("Legacy captain with role='captain' in captains/{uid} must log in", loginRes is LoginOutcome.Success)
+        assertEquals("keep_me_intact", backend.captains[legacyUid]?.get("legacyCustomField"))
+        assertEquals("captain", backend.captains[legacyUid]?.get("role"))
+        assertNull("Login must NOT perform unapproved bulk/schema mutation of accountType in Firestore", backend.captains[legacyUid]?.get("accountType"))
+
+        // 2. Conflicting document with accountType = "merchant" and role = "captain" MUST still be rejected!
+        val conflictUid = "conflict_uid_902"
+        backend.seedAuthAccount(conflictUid, "conflict@elbatal.com", "ConflictPass123", isEmailVerified = true)
+        backend.captains[conflictUid] = mutableMapOf(
+            "uid" to conflictUid,
+            "email" to "conflict@elbatal.com",
+            "accountType" to "merchant",
+            "role" to "captain",
+            "status" to "active"
+        )
+        val conflictLogin = repo.login("conflict@elbatal.com", "ConflictPass123")
+        assertTrue("Conflicting accountType='merchant' must be rejected even if role='captain'", conflictLogin is LoginOutcome.Error)
+
+        // 3. New captain registration writes BOTH accountType='captain' AND role='captain' to captains/{uid}
+        val newSignup = repo.registerCaptainWithEmailVerification(
+            fullName = "كابتن موحد",
+            phone = "01288990011",
+            email = "unified.cap@elbatal.com",
+            pass = "UnifiedPass123",
+            address = "القاهرة"
+        )
+        assertTrue(newSignup.isSuccess)
+        val newUid = backend.lastCreatedCaptainDocId!!
+        assertEquals("captain", backend.captains[newUid]?.get("accountType"))
+        assertEquals("captain", backend.captains[newUid]?.get("role"))
+    }
 }
