@@ -51,6 +51,7 @@ data class OrderEntity(
     val receiptUploadedBy: String = "",
     val orderDataEnteredAt: Long = 0L,
     val offerExpiresAt: Long = 0L,
+    val offerId: String = "",
     val merchantConfirmed: Boolean = false,
     val rejectionReason: String = "",
     val etaMinutes: Int = 15,

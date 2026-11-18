@@ -1,4 +1,22 @@
 {
+  "functions": [
+    {
+      "source": "functions",
+      "codebase": "default"
+    },
+    {
+      "source": "backend_proxy_example",
+      "codebase": "orders-backend",
+      "ignore": [
+        "node_modules",
+        ".git",
+        ".runtimeconfig.json",
+        "firebase-debug.log",
+        "firebase-debug.*.log",
+        "*.local"
+      ]
+    }
+  ],
   "hosting": {
     "site": "elbatalexpress",
     "public": "dist",
