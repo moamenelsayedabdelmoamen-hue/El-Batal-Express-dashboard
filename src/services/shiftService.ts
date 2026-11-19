@@ -31,7 +31,7 @@ const VALID_SCHEDULE_DAYS = [
  * totals from startTime/endTime so stale duration fields cannot produce a
  * fabricated noon start. Overnight shifts longer than 12 hours are allowed.
  */
-function normalizeCaptainSchedule(raw: any, captainId: string): CaptainSchedule {
+function normalizeCaptainSchedule(raw: any, captainId: string, strict = false): CaptainSchedule {
   const weeklySchedule: Record<string, any> = {};
   let totalWeeklyHours = 0;
 
@@ -39,15 +39,18 @@ function normalizeCaptainSchedule(raw: any, captainId: string): CaptainSchedule 
     const day = raw?.weeklySchedule?.[dayKey] || {};
     const isDayOff = Boolean(day.isDayOff);
     const sourceShifts = Array.isArray(day.shifts) ? day.shifts : [];
-    const shifts = isDayOff ? [] : sourceShifts.map((shift: any, index: number) => {
+    const shifts = isDayOff ? [] : sourceShifts.flatMap((shift: any, index: number) => {
       const startTime = String(shift?.startTime || '').trim();
       const endTime = String(shift?.endTime || '').trim();
       const validTime = (value: string) => /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value);
       if (!validTime(startTime) || !validTime(endTime)) {
-        throw new Error(`وقت بداية أو نهاية غير صالح في ${dayKey}، الوردية رقم ${index + 1}`);
+        const message = `وقت بداية أو نهاية غير صالح في ${dayKey}، الوردية رقم ${index + 1}`;
+        if (strict) throw new Error(message);
+        console.warn(message);
+        return [];
       }
       const { durationHours, isOvernight } = calculateShiftDurationHours(startTime, endTime);
-      return {
+      return [{
         ...shift,
         id: String(shift?.id || `shift_${dayKey}_${index + 1}`),
         name: String(shift?.name || `وردية ${index + 1}`),
@@ -55,7 +58,7 @@ function normalizeCaptainSchedule(raw: any, captainId: string): CaptainSchedule 
         endTime,
         durationHours,
         isOvernight,
-      };
+      }];
     });
     const totalHours = shifts.reduce((sum: number, shift: any) => sum + shift.durationHours, 0);
     totalWeeklyHours += totalHours;
@@ -110,6 +113,21 @@ function persistCachedSchedules(map: Map<string, CaptainSchedule>) {
 // In-memory + persistent cache for fast responsive UI
 let schedulesCache: Map<string, CaptainSchedule> = loadCachedSchedules();
 
+function getNormalizedCachedSchedules(): Map<string, CaptainSchedule> {
+  const normalized = new Map<string, CaptainSchedule>();
+  schedulesCache.forEach((value, key) => {
+    try {
+      normalized.set(key, normalizeCaptainSchedule(value, key));
+    } catch (error) {
+      console.warn(`Ignoring invalid cached shift schedule for ${key}:`, error);
+    }
+  });
+  schedulesCache = normalized;
+  persistCachedSchedules(normalized);
+  return new Map(normalized);
+}
+
+
 export const ShiftService = {
   /**
    * Listen to all captain schedules in real-time
@@ -119,7 +137,7 @@ export const ShiftService = {
     onError?: (err: any) => void
   ): () => void {
     if (!isFirebaseConfigured) {
-      onUpdate(new Map(schedulesCache));
+      onUpdate(getNormalizedCachedSchedules());
       return () => {};
     }
 
@@ -162,7 +180,10 @@ export const ShiftService = {
     if (!captainId) return () => {};
 
     if (!isFirebaseConfigured) {
-      const cached = schedulesCache.get(captainId) || null;
+      const cached = schedulesCache.has(captainId)
+        ? normalizeCaptainSchedule(schedulesCache.get(captainId), captainId)
+        : null;
+      if (cached) schedulesCache.set(captainId, cached);
       onUpdate(cached, computeCaptainShiftStatus(cached));
       return () => {};
     }
@@ -184,7 +205,10 @@ export const ShiftService = {
         (error) => {
           console.error(`Error listening to schedule for captain ${captainId}:`, error);
           if (onError) onError(error);
-          const cached = schedulesCache.get(captainId) || null;
+          const cached = schedulesCache.has(captainId)
+            ? normalizeCaptainSchedule(schedulesCache.get(captainId), captainId)
+            : null;
+          if (cached) schedulesCache.set(captainId, cached);
           onUpdate(cached, computeCaptainShiftStatus(cached));
         }
       );
@@ -200,7 +224,7 @@ export const ShiftService = {
    */
   async getAllSchedules(): Promise<Map<string, CaptainSchedule>> {
     if (!isFirebaseConfigured) {
-      return new Map(schedulesCache);
+      return getNormalizedCachedSchedules();
     }
 
     try {
@@ -217,7 +241,7 @@ export const ShiftService = {
       return map;
     } catch (error) {
       handleFirestoreError(error, OperationType.LIST, COLLECTIONS.CAPTAIN_SCHEDULES);
-      return new Map(schedulesCache);
+      return getNormalizedCachedSchedules();
     }
   },
 
@@ -226,7 +250,9 @@ export const ShiftService = {
    */
   async getCaptainSchedule(captainId: string): Promise<CaptainSchedule | null> {
     if (schedulesCache.has(captainId)) {
-      return schedulesCache.get(captainId)!;
+      const normalized = normalizeCaptainSchedule(schedulesCache.get(captainId), captainId);
+      schedulesCache.set(captainId, normalized);
+      return normalized;
     }
 
     if (!isFirebaseConfigured) return null;
@@ -255,7 +281,7 @@ export const ShiftService = {
     if (!captainId) throw new Error('Missing captainId');
 
     // Normalize all clock values. More than 12 hours and overnight shifts are allowed.
-    const cleanedSchedule = normalizeCaptainSchedule(schedule, captainId);
+    const cleanedSchedule = normalizeCaptainSchedule(schedule, captainId, true);
     const sanitizedWeeklySchedule = cleanedSchedule.weeklySchedule;
     const totalWeeklyHours = cleanedSchedule.totalWeeklyHours;
 
