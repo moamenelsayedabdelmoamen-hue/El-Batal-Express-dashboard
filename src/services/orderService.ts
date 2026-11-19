@@ -407,14 +407,13 @@ function mapDocToOrder(
 
   const offeredCaptainId = data.offeredCaptainId || '';
   const offeredCaptainName = data.offeredCaptainName || '';
-  const realCaptainId = data.captainId || data.captain_id || data.driverId || data.captain?.id || data.captain?.uid || offeredCaptainId || '';
+  const realCaptainId = data.captainId || data.captain_id || data.driverId || data.captain?.id || data.captain?.uid || '';
   const realCaptainName =
     data.captainName ||
     data.captain_name ||
     data.driverName ||
     data.captain?.name ||
     data.captain?.displayName ||
-    offeredCaptainName ||
     '';
 
   const rawCreatedAt =
@@ -733,9 +732,8 @@ export const OrderService = {
       order.id === orderId
         ? {
             ...order,
-            captainId: offeredCaptainId,
-            captainName: offeredCaptainName,
             offeredCaptainId,
+            offeredCaptainName,
             offeredCaptainName,
             offerId: String(response.offerId || ''),
             offerExpiresAt: typeof response.offerExpiresAt === 'number' ? response.offerExpiresAt : undefined,
@@ -870,8 +868,8 @@ export const OrderService = {
       restaurantId: data.restaurantId,
       merchantName: data.restaurantName,
       restaurantName: data.restaurantName,
-      captainId: offeredCaptainId,
-      captainName: offeredCaptainName,
+      captainId: '',
+      captainName: '',
       offeredCaptainId,
       offeredCaptainName,
       offerId: String(response.offerId || ''),
