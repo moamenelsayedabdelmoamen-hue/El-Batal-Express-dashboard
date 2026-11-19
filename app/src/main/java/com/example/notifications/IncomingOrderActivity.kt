@@ -177,6 +177,7 @@ class IncomingOrderActivity : ComponentActivity() {
         val delivery = intent?.getStringExtra(EXTRA_DELIVERY_ADDRESS).orEmpty().ifBlank { "عنوان العميل" }
         val fee = intent?.getDoubleExtra(EXTRA_DELIVERY_FEE, 25.0) ?: 25.0
         val orderCode = intent?.getStringExtra(EXTRA_ORDER_CODE).orEmpty()
+        val offerId = intent?.getStringExtra(EXTRA_OFFER_ID).orEmpty()
         val rawExpires = intent?.getLongExtra(EXTRA_OFFER_EXPIRES_AT_MS, 0L) ?: 0L
         val expiresAt = if (rawExpires > 0L) rawExpires else System.currentTimeMillis() + 60_000L
 
@@ -196,7 +197,8 @@ class IncomingOrderActivity : ComponentActivity() {
             distanceKm = 3.0,
             status = OrderStatus.PENDING,
             firestoreDocId = orderKey,
-            offerExpiresAt = expiresAt
+            offerExpiresAt = expiresAt,
+            offerId = offerId
         )
     }
 
@@ -208,6 +210,7 @@ class IncomingOrderActivity : ComponentActivity() {
         const val EXTRA_DELIVERY_ADDRESS = "extra_delivery_address"
         const val EXTRA_DELIVERY_FEE = "extra_delivery_fee"
         const val EXTRA_ORDER_CODE = "extra_order_code"
+        const val EXTRA_OFFER_ID = "extra_offer_id"
         const val EXTRA_OFFER_EXPIRES_AT_MS = "extra_offer_expires_at_ms"
 
         fun createIntent(
@@ -219,6 +222,7 @@ class IncomingOrderActivity : ComponentActivity() {
             deliveryAddress: String,
             deliveryFee: Double,
             orderCode: String,
+            offerId: String,
             offerExpiresAtMs: Long
         ): Intent {
             return Intent(context, IncomingOrderActivity::class.java).apply {
@@ -230,6 +234,7 @@ class IncomingOrderActivity : ComponentActivity() {
                 putExtra(EXTRA_DELIVERY_ADDRESS, deliveryAddress)
                 putExtra(EXTRA_DELIVERY_FEE, deliveryFee)
                 putExtra(EXTRA_ORDER_CODE, orderCode)
+                putExtra(EXTRA_OFFER_ID, offerId)
                 putExtra(EXTRA_OFFER_EXPIRES_AT_MS, offerExpiresAtMs)
             }
         }
