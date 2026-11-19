@@ -74,9 +74,9 @@ async function isAdminUser(db, user) {
 function isActiveMerchantRecord(user, merchantData) {
   if (!user || !merchantData) return false;
   const status = String(merchantData.status || "").trim().toLowerCase();
-  return merchantData.uid === user.uid &&
+  return (!merchantData.uid || merchantData.uid === user.uid) &&
     merchantData.accountType === "merchant" &&
-    merchantData.role === "merchant" &&
+    (!merchantData.role || String(merchantData.role).trim().toLowerCase() === "merchant") &&
     user.email_verified === true &&
     ["approved", "active"].includes(status);
 }
@@ -714,7 +714,7 @@ async function sendNewOrderFcmToCaptain(db, captainId, captainData, orderId, ord
 }
 
 async function assignNearestCaptainInternal(db, orderRef, orderData, extraExcludedIds = []) {
-  const preferredCaptainId = String(orderData?.captainId || "").trim();
+  const preferredCaptainId = String(orderData?.preferredCaptainId || orderData?.captainId || "").trim();
   const candidates = await findNearestEligibleCaptain(db, orderData, extraExcludedIds, preferredCaptainId);
   const nowMs = Date.now();
 
