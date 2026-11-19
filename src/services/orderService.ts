@@ -734,7 +734,6 @@ export const OrderService = {
             ...order,
             offeredCaptainId,
             offeredCaptainName,
-            offeredCaptainName,
             offerId: String(response.offerId || ''),
             offerExpiresAt: typeof response.offerExpiresAt === 'number' ? response.offerExpiresAt : undefined,
             status,
@@ -787,8 +786,6 @@ export const OrderService = {
       order.id === orderId
         ? {
             ...order,
-            captainId: offeredCaptainId,
-            captainName: offeredCaptainName,
             offeredCaptainId,
             offeredCaptainName,
             offerId: String(response.offerId || ''),
