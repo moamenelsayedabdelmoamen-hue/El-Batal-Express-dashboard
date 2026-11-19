@@ -807,12 +807,18 @@ export const OrdersPage: React.FC = () => {
                               </div>
                             </div>
                           ) : null}
+                          {!order.captainId && order.offeredCaptainName && Number(order.offerExpiresAt || 0) > Date.now() && (
+                            <div className="flex items-center gap-1.5 text-[10px] text-amber-300">
+                              <Timer className="w-3 h-3" />
+                              <span>عرض مرسل إلى {order.offeredCaptainName} — بانتظار القبول</span>
+                            </div>
+                          )}
 
                           <div className="flex items-center gap-1.5">
                             {/* زر ابحث عن كابتن (أقرب كابتن للتاجر) */}
                             <button
                               type="button"
-                              disabled={isSearching}
+                              disabled={isSearching || Boolean(order.captainId) || Boolean(order.offeredCaptainId && Number(order.offerExpiresAt || 0) > Date.now())}
                               onClick={() => handleSearchAndAssignNearestCaptain(order)}
                               className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/40 text-emerald-300 font-extrabold text-[11px] transition-all cursor-pointer disabled:opacity-50 shrink-0"
                               title="يبحث النظام تلقائياً عن أقرب كابتن متاح للتاجر ويسند له الطلب"
@@ -824,8 +830,9 @@ export const OrdersPage: React.FC = () => {
                             {/* اختيار يدوي للكابتن */}
                             <select
                               value=""
+                              disabled={Boolean(order.captainId) || Boolean(order.offeredCaptainId && Number(order.offerExpiresAt || 0) > Date.now())}
                               onChange={(e) => handleAssignCaptain(order.id, e.target.value)}
-                              className="bg-[#0a0c12] hover:bg-zinc-900 border border-zinc-700/80 text-zinc-300 text-[11px] font-bold rounded-lg px-2 py-1.5 focus:outline-none focus:border-amber-400 cursor-pointer transition-all"
+                              className="bg-[#0a0c12] hover:bg-zinc-900 border border-zinc-700/80 text-zinc-300 text-[11px] font-bold rounded-lg px-2 py-1.5 focus:outline-none focus:border-amber-400 cursor-pointer transition-all disabled:opacity-40 disabled:cursor-not-allowed"
                             >
                               <option value="" disabled className="bg-zinc-900 text-zinc-400">
                                 {order.captainName ? 'تغيير الكابتن' : '+ تعيين يدوي'}
@@ -946,14 +953,15 @@ export const OrdersPage: React.FC = () => {
                         <div className="flex items-center justify-end gap-1.5">
                           <select
                             value={order.status}
+                            disabled={order.status === 'Cancelled' || order.status === 'Delivered'}
                             onChange={(e) => handleUpdateStatus(order.id, e.target.value as OrderStatus)}
-                            className="bg-[#0a0c12] border border-zinc-800 text-[11px] font-bold text-zinc-300 rounded-lg px-2 py-1 focus:outline-none focus:border-amber-500 cursor-pointer"
+                            className="bg-[#0a0c12] border border-zinc-800 text-[11px] font-bold text-zinc-300 rounded-lg px-2 py-1 focus:outline-none focus:border-amber-500 cursor-pointer disabled:opacity-50"
+                            aria-label="إلغاء الطلب"
                           >
-                            {ORDER_STATUSES.map((st) => (
-                              <option key={st} value={st}>
-                                {st}
-                              </option>
-                            ))}
+                            <option value={order.status}>{order.status}</option>
+                            {order.status !== 'Cancelled' && order.status !== 'Delivered' && (
+                              <option value="Cancelled">إلغاء الطلب</option>
+                            )}
                           </select>
 
                           <button
@@ -1013,11 +1021,11 @@ export const OrdersPage: React.FC = () => {
                 <span className="text-zinc-500 block">كابتن التوصيل</span>
                 <div className="flex items-center justify-between gap-2">
                   <span className="font-bold text-zinc-200 truncate">
-                    {viewingOrder.captainName || 'لم يتم تعيين كابتن'}
+                    {viewingOrder.captainName || viewingOrder.offeredCaptainName || 'لا يوجد عرض حالي'}
                   </span>
                   <button
                     type="button"
-                    disabled={searchingOrderId === viewingOrder.id}
+                    disabled={searchingOrderId === viewingOrder.id || Boolean(viewingOrder.captainId) || Boolean(viewingOrder.offeredCaptainId && Number(viewingOrder.offerExpiresAt || 0) > Date.now())}
                     onClick={() => handleSearchAndAssignNearestCaptain(viewingOrder)}
                     className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-black text-[11px] transition-all cursor-pointer shrink-0"
                   >
@@ -1026,9 +1034,10 @@ export const OrdersPage: React.FC = () => {
                   </button>
                 </div>
                 <select
-                  value={viewingOrder.captainId || ''}
+                  value=""
+                  disabled={Boolean(viewingOrder.captainId) || Boolean(viewingOrder.offeredCaptainId && Number(viewingOrder.offerExpiresAt || 0) > Date.now())}
                   onChange={(e) => handleAssignCaptain(viewingOrder.id, e.target.value)}
-                  className="w-full bg-zinc-950 border border-amber-500/40 text-[11px] text-amber-400 font-bold rounded-lg px-2 py-1.5 focus:outline-none focus:border-amber-400 cursor-pointer"
+                  className="w-full bg-zinc-950 border border-amber-500/40 text-[11px] text-amber-400 font-bold rounded-lg px-2 py-1.5 focus:outline-none focus:border-amber-400 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   <option value="" disabled>
                     {viewingOrder.captainName ? 'تغيير الكابتن يدوياً' : 'تعيين كابتن يدوياً'}
@@ -1218,17 +1227,17 @@ export const OrdersPage: React.FC = () => {
 
             {/* Status changer in modal */}
             <div className="flex items-center justify-between gap-3 pt-3 border-t border-zinc-800/80">
-              <label className="text-xs font-bold text-zinc-400">تغيير حالة الطلب:</label>
+              <label className="text-xs font-bold text-zinc-400">إجراء إداري:</label>
               <select
                 value={viewingOrder.status}
+                disabled={viewingOrder.status === 'Cancelled' || viewingOrder.status === 'Delivered'}
                 onChange={(e) => handleUpdateStatus(viewingOrder.id, e.target.value as OrderStatus)}
-                className="bg-[#0a0c12] border border-zinc-700 text-xs font-bold text-amber-400 rounded-xl px-3 py-2 focus:outline-none focus:border-amber-500"
+                className="bg-[#0a0c12] border border-zinc-700 text-xs font-bold text-amber-400 rounded-xl px-3 py-2 focus:outline-none focus:border-amber-500 disabled:opacity-50"
               >
-                {ORDER_STATUSES.map((st) => (
-                  <option key={st} value={st}>
-                    {st}
-                  </option>
-                ))}
+                <option value={viewingOrder.status}>{viewingOrder.status}</option>
+                {viewingOrder.status !== 'Cancelled' && viewingOrder.status !== 'Delivered' && (
+                  <option value="Cancelled">إلغاء الطلب</option>
+                )}
               </select>
             </div>
           </div>
