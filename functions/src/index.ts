@@ -8,6 +8,7 @@ import {
 } from "firebase-functions/v2/firestore";
 import {HttpsError, onCall} from "firebase-functions/v2/https";
 import {onTaskDispatched} from "firebase-functions/v2/tasks";
+import {onSchedule} from "firebase-functions/v2/scheduler";
 import {
   createAdminDatabaseAdapter,
   createAdminServerEffects,
@@ -220,6 +221,31 @@ export const reassignOrderOffer = onTaskDispatched(
     } catch (err) {
       logger.error("Error in reassignOrderOffer task", {
         orderId: payload?.orderId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      throw err;
+    }
+  }
+);
+
+
+/**
+ * Recovery sweep: Cloud Tasks is the primary 60-second watchdog; this scheduled
+ * fallback repairs expired offers if task enqueueing or task execution is unavailable.
+ */
+export const sweepExpiredOrderOffers = onSchedule(
+  {
+    schedule: "every 1 minutes",
+    timeZone: "Africa/Cairo",
+    region: "us-central1",
+    maxInstances: 1,
+  },
+  async () => {
+    try {
+      const processed = await service.sweepExpiredOffers(100);
+      logger.info("Expired-order offer recovery sweep completed", {processed});
+    } catch (err) {
+      logger.error("Expired-order offer recovery sweep failed", {
         error: err instanceof Error ? err.message : String(err),
       });
       throw err;
