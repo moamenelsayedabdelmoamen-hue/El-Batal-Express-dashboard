@@ -1574,7 +1574,8 @@ exports.assignNextAvailableCaptain = onRequest(
     const user = await authenticateUser(req, res);
     if (!user) return;
 
-    const { orderId } = req.body || {};
+    const orderId = String(req.body?.orderId || "").trim();
+    const requestedCaptainId = String(req.body?.captainId || "").trim();
     if (!orderId) return res.status(400).json({ error: "معرف الطلب مطلوب" });
 
     const db = admin.firestore();
@@ -1587,28 +1588,47 @@ exports.assignNextAvailableCaptain = onRequest(
       const orderData = orderDoc.data() || {};
 
       if (!(await isAdminOrOrderMerchant(db, user, orderData))) {
-        return res.status(403).json({ error: "غير مصرح: لا يمكنك إعادة توزيع هذا الطلب" });
+        return res.status(403).json({ error: "غير مصرح: لا يمكنك توزيع هذا الطلب" });
       }
 
       const currentStatus = String(orderData.status || "").trim().toLowerCase();
+      const offeredCaptainId = String(orderData.offeredCaptainId || "").trim();
+      const offerExpiresAt = Number(orderData.offerExpiresAt || 0);
       const assignedCaptainId = String(orderData.captainId || orderData.driverId || "").trim();
-      if (assignedCaptainId && assignedCaptainId.toLowerCase() !== "null") {
-        return res.status(409).json({ error: "الطلب مسند بالفعل إلى كابتن ولا يمكن إعادة توزيعه بهذه العملية" });
+
+      if (offeredCaptainId && offerExpiresAt > Date.now()) {
+        return res.status(409).json({ error: "يوجد عرض نشط لهذا الطلب. انتظر انتهاء المهلة أو إنهاء العرض من الكابتن." });
+      }
+      if (assignedCaptainId && !offeredCaptainId) {
+        return res.status(409).json({ error: "الطلب مسند بالفعل ولا يمكن إعادة توزيعه بهذه العملية" });
       }
       if (!["new", "pending", "searching", "offered", "ready", "ready_for_pickup", "waiting_driver"].includes(currentStatus)) {
-        return res.status(409).json({ error: "حالة الطلب الحالية لا تسمح بإعادة التوزيع" });
+        return res.status(409).json({ error: "حالة الطلب الحالية لا تسمح بالتوزيع" });
       }
 
       const excluded = Array.isArray(orderData.excludedCaptainIds) ? orderData.excludedCaptainIds : [];
-      const assignResult = await assignNearestCaptainInternal(db, orderRef, orderData, excluded);
+      const assignmentData = requestedCaptainId
+        ? { ...orderData, preferredCaptainId: requestedCaptainId }
+        : { ...orderData, preferredCaptainId: "" };
+
+      const assignResult = await assignNearestCaptainInternal(db, orderRef, assignmentData, excluded);
 
       if (assignResult.assigned) {
+        const captainSnapshot = assignResult.offeredCaptainId
+          ? await db.collection("captains").doc(assignResult.offeredCaptainId).get()
+          : null;
+        const captainData = captainSnapshot?.exists ? (captainSnapshot.data() || {}) : {};
         return res.status(200).json({
           success: true,
-          message: "تم إرسال عرض الطلب إلى أقرب كابتن متاح",
+          assigned: true,
+          message: requestedCaptainId
+            ? "تم إرسال عرض الطلب إلى الكابتن المحدد"
+            : "تم إرسال عرض الطلب إلى أقرب كابتن متاح",
           offeredCaptainId: assignResult.offeredCaptainId,
+          captainName: String(captainData.name || captainData.driver_name || captainData.fullName || "كابتن معتمد"),
           offerId: assignResult.offerId || null,
           distanceKm: assignResult.distanceKm,
+          offerExpiresAt: assignResult.offerExpiresAt || null,
           expiresInSeconds: 60
         });
       }
@@ -1616,7 +1636,9 @@ exports.assignNextAvailableCaptain = onRequest(
       return res.status(200).json({
         success: true,
         assigned: false,
-        message: "لا يوجد كباتن مؤهلون حالياً، وسيستمر النظام في البحث"
+        message: requestedCaptainId
+          ? "الكابتن المحدد غير مؤهل حالياً؛ تم إبقاء الطلب في حالة البحث"
+          : "لا يوجد كباتن مؤهلون حالياً، وسيستمر النظام في البحث"
       });
     } catch (err) {
       console.error("assignNextAvailableCaptain failed:", err);
