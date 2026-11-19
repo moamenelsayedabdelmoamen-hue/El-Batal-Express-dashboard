@@ -29,23 +29,101 @@ if (!admin.apps.length) {
 }
 
 // ------------------------------------------------------------------------------
-// Helper: Authenticate Captain via Firebase Auth ID Token
+// Authentication and role authorization
 // ------------------------------------------------------------------------------
-async function authenticateCaptain(req, res) {
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+async function authenticateUser(req, res) {
+  const authHeader = String(req.headers.authorization || "");
+  const match = authHeader.match(/^Bearer\s+(.+)$/i);
+  if (!match) {
     res.status(401).json({ error: "غير مصرح: يجب تسجيل الدخول أولاً" });
     return null;
   }
-  const idToken = authHeader.split("Bearer ")[1];
+
   try {
-    const decodedUser = await admin.auth().verifyIdToken(idToken);
-    return decodedUser;
+    return await admin.auth().verifyIdToken(match[1].trim(), true);
   } catch (error) {
-    console.error("Token verification failed:", error);
-    res.status(403).json({ error: "جلسة الكابتن منتهية الصلاحية، يرجى تسجيل الدخول مجدداً" });
+    console.error("Firebase ID token verification failed:", error);
+    res.status(401).json({ error: "جلسة الدخول غير صالحة أو منتهية. يرجى تسجيل الدخول مجدداً." });
     return null;
   }
+}
+
+const ADMIN_EMAIL_ALLOWLIST = new Set([
+  "moamen.elsayed.abdelmoamen@gmail.com",
+  "admin@elbatalexpress.com"
+]);
+
+async function isAdminUser(db, user) {
+  if (!user || !user.uid) return false;
+
+  const tokenRole = String(user.role || "").trim().toLowerCase();
+  if (tokenRole === "admin" || user.admin === true) return true;
+
+  const email = String(user.email || "").trim().toLowerCase();
+  if (user.email_verified === true && ADMIN_EMAIL_ALLOWLIST.has(email)) return true;
+
+  const adminSnap = await db.collection("admins").doc(user.uid).get();
+  if (!adminSnap.exists) return false;
+
+  const adminData = adminSnap.data() || {};
+  const status = String(adminData.status || "active").trim().toLowerCase();
+  return !["pending_verification", "disabled", "suspended", "blocked", "inactive"].includes(status);
+}
+
+function isActiveMerchantRecord(user, merchantData) {
+  if (!user || !merchantData) return false;
+  const status = String(merchantData.status || "").trim().toLowerCase();
+  return merchantData.uid === user.uid &&
+    merchantData.accountType === "merchant" &&
+    merchantData.role === "merchant" &&
+    user.email_verified === true &&
+    ["approved", "active"].includes(status);
+}
+
+async function isMerchantOwnerOfOrder(db, user, orderData) {
+  if (!user || !user.uid || !orderData) return false;
+  const merchantId = String(
+    orderData.merchantId || orderData.restaurantId || orderData.storeId ||
+    orderData.vendorId || orderData.ownerId || ""
+  ).trim();
+  if (!merchantId || merchantId !== user.uid) return false;
+
+  const merchantSnap = await db.collection("merchants").doc(user.uid).get();
+  return merchantSnap.exists && isActiveMerchantRecord(user, merchantSnap.data() || {});
+}
+
+async function isAdminOrOrderMerchant(db, user, orderData) {
+  if (await isAdminUser(db, user)) return true;
+  return isMerchantOwnerOfOrder(db, user, orderData);
+}
+
+// Captain endpoints require a real, active captain account, not merely a valid Firebase login.
+async function authenticateCaptain(req, res) {
+  const user = await authenticateUser(req, res);
+  if (!user) return null;
+
+  const captainSnap = await admin.firestore().collection("captains").doc(user.uid).get();
+  if (!captainSnap.exists) {
+    res.status(403).json({ error: "هذا الحساب غير مسجل ككابتن." });
+    return null;
+  }
+
+  const captainData = captainSnap.data() || {};
+  const accountType = String(captainData.accountType || "").trim().toLowerCase();
+  const role = String(captainData.role || "captain").trim().toLowerCase();
+  const status = String(captainData.status || "active").trim().toLowerCase();
+
+  if (
+    accountType !== "captain" ||
+    role !== "captain" ||
+    INACTIVE_ACCOUNT_STATUSES.has(status) ||
+    captainData.isApproved === false
+  ) {
+    res.status(403).json({ error: "حساب الكابتن غير مفعل أو غير مصرح له بتنفيذ هذه العملية." });
+    return null;
+  }
+
+  return user;
 }
 
 /**
@@ -868,6 +946,10 @@ exports.merchantConfirmOrder = onRequest(
   { cors: true, timeoutSeconds: 30, memory: "256MiB" },
   async (req, res) => {
     if (req.method !== "POST") return res.status(405).json({ error: "Method Not Allowed" });
+
+    const user = await authenticateUser(req, res);
+    if (!user) return;
+
     const { orderId, confirmed, approved, status, rejectionReason } = req.body || {};
     if (!orderId) return res.status(400).json({ error: "معرف الطلب مطلوب" });
 
@@ -879,16 +961,41 @@ exports.merchantConfirmOrder = onRequest(
 
     const db = admin.firestore();
     const orderRef = await resolveOrderReference(db, orderId);
+    if (!orderRef) return res.status(400).json({ error: "معرف الطلب غير صالح" });
 
     try {
+      const adminAuthorized = await isAdminUser(db, user);
       let assignedCaptainId = "";
+
       await db.runTransaction(async (transaction) => {
         const doc = await transaction.get(orderRef);
         if (!doc.exists) throw new Error("الطلب غير موجود");
+
         const docData = doc.data() || {};
+        if (!adminAuthorized) {
+          const merchantId = String(
+            docData.merchantId || docData.restaurantId || docData.storeId || docData.vendorId || ""
+          ).trim();
+          if (!merchantId || merchantId !== user.uid) {
+            throw new Error("غير مصرح: هذا الطلب لا يخص حساب التاجر الحالي");
+          }
+
+          const merchantRef = db.collection("merchants").doc(user.uid);
+          const merchantDoc = await transaction.get(merchantRef);
+          if (!merchantDoc.exists || !isActiveMerchantRecord(user, merchantDoc.data() || {})) {
+            throw new Error("حساب التاجر غير نشط أو غير معتمد");
+          }
+        }
+
+        const currentStatus = String(docData.status || "").trim().toLowerCase();
+        if (currentStatus !== "awaiting_merchant_confirmation") {
+          throw new Error("الطلب ليس في انتظار تأكيد التاجر حالياً");
+        }
+
         assignedCaptainId = String(
           docData.captainId || docData.driverId || docData.assignedCaptainId || docData.captainUid || ""
         ).trim();
+        if (!assignedCaptainId) throw new Error("لا يوجد كابتن مسند إلى هذا الطلب");
 
         if (isConfirmed) {
           transaction.update(orderRef, {
@@ -902,7 +1009,7 @@ exports.merchantConfirmOrder = onRequest(
           transaction.update(orderRef, {
             status: "merchant_rejected",
             merchantConfirmed: false,
-            rejectionReason: rejectionReason || "بيانات الإيصال أو العميل غير مطابقة",
+            rejectionReason: String(rejectionReason || "بيانات الإيصال أو العميل غير مطابقة").slice(0, 500),
             updatedAt: admin.firestore.FieldValue.serverTimestamp()
           });
         }
@@ -938,7 +1045,8 @@ exports.merchantConfirmOrder = onRequest(
 
       return res.status(200).json({ success: true, message: isConfirmed ? "تم تأكيد الطلب بنجاح" : "تم رفض البيانات" });
     } catch (err) {
-      return res.status(400).json({ error: err.message });
+      console.warn("merchantConfirmOrder rejected:", err.message);
+      return res.status(403).json({ error: err.message });
     }
   }
 );
@@ -1098,25 +1206,44 @@ exports.assignNextAvailableCaptain = onRequest(
   { cors: true, timeoutSeconds: 30, memory: "256MiB" },
   async (req, res) => {
     if (req.method !== "POST") return res.status(405).json({ error: "Method Not Allowed" });
+
+    const user = await authenticateUser(req, res);
+    if (!user) return;
+
     const { orderId } = req.body || {};
     if (!orderId) return res.status(400).json({ error: "معرف الطلب مطلوب" });
 
     const db = admin.firestore();
     const orderRef = await resolveOrderReference(db, orderId);
+    if (!orderRef) return res.status(400).json({ error: "معرف الطلب غير صالح" });
 
     try {
       const orderDoc = await orderRef.get();
       if (!orderDoc.exists) return res.status(404).json({ error: "الطلب غير موجود" });
       const orderData = orderDoc.data() || {};
-      const excluded = Array.isArray(orderData.excludedCaptainIds) ? orderData.excludedCaptainIds : [];
 
+      if (!(await isAdminOrOrderMerchant(db, user, orderData))) {
+        return res.status(403).json({ error: "غير مصرح: لا يمكنك إعادة توزيع هذا الطلب" });
+      }
+
+      const currentStatus = String(orderData.status || "").trim().toLowerCase();
+      const assignedCaptainId = String(orderData.captainId || orderData.driverId || "").trim();
+      if (assignedCaptainId && assignedCaptainId.toLowerCase() !== "null") {
+        return res.status(409).json({ error: "الطلب مسند بالفعل إلى كابتن ولا يمكن إعادة توزيعه بهذه العملية" });
+      }
+      if (!["new", "pending", "searching", "offered", "ready", "ready_for_pickup", "waiting_driver"].includes(currentStatus)) {
+        return res.status(409).json({ error: "حالة الطلب الحالية لا تسمح بإعادة التوزيع" });
+      }
+
+      const excluded = Array.isArray(orderData.excludedCaptainIds) ? orderData.excludedCaptainIds : [];
       const assignResult = await assignNearestCaptainInternal(db, orderRef, orderData, excluded);
 
       if (assignResult.assigned) {
         return res.status(200).json({
           success: true,
-          message: `تم إسناد العرض لأقرب كابتن للتاجر (${assignResult.offeredCaptainId})`,
+          message: "تم إرسال عرض الطلب إلى أقرب كابتن متاح",
           offeredCaptainId: assignResult.offeredCaptainId,
+          offerId: assignResult.offerId || null,
           distanceKm: assignResult.distanceKm,
           expiresInSeconds: 60
         });
@@ -1124,10 +1251,12 @@ exports.assignNextAvailableCaptain = onRequest(
 
       return res.status(200).json({
         success: true,
-        message: "لا يوجد كباتن متاحين حالياً، يتم الاستمرار في البحث"
+        assigned: false,
+        message: "لا يوجد كباتن مؤهلون حالياً، وسيستمر النظام في البحث"
       });
     } catch (err) {
-      return res.status(500).json({ error: err.message });
+      console.error("assignNextAvailableCaptain failed:", err);
+      return res.status(500).json({ error: "تعذر توزيع الطلب حالياً" });
     }
   }
 );
