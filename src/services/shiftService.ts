@@ -17,9 +17,70 @@ import {
   createDefaultWeeklySchedule,
   createDefaultDaySchedule,
   DAY_NAMES_AR,
+  calculateShiftDurationHours,
 } from '../utils/shiftUtils';
 
 const LOCAL_STORAGE_KEY = 'elbatal_captain_schedules_cache';
+
+const VALID_SCHEDULE_DAYS = [
+  'saturday', 'sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday',
+] as const;
+
+/**
+ * Firestore clock values are authoritative. Recalculate all durations and
+ * totals from startTime/endTime so stale duration fields cannot produce a
+ * fabricated noon start. Overnight shifts longer than 12 hours are allowed.
+ */
+function normalizeCaptainSchedule(raw: any, captainId: string): CaptainSchedule {
+  const weeklySchedule: Record<string, any> = {};
+  let totalWeeklyHours = 0;
+
+  for (const dayKey of VALID_SCHEDULE_DAYS) {
+    const day = raw?.weeklySchedule?.[dayKey] || {};
+    const isDayOff = Boolean(day.isDayOff);
+    const sourceShifts = Array.isArray(day.shifts) ? day.shifts : [];
+    const shifts = isDayOff ? [] : sourceShifts.map((shift: any, index: number) => {
+      const startTime = String(shift?.startTime || '').trim();
+      const endTime = String(shift?.endTime || '').trim();
+      const validTime = (value: string) => /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value);
+      if (!validTime(startTime) || !validTime(endTime)) {
+        throw new Error(`وقت بداية أو نهاية غير صالح في ${dayKey}، الوردية رقم ${index + 1}`);
+      }
+      const { durationHours, isOvernight } = calculateShiftDurationHours(startTime, endTime);
+      return {
+        ...shift,
+        id: String(shift?.id || `shift_${dayKey}_${index + 1}`),
+        name: String(shift?.name || `وردية ${index + 1}`),
+        startTime,
+        endTime,
+        durationHours,
+        isOvernight,
+      };
+    });
+    const totalHours = shifts.reduce((sum: number, shift: any) => sum + shift.durationHours, 0);
+    totalWeeklyHours += totalHours;
+    weeklySchedule[dayKey] = {
+      day: dayKey,
+      dayNameAr: day.dayNameAr || DAY_NAMES_AR[dayKey as keyof typeof DAY_NAMES_AR] || dayKey,
+      isDayOff,
+      shifts,
+      totalHours,
+    };
+  }
+
+  return {
+    ...(raw || {}),
+    id: captainId,
+    captainId,
+    captainName: raw?.captainName || 'كابتن',
+    captainPhone: raw?.captainPhone || '',
+    isPaused: Boolean(raw?.isPaused),
+    notes: raw?.notes || '',
+    weeklySchedule,
+    totalWeeklyHours,
+  } as CaptainSchedule;
+}
+
 
 function loadCachedSchedules(): Map<string, CaptainSchedule> {
   try {
@@ -69,12 +130,8 @@ export const ShiftService = {
         (snapshot) => {
           const freshMap = new Map<string, CaptainSchedule>();
           snapshot.forEach((docSnap) => {
-            const data = docSnap.data() as CaptainSchedule;
-            freshMap.set(docSnap.id, {
-              ...data,
-              id: docSnap.id,
-              captainId: data.captainId || docSnap.id,
-            });
+            const data = docSnap.data();
+            freshMap.set(docSnap.id, normalizeCaptainSchedule(data, docSnap.id));
           });
           schedulesCache = freshMap;
           persistCachedSchedules(freshMap);
@@ -116,11 +173,7 @@ export const ShiftService = {
         docRef,
         (docSnap) => {
           if (docSnap.exists()) {
-            const sched = {
-              ...(docSnap.data() as CaptainSchedule),
-              id: docSnap.id,
-              captainId: docSnap.id,
-            };
+            const sched = normalizeCaptainSchedule(docSnap.data(), docSnap.id);
             schedulesCache.set(captainId, sched);
             onUpdate(sched, computeCaptainShiftStatus(sched));
           } else {
@@ -156,12 +209,8 @@ export const ShiftService = {
       const map = new Map<string, CaptainSchedule>();
 
       snapshot.forEach((docSnap) => {
-        const data = docSnap.data() as CaptainSchedule;
-        map.set(docSnap.id, {
-          ...data,
-          id: docSnap.id,
-          captainId: data.captainId || docSnap.id,
-        });
+        const data = docSnap.data();
+        map.set(docSnap.id, normalizeCaptainSchedule(data, docSnap.id));
       });
 
       schedulesCache = map;
@@ -187,11 +236,7 @@ export const ShiftService = {
       const docSnap = await getDoc(docRef);
 
       if (docSnap.exists()) {
-        const sched = {
-          ...(docSnap.data() as CaptainSchedule),
-          id: docSnap.id,
-          captainId: docSnap.id,
-        };
+        const sched = normalizeCaptainSchedule(docSnap.data(), docSnap.id);
         schedulesCache.set(captainId, sched);
         return sched;
       }
@@ -209,55 +254,11 @@ export const ShiftService = {
     const captainId = schedule.captainId || schedule.id;
     if (!captainId) throw new Error('Missing captainId');
 
-    // Calculate total weekly hours accurately
-    const totalWeeklyHours = Object.values(schedule.weeklySchedule || {}).reduce((acc, day) => {
-      if (day.isDayOff) return acc;
-      const dayTotal = (day.shifts || []).reduce((sAcc, s) => sAcc + (s.durationHours || 0), 0);
-      return acc + dayTotal;
-    }, 0);
+    // Normalize all clock values. More than 12 hours and overnight shifts are allowed.
+    const cleanedSchedule = normalizeCaptainSchedule(schedule, captainId);
+    const sanitizedWeeklySchedule = cleanedSchedule.weeklySchedule;
+    const totalWeeklyHours = cleanedSchedule.totalWeeklyHours;
 
-    // Clean and validate days and shifts to ensure zero undefined values for Firestore
-    const sanitizedWeeklySchedule: Record<string, any> = {};
-    const validDays = ['saturday', 'sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday'] as const;
-
-    for (const dayKey of validDays) {
-      const dayData = schedule.weeklySchedule?.[dayKey];
-      if (dayData) {
-        sanitizedWeeklySchedule[dayKey] = {
-          day: dayKey,
-          dayNameAr: dayData.dayNameAr || DAY_NAMES_AR[dayKey] || dayKey,
-          isDayOff: Boolean(dayData.isDayOff),
-          totalHours: Number(dayData.totalHours) || 0,
-          shifts: (dayData.shifts || []).map((s, idx) => ({
-            id: s.id || `shift_${dayKey}_${idx}_${Date.now()}`,
-            name: s.name || `وردية ${idx + 1}`,
-            startTime: s.startTime || '10:00',
-            endTime: s.endTime || '22:00',
-            durationHours: Number(s.durationHours) || 0,
-            isOvernight: Boolean(s.isOvernight),
-          })),
-        };
-      } else {
-        sanitizedWeeklySchedule[dayKey] = createDefaultDaySchedule(dayKey);
-      }
-    }
-
-    const cleanedSchedule: CaptainSchedule = {
-      id: captainId,
-      captainId,
-      captainName: schedule.captainName || 'كابتن',
-      captainPhone: schedule.captainPhone || '',
-      isPaused: Boolean(schedule.isPaused),
-      notes: schedule.notes || '',
-      weeklySchedule: sanitizedWeeklySchedule,
-      totalWeeklyHours,
-    };
-
-    // 1. Immediately store in fast memory and persistent local storage
-    schedulesCache.set(captainId, cleanedSchedule);
-    persistCachedSchedules(schedulesCache);
-
-    // 2. Synchronize to Firestore
     if (isFirebaseConfigured && db) {
       try {
         const docRef = doc(db, COLLECTIONS.CAPTAIN_SCHEDULES, captainId);
@@ -272,20 +273,17 @@ export const ShiftService = {
           totalWeeklyHours,
           updatedAt: serverTimestamp(),
         };
-
+        // Do not report success or update the UI cache until Firestore confirms the write.
         await setDoc(docRef, payload, { merge: true });
       } catch (error: any) {
-        console.warn('Firestore setDoc notice for captain_schedules:', error?.message || error);
+        console.warn('Firestore setDoc failed for captain_schedules:', error?.message || error);
         handleFirestoreError(error, OperationType.WRITE, `${COLLECTIONS.CAPTAIN_SCHEDULES}/${captainId}`);
-        // Even if network or offline temporarily occurs, the local cache has successfully saved it!
-        // We throw only if not network/offline so user is not blocked
-        const msg = String(error?.message || '');
-        const isOffline = msg.includes('offline') || msg.includes('unavailable') || msg.includes('network');
-        if (!isOffline) {
-          throw error;
-        }
+        throw error;
       }
     }
+
+    schedulesCache.set(captainId, cleanedSchedule);
+    persistCachedSchedules(schedulesCache);
   },
 
   /**
