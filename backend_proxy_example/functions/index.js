@@ -827,8 +827,21 @@ async function assignNearestCaptainInternal(
 
       const currentOfferedCaptain = String(currentOrder.offeredCaptainId || "").trim();
       const currentExpiry = Number(currentOrder.offerExpiresAt || 0);
+      let previousOfferLockRef = null;
+      let previousOfferLockSnap = null;
+
       if (currentOfferedCaptain && currentExpiry > Date.now()) {
-        return { reserved: false, reason: "active_offer_exists" };
+        if (!requestedCaptainId || currentOfferedCaptain === captainId) {
+          return { reserved: false, reason: "active_offer_exists" };
+        }
+        previousOfferLockRef = db.collection("captain_order_locks").doc(currentOfferedCaptain);
+        previousOfferLockSnap = await transaction.get(previousOfferLockRef);
+        if (previousOfferLockSnap.exists) {
+          const previousLock = previousOfferLockSnap.data() || {};
+          if (previousLock.state === "accepted") {
+            return { reserved: false, reason: "previous_offer_accepted" };
+          }
+        }
       }
 
       if (!captainSnap.exists) return { reserved: false, reason: "captain_missing" };
@@ -850,6 +863,13 @@ async function assignNearestCaptainInternal(
         const lockActive = lock.state === "accepted" || (lock.state === "offered" && lockExpiry > Date.now());
         if (lockActive && lock.orderId !== orderRef.id) {
           return { reserved: false, reason: "captain_locked" };
+        }
+      }
+
+      if (previousOfferLockSnap?.exists && previousOfferLockRef) {
+        const previousLock = previousOfferLockSnap.data() || {};
+        if (previousLock.orderId === orderRef.id && previousLock.state === "offered") {
+          transaction.delete(previousOfferLockRef);
         }
       }
 
@@ -878,7 +898,7 @@ async function assignNearestCaptainInternal(
     });
 
     if (!reservation.reserved) {
-      if (reservation.reason === "already_assigned" || reservation.reason === "active_offer_exists" || reservation.reason === "invalid_order_status" || reservation.reason === "order_missing") {
+      if (reservation.reason === "already_assigned" || reservation.reason === "active_offer_exists" || reservation.reason === "previous_offer_accepted" || reservation.reason === "invalid_order_status" || reservation.reason === "order_missing") {
         return {
           assigned: false,
           offeredCaptainId: null,
@@ -1258,11 +1278,17 @@ exports.merchantConfirmOrder = onRequest(
         if (!doc.exists) throw new Error("الطلب غير موجود");
         const docData = doc.data() || {};
 
-        const merchantOwner = String(
-          docData.merchantId || docData.storeId || docData.vendorId || docData.ownerId || docData.userId || ""
-        ).trim();
+        const merchantOwners = [
+          docData.merchantOwnerId,
+          docData.merchantUid,
+          docData.merchantId,
+          docData.storeId,
+          docData.vendorId,
+          docData.ownerId,
+          docData.userId
+        ].map(value => String(value || "").trim()).filter(Boolean);
 
-        if (actor.role === "merchant" && merchantOwner !== actor.user.uid) {
+        if (actor.role === "merchant" && !merchantOwners.includes(actor.user.uid)) {
           throw new Error("غير مصرح: ملكية الطلب تغيرت أو لا تخص حسابك");
         }
 
