@@ -281,8 +281,18 @@ export class OrderServerService {
           : restaurantSnap.exists
             ? restaurantSnap.data()
             : undefined;
-        const sData = subSnap.exists ? subSnap.data() : undefined;
-        assertMerchantAndSubscriptionValid(merchantId, mData, sData, nowMs);
+        if (!mData || !subSnap.exists) {
+          throw new DomainHttpsError(
+            "failed-precondition",
+            "ملف التاجر أو سجل الاشتراك غير موجود؛ لا يمكن قبول الطلب."
+          );
+        }
+        assertMerchantAndSubscriptionValid(
+          merchantId,
+          mData,
+          subSnap.data(),
+          nowMs
+        );
       }
 
       const captainName = readString(captainData, "fullName", "name");
@@ -878,24 +888,34 @@ export class OrderServerService {
       "vendorId",
       "ownerId"
     );
-    if (merchantId) {
-      const [mSnap, rSnap, sSnap] = await Promise.all([
-        this.db.collection("merchants").doc(merchantId).get(),
-        this.db.collection("restaurants").doc(merchantId).get(),
-        this.db.collection("subscriptions").doc(merchantId).get(),
-      ]);
-      const mData = mSnap.exists
-        ? mSnap.data()
-        : rSnap.exists
-          ? rSnap.data()
-          : undefined;
-      assertMerchantAndSubscriptionValid(
-        merchantId,
-        mData,
-        sSnap.exists ? sSnap.data() : undefined,
-        nowMs
+    if (!merchantId) {
+      throw new DomainHttpsError(
+        "failed-precondition",
+        "لا يمكن توزيع الطلب دون معرف تاجر صالح."
       );
     }
+    const [mSnap, rSnap, sSnap] = await Promise.all([
+      this.db.collection("merchants").doc(merchantId).get(),
+      this.db.collection("restaurants").doc(merchantId).get(),
+      this.db.collection("subscriptions").doc(merchantId).get(),
+    ]);
+    const mData = mSnap.exists
+      ? mSnap.data()
+      : rSnap.exists
+        ? rSnap.data()
+        : undefined;
+    if (!mData || !sSnap.exists) {
+      throw new DomainHttpsError(
+        "failed-precondition",
+        "ملف التاجر أو سجل الاشتراك غير موجود؛ لا يمكن توزيع الطلب."
+      );
+    }
+    assertMerchantAndSubscriptionValid(
+      merchantId,
+      mData,
+      sSnap.data(),
+      nowMs
+    );
 
     const excludedSet = new Set([
       ...readStringList(preOrder.excludedCaptainIds),
@@ -906,9 +926,9 @@ export class OrderServerService {
       excludedSet,
       nowMs
     );
-    const requestedUid = typeof requestedCaptainId === "string"
+    const requestedUid = typeof requestedCaptainId === "string" && requestedCaptainId.trim()
       ? requestedCaptainId.trim()
-      : "";
+      : readString(preOrder, "requestedCaptainId");
     const candidates = requestedUid
       ? allCandidates.filter((candidate) => candidate.uid === requestedUid)
       : allCandidates;
@@ -1025,6 +1045,7 @@ export class OrderServerService {
         offerExpiresAt: offerExpiresAtMs,
         offerGeneration: nextGen,
         eligibleCaptainIds: eligibleIds,
+        requestedCaptainId: s.deleteField(),
         updatedAt: s.serverTimestamp(),
       });
 
