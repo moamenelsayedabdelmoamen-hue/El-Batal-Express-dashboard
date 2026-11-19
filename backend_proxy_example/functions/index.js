@@ -187,8 +187,10 @@ const ONGOING_ORDER_STATUSES = [
 
 function isCaptainOnlineAndActive(captainData) {
   if (!captainData) return false;
-  if (captainData.accountType && String(captainData.accountType).trim().toLowerCase() !== "captain") return false;
+  if (String(captainData.accountType || "").trim().toLowerCase() !== "captain") return false;
+  if (captainData.role && String(captainData.role).trim().toLowerCase() !== "captain") return false;
   if (captainData.isOnline !== true) return false;
+  if (captainData.canReceiveOrders !== true) return false;
   if (String(captainData.presenceStatus || "").trim().toLowerCase() === "offline") return false;
   const statusStr = String(captainData.status || "active").trim().toLowerCase();
   if (INACTIVE_ACCOUNT_STATUSES.has(statusStr)) return false;
@@ -354,29 +356,39 @@ function extractShiftListFromDocData(docData) {
 }
 
 async function collectCaptainShifts(db, captainUid, captainData) {
-  const allShifts = [];
-
-  if (captainData) {
-    allShifts.push(...extractShiftListFromDocData(captainData));
+  // Primary schedule source managed by the admin dashboard. If a document exists,
+  // it is authoritative even when it contains an empty schedule (no active shifts).
+  try {
+    const primary = await db.collection("captain_schedules").doc(captainUid).get();
+    if (primary.exists) {
+      return extractShiftListFromDocData(primary.data());
+    }
+  } catch (error) {
+    console.warn("Primary captain_schedules read failed:", captainUid, error.message);
   }
 
-  for (const col of ["captain_schedules", "schedules"]) {
-    try {
-      const snap = await db.collection(col).doc(captainUid).get();
-      if (snap.exists) {
-        allShifts.push(...extractShiftListFromDocData(snap.data()));
-      }
-    } catch (_) {}
-  }
+  // Legacy fallback sources are consulted one at a time, never merged together.
+  const embedded = extractShiftListFromDocData(captainData);
+  if (embedded.length > 0) return embedded;
+
+  try {
+    const legacySchedule = await db.collection("schedules").doc(captainUid).get();
+    if (legacySchedule.exists) {
+      const shifts = extractShiftListFromDocData(legacySchedule.data());
+      if (shifts.length > 0) return shifts;
+    }
+  } catch (_) {}
 
   for (const field of ["captainId", "captainUid", "driverId"]) {
     try {
       const qs = await db.collection("shifts").where(field, "==", captainUid).get();
-      qs.forEach(d => allShifts.push(...extractShiftListFromDocData(d.data())));
+      const legacyShifts = [];
+      qs.forEach(d => legacyShifts.push(...extractShiftListFromDocData(d.data())));
+      if (legacyShifts.length > 0) return legacyShifts;
     } catch (_) {}
   }
 
-  return allShifts;
+  return [];
 }
 
 async function isCaptainInActiveShift(db, captainUid, captainData) {
@@ -626,7 +638,7 @@ async function sendNewOrderFcmToCaptain(db, captainId, captainData, orderId, ord
   ).trim();
   if (!fcmToken) return false;
   if (captainData?.isLoggedIn === false) return false;
-  if (!isCaptainOnlineAndActive(captainData)) return false;
+  if (!isCaptainOnlineAndActive(captainData) || !isCaptainLocationFresh(captainData)) return false;
 
   const ongoingSnap = await db.collection("orders")
     .where("captainId", "==", captainId)
