@@ -694,14 +694,19 @@ async function sendNewOrderFcmToCaptain(db, captainId, captainData, orderId, ord
   ).trim();
   if (!fcmToken) return false;
   if (captainData?.isLoggedIn === false) return false;
-  if (!isCaptainOnlineAndActive(captainData)) return false;
+  if (!isCaptainOnlineAndActive(captainData) || !isCaptainLocationFresh(captainData)) return false;
 
   const ongoingSnap = await db.collection("orders")
     .where("captainId", "==", captainId)
     .where("status", "in", ONGOING_ORDER_STATUSES)
     .limit(1)
     .get();
-  if (!ongoingSnap.empty) return false;
+  const driverOngoingSnap = await db.collection("orders")
+    .where("driverId", "==", captainId)
+    .where("status", "in", ONGOING_ORDER_STATUSES)
+    .limit(1)
+    .get();
+  if (!ongoingSnap.empty || !driverOngoingSnap.empty) return false;
 
   const shiftCheck = await isCaptainInActiveShift(db, captainId, captainData);
   if (!shiftCheck.active) return false;
@@ -718,7 +723,7 @@ async function sendNewOrderFcmToCaptain(db, captainId, captainData, orderId, ord
   const effectiveExpiresAt = expiresAtNum > Date.now() ? expiresAtNum : (Date.now() + 60000);
   const safeDistance = Number.isFinite(customDistanceKm)
     ? customDistanceKm
-    : (Number.isFinite(Number(orderData?.distanceKm)) ? Number(orderData.distanceKm) : 3.0);
+    : (Number.isFinite(Number(orderData?.distanceKm)) ? Number(orderData.distanceKm) : "");
 
   const rawCodeCandidate =
     orderData?.orderCodes ??
@@ -1102,6 +1107,11 @@ async function handleCaptainArrivedAtMerchant(req, res) {
       if (data.captainId !== user.uid && data.driverId !== user.uid) {
         throw new Error("غير مصرح: هذا الطلب ليس مسنداً إليك");
       }
+      const currentStatus = String(data.status || "").trim().toLowerCase();
+      if (currentStatus === "arrived_at_merchant" || currentStatus === "at_store") return;
+      if (!["accepted", "assigned"].includes(currentStatus)) {
+        throw new Error("لا يمكن تسجيل الوصول قبل قبول الطلب");
+      }
       transaction.update(orderRef, {
         status: "arrived_at_merchant",
         arrivedAtStoreTimestamp: admin.firestore.FieldValue.serverTimestamp(),
@@ -1141,6 +1151,11 @@ exports.confirmPickup = onRequest(
         if (data.captainId !== user.uid && data.driverId !== user.uid) {
           throw new Error("غير مصرح: هذا الطلب ليس مسنداً إليك");
         }
+        const currentStatus = String(data.status || "").trim().toLowerCase();
+        if (currentStatus === "picked_up") return;
+        if (!["arrived_at_merchant", "at_store", "ready", "ready_for_pickup"].includes(currentStatus)) {
+          throw new Error("يجب تسجيل الوصول إلى التاجر وتجهيز الطلب قبل تأكيد الاستلام");
+        }
         transaction.update(orderRef, {
           status: "picked_up",
           pickedUpAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -1176,6 +1191,10 @@ async function handleSubmitCustomerDeliveryDetails(req, res) {
       const data = doc.data();
       if (data.captainId !== user.uid && data.driverId !== user.uid) {
         throw new Error("غير مصرح: هذا الطلب ليس مسنداً إليك");
+      }
+      const currentStatus = String(data.status || "").trim().toLowerCase();
+      if (!["picked_up", "awaiting_merchant_confirmation", "merchant_rejected"].includes(currentStatus)) {
+        throw new Error("لا يمكن تسجيل بيانات العميل والإيصال قبل استلام الطلب من التاجر");
       }
       transaction.update(orderRef, {
         customerName: customerName || data.customerName || "",
