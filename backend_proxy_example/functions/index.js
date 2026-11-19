@@ -1629,6 +1629,358 @@ exports.assignNextAvailableCaptain = onRequest(
   }
 );
 
+function generateUniqueOrderCode() {
+  const digits = "0123456789".split("");
+  const first = String(crypto.randomInt(1, 10));
+  const remaining = digits.filter(digit => digit !== first);
+  let code = first;
+  while (code.length < 6) {
+    const index = crypto.randomInt(0, remaining.length);
+    code += remaining.splice(index, 1)[0];
+  }
+  return code;
+}
+
+function sanitizeOrderItems(items) {
+  if (!Array.isArray(items)) return [];
+  if (items.length > 40) throw new Error("عدد أصناف الطلب يتجاوز الحد المسموح");
+
+  return items.map((item, index) => {
+    const name = String(item?.name || "").trim().slice(0, 120);
+    const quantity = Number(item?.quantity);
+    const price = Number(item?.price);
+    if (!name || !Number.isInteger(quantity) || quantity < 1 || quantity > 999 ||
+        !Number.isFinite(price) || price < 0) {
+      throw new Error(`بيانات صنف الطلب رقم ${index + 1} غير صالحة`);
+    }
+    return { name, quantity, price };
+  });
+}
+
+// ------------------------------------------------------------------------------
+// Server-authoritative order creation and admin order updates
+// ------------------------------------------------------------------------------
+exports.createOrder = onRequest(
+  { cors: true, timeoutSeconds: 60, memory: "256MiB" },
+  async (req, res) => {
+    if (req.method !== "POST") return res.status(405).json({ error: "Method Not Allowed" });
+
+    const db = admin.firestore();
+    const user = await authenticateAdmin(req, res, db);
+    if (!user) return;
+
+    const body = req.body || {};
+    const restaurantId = String(body.restaurantId || body.merchantId || "").trim();
+    const requestId = String(body.requestId || "").trim();
+    if (!restaurantId) return res.status(400).json({ error: "معرف التاجر مطلوب" });
+    if (!/^[A-Za-z0-9_-]{16,128}$/.test(requestId)) {
+      return res.status(400).json({ error: "معرف محاولة إنشاء الطلب غير صالح" });
+    }
+
+    try {
+      const [restaurantSnap, merchantSnap] = await Promise.all([
+        db.collection("restaurants").doc(restaurantId).get(),
+        db.collection("merchants").doc(restaurantId).get()
+      ]);
+      const merchantData = restaurantSnap.exists
+        ? (restaurantSnap.data() || {})
+        : (merchantSnap.exists ? (merchantSnap.data() || {}) : {});
+      const restaurantName = String(
+        merchantData.name || merchantData.restaurantName || merchantData.merchantName || body.restaurantName || ""
+      ).trim().slice(0, 160);
+      if (!restaurantName) return res.status(404).json({ error: "بيانات التاجر أو اسم المتجر غير موجودة" });
+
+      const customerName = String(body.customerName || "").trim().slice(0, 120);
+      const customerPhone = String(body.customerPhone || "").trim().slice(0, 30);
+      const deliveryAddress = String(body.deliveryAddress || "").trim().slice(0, 700);
+      const notes = String(body.notes || "").trim().slice(0, 1500);
+
+      const deliveryFee = Number(body.deliveryFee ?? 25);
+      const subtotal = Number(body.subtotal ?? 0);
+      const total = Number(body.total ?? (subtotal + deliveryFee));
+      if (![deliveryFee, subtotal, total].every(Number.isFinite) ||
+          deliveryFee < 0 || subtotal < 0 || total < 0) {
+        return res.status(400).json({ error: "قيمة الطلب أو رسوم التوصيل غير صالحة" });
+      }
+
+      const items = sanitizeOrderItems(body.items);
+      const requestedCaptainId = String(body.captainId || "").trim();
+      const orderRef = db.collection("orders").doc();
+      const requestKey = crypto.createHash("sha256")
+        .update(`${user.uid}:${requestId}`)
+        .digest("hex");
+      const idempotencyRef = db.collection("idempotency_keys").doc(requestKey);
+
+      const baseOrder = {
+        orderNumber: "",
+        orderCode: "",
+        order_code: "",
+        order_codes: "",
+        merchantId: restaurantId,
+        restaurantId,
+        merchantName: restaurantName,
+        restaurantName,
+        captainId: null,
+        driverId: null,
+        captainName: "",
+        offeredCaptainId: null,
+        offeredCaptainName: "",
+        customerName,
+        customerPhone,
+        deliveryAddress,
+        deliveryFee,
+        delivery_fee: deliveryFee,
+        deliveryPrice: deliveryFee,
+        fee: deliveryFee,
+        subtotal,
+        total,
+        status: "searching",
+        dispatchStatus: "searching",
+        notes,
+        items,
+        excludedCaptainIds: [],
+        dispatchedBy: "admin",
+        createdBy: user.uid,
+        source: "admin_dashboard",
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      };
+
+      let creationResult = null;
+      for (let attempt = 0; attempt < 30; attempt++) {
+        const code = generateUniqueOrderCode();
+        const orderNumber = `#ELB-${code}`;
+        const codeRef = db.collection("order_codes").doc(code);
+        const orderData = {
+          ...baseOrder,
+          orderNumber,
+          orderCode: orderNumber,
+          order_code: orderNumber,
+          order_codes: orderNumber
+        };
+
+        creationResult = await db.runTransaction(async (transaction) => {
+          const [idempotencySnap, codeSnap] = await Promise.all([
+            transaction.get(idempotencyRef),
+            transaction.get(codeRef)
+          ]);
+
+          if (idempotencySnap.exists) {
+            const saved = idempotencySnap.data() || {};
+            return { duplicate: true, orderId: String(saved.orderId || "") };
+          }
+          if (codeSnap.exists) return { collision: true };
+
+          transaction.create(orderRef, orderData);
+          transaction.create(codeRef, {
+            code,
+            orderId: orderRef.id,
+            orderDocId: orderRef.id,
+            orderNumber,
+            orderCode: orderNumber,
+            order_code: orderNumber,
+            merchantId: restaurantId,
+            createdAt: admin.firestore.FieldValue.serverTimestamp()
+          });
+          transaction.create(idempotencyRef, {
+            requestId,
+            userId: user.uid,
+            merchantId: restaurantId,
+            orderId: orderRef.id,
+            createdAt: admin.firestore.FieldValue.serverTimestamp()
+          });
+
+          return { created: true, orderId: orderRef.id, orderData };
+        });
+
+        if (!creationResult.collision) break;
+      }
+
+      if (!creationResult || creationResult.collision) {
+        return res.status(503).json({ error: "تعذر إنشاء رقم طلب فريد، يرجى المحاولة مجدداً" });
+      }
+
+      if (creationResult.duplicate) {
+        if (!creationResult.orderId) return res.status(409).json({ error: "مفتاح منع التكرار غير مكتمل" });
+        const savedOrder = await db.collection("orders").doc(creationResult.orderId).get();
+        if (!savedOrder.exists) return res.status(409).json({ error: "سجل منع التكرار يشير إلى طلب غير موجود" });
+        const saved = savedOrder.data() || {};
+        return res.status(200).json({
+          success: true,
+          duplicate: true,
+          orderId: savedOrder.id,
+          orderNumber: saved.orderNumber || saved.orderCode || "",
+          orderCode: saved.orderCode || saved.orderNumber || "",
+          offeredCaptainId: saved.offeredCaptainId || null,
+          offeredCaptainName: saved.offeredCaptainName || "",
+          offerId: saved.offerId || null,
+          status: saved.status || "searching"
+        });
+      }
+
+      const assignment = await assignNearestCaptainInternal(
+        db,
+        orderRef,
+        creationResult.orderData,
+        [],
+        requestedCaptainId
+      );
+
+      if (assignment.assigned) {
+        await orderRef.update({
+          offeredCaptainName: assignment.offeredCaptainName || "",
+          updatedAt: admin.firestore.FieldValue.serverTimestamp()
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        duplicate: false,
+        orderId: orderRef.id,
+        orderNumber: creationResult.orderData.orderNumber,
+        orderCode: creationResult.orderData.orderCode,
+        status: assignment.assigned ? "pending" : "searching",
+        offeredCaptainId: assignment.offeredCaptainId || null,
+        offeredCaptainName: assignment.offeredCaptainName || "",
+        offerId: assignment.offerId || null,
+        offerExpiresAt: assignment.offerExpiresAt || null,
+        distanceKm: assignment.distanceKm || null,
+        assigned: assignment.assigned === true,
+        assignmentReason: assignment.reason || ""
+      });
+    } catch (err) {
+      console.error("createOrder error:", err?.message || err);
+      return res.status(400).json({ error: err.message || "تعذر إنشاء الطلب" });
+    }
+  }
+);
+
+exports.adminUpdateOrderStatus = onRequest(
+  { cors: true, timeoutSeconds: 30, memory: "256MiB" },
+  async (req, res) => {
+    if (req.method !== "POST") return res.status(405).json({ error: "Method Not Allowed" });
+
+    const db = admin.firestore();
+    const user = await authenticateAdmin(req, res, db);
+    if (!user) return;
+
+    const { orderId, action, newStatus, field } = req.body || {};
+    if (!orderId) return res.status(400).json({ error: "معرف الطلب مطلوب" });
+
+    const orderRef = await resolveOrderReference(db, orderId);
+    if (!orderRef) return res.status(400).json({ error: "معرف الطلب غير صالح" });
+
+    try {
+      if (action === "recordStageTimestamp") {
+        const timestampFields = {
+          acceptedAt: "acceptedAt",
+          arrivedAtMerchantAt: "arrivedAtMerchantAt",
+          pickedUpAt: "pickedUpAt",
+          deliveredAt: "deliveredAt"
+        };
+        const fieldName = timestampFields[String(field || "")];
+        if (!fieldName) return res.status(400).json({ error: "حقل التوقيت غير مسموح" });
+
+        const now = Date.now();
+        await db.runTransaction(async (transaction) => {
+          const orderSnap = await transaction.get(orderRef);
+          if (!orderSnap.exists) throw new Error("الطلب غير موجود");
+          const data = orderSnap.data() || {};
+          const statusValue = String(data.status || "").toLowerCase();
+
+          if (fieldName === "acceptedAt" && !["accepted", "assigned", "arrived_at_merchant", "at_store", "preparing", "ready"].includes(statusValue)) {
+            throw new Error("لا يمكن تسجيل وقت القبول قبل قبول الطلب");
+          }
+          if (fieldName === "arrivedAtMerchantAt" && !["arrived_at_merchant", "at_store", "preparing", "ready", "picked_up", "awaiting_merchant_confirmation", "en_route", "delivered"].includes(statusValue)) {
+            throw new Error("لا يمكن تسجيل وقت الوصول قبل تسجيل الوصول");
+          }
+          if (fieldName === "pickedUpAt" && !["picked_up", "awaiting_merchant_confirmation", "merchant_rejected", "en_route", "delivered"].includes(statusValue)) {
+            throw new Error("لا يمكن تسجيل وقت الاستلام قبل استلام الطلب");
+          }
+          if (fieldName === "deliveredAt" && !["delivered", "completed"].includes(statusValue)) {
+            throw new Error("يجب إتمام التسليم من تطبيق الكابتن أولاً");
+          }
+
+          if (!data[fieldName]) {
+            transaction.update(orderRef, {
+              [fieldName]: admin.firestore.Timestamp.fromMillis(now),
+              updatedAt: admin.firestore.FieldValue.serverTimestamp()
+            });
+          }
+        });
+
+        return res.status(200).json({ success: true, field: fieldName, timestamp: new Date(now).toISOString() });
+      }
+
+      if (action !== "updateStatus") {
+        return res.status(400).json({ error: "نوع العملية غير مدعوم" });
+      }
+
+      const normalized = String(newStatus || "").trim().toLowerCase();
+      const statusMap = {
+        "preparing": "preparing",
+        "ready": "ready",
+        "cancelled": "cancelled",
+        "canceled": "cancelled"
+      };
+      const nextStatus = statusMap[normalized];
+      if (!nextStatus) {
+        return res.status(400).json({ error: "هذه المرحلة يجب أن يتم تسجيلها من تطبيق التاجر أو الكابتن، وليست من لوحة الإدارة" });
+      }
+
+      await db.runTransaction(async (transaction) => {
+        const orderSnap = await transaction.get(orderRef);
+        if (!orderSnap.exists) throw new Error("الطلب غير موجود");
+
+        const data = orderSnap.data() || {};
+        const currentStatus = String(data.status || "").trim().toLowerCase();
+        if (["delivered", "completed"].includes(currentStatus)) {
+          throw new Error("لا يمكن تعديل طلب تم تسليمه");
+        }
+        if (["cancelled", "canceled"].includes(currentStatus)) {
+          throw new Error("الطلب ملغي بالفعل");
+        }
+
+        const assignedCaptainId = String(
+          data.captainId || data.driverId || data.offeredCaptainId || ""
+        ).trim();
+        const lockRef = assignedCaptainId
+          ? db.collection("captain_order_locks").doc(assignedCaptainId)
+          : null;
+        const lockSnap = lockRef ? await transaction.get(lockRef) : null;
+
+        const updates = {
+          status: nextStatus,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp()
+        };
+
+        if (nextStatus === "cancelled") {
+          updates.dispatchStatus = "cancelled";
+          updates.cancelledAt = admin.firestore.FieldValue.serverTimestamp();
+          updates.offeredCaptainId = null;
+          updates.offerId = admin.firestore.FieldValue.delete();
+          updates.offerExpiresAt = null;
+          if (lockSnap?.exists) {
+            const lock = lockSnap.data() || {};
+            if (lock.orderId === orderRef.id) transaction.delete(lockRef);
+          }
+        } else if (nextStatus === "ready") {
+          updates.readyAt = admin.firestore.FieldValue.serverTimestamp();
+        } else if (nextStatus === "preparing") {
+          updates.preparingAt = admin.firestore.FieldValue.serverTimestamp();
+        }
+
+        transaction.update(orderRef, updates);
+      });
+
+      return res.status(200).json({ success: true, status: nextStatus });
+    } catch (err) {
+      console.warn("adminUpdateOrderStatus error:", err.message);
+      return res.status(409).json({ error: err.message });
+    }
+  }
+);
+
 // ------------------------------------------------------------------------------
 // 9. Cloud Function: uploadImageToImgBB
 // ------------------------------------------------------------------------------
