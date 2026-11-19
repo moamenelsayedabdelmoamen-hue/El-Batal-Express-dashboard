@@ -1,6 +1,6 @@
 import {initializeApp} from "firebase-admin/app";
 import {randomInt} from "node:crypto";
-import {getFirestore, FieldValue} from "firebase-admin/firestore";
+import {getFirestore, FieldValue, GeoPoint} from "firebase-admin/firestore";
 import {getMessaging} from "firebase-admin/messaging";
 import {setGlobalOptions} from "firebase-functions";
 import * as logger from "firebase-functions/logger";
@@ -200,6 +200,402 @@ function requireOrderId(raw: unknown): string {
   }
   return value;
 }
+
+function generateDistinctOrderCode(): string {
+  const firstDigit = randomInt(1, 10);
+  const pool = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9].filter((digit) => digit !== firstDigit);
+  const digits = [firstDigit];
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = randomInt(0, i + 1);
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+  digits.push(...pool.slice(0, 5));
+  return digits.join("");
+}
+
+function isClosedMerchantOrderStatus(status: string): boolean {
+  const value = status.trim().toLowerCase();
+  return [
+    "delivered", "completed", "done", "cancelled", "canceled",
+    "ملغي", "ملغى", "تم الإلغاء", "تم الالغاء", "تم التسليم", "تم التوصيل", "مكتمل", "مكتملة",
+  ].includes(value) ||
+    value.includes("cancel") ||
+    value.includes("deliver") ||
+    value.includes("مكتمل") ||
+    value.includes("تسليم");
+}
+
+/**
+ * Merchant creates an order with a globally unique 6-digit code.
+ * The code, idempotency key, capacity check, and order document are committed atomically.
+ * Dispatch is performed only by the server-side order-created trigger.
+ */
+export const merchantCreateOrder = onCall(
+  {region: "us-central1"},
+  async (request) => {
+    try {
+      const uid = request.auth?.uid;
+      if (!uid) throw new HttpsError("unauthenticated", "يجب تسجيل الدخول أولاً.");
+      if (request.auth?.token.email_verified !== true) {
+        throw new HttpsError("permission-denied", "يجب تأكيد البريد الإلكتروني قبل إنشاء الطلب.");
+      }
+
+      const data = (request.data ?? {}) as Record<string, unknown>;
+      const idempotencyKey = readString(data, "idempotencyKey");
+      if (
+        idempotencyKey.length < 16 ||
+        idempotencyKey.length > 128 ||
+        !/^[A-Za-z0-9_-]+$/.test(idempotencyKey)
+      ) {
+        throw new HttpsError("invalid-argument", "مفتاح منع تكرار الطلب غير صالح.");
+      }
+
+      const destinationAddress = readString(data, "destinationAddress", "deliveryAddress", "address");
+      if (!destinationAddress || destinationAddress.length > 1000) {
+        throw new HttpsError("invalid-argument", "عنوان التوصيل مطلوب ويجب ألا يتجاوز 1000 حرف.");
+      }
+
+      const customerName = readString(data, "customerName").slice(0, 200);
+      const customerPhone = readString(data, "customerPhone").slice(0, 40);
+      const orderDetails = readString(data, "orderDetails", "items").slice(0, 4000);
+      const deliveryNotes = readString(data, "deliveryNotes", "notes").slice(0, 1000);
+      const serviceFee = readString(data, "serviceFee", "price") || "30 جنيه";
+      const feeMatch = serviceFee.replace(/,/g, "").match(/\d+(?:\.\d+)?/);
+      const deliveryFee = feeMatch ? Number(feeMatch[0]) : 30;
+      if (!Number.isFinite(deliveryFee) || deliveryFee < 0 || deliveryFee > 100000) {
+        throw new HttpsError("invalid-argument", "قيمة خدمة التوصيل غير صالحة.");
+      }
+
+      const customerLatitude = readNumber(data, "customerLatitude");
+      const customerLongitude = readNumber(data, "customerLongitude");
+      if (
+        (customerLatitude === null) !== (customerLongitude === null) ||
+        (customerLatitude !== null &&
+          (customerLatitude < -90 || customerLatitude > 90 ||
+           customerLongitude! < -180 || customerLongitude! > 180 ||
+           (customerLatitude === 0 && customerLongitude === 0)))
+      ) {
+        throw new HttpsError("invalid-argument", "إحداثيات عنوان العميل غير صالحة.");
+      }
+
+      const db = getFirestore();
+      const merchantRef = db.collection("merchants").doc(uid);
+      const subscriptionRef = db.collection("subscriptions").doc(uid);
+      const idempotencyRef = db.collection("idempotency_keys").doc(idempotencyKey);
+      const ordersRef = db.collection("orders");
+      const merchantOrdersQuery = ordersRef.where("merchantId", "==", uid);
+
+      const replaySnap = await idempotencyRef.get();
+      if (replaySnap.exists) {
+        const replay = replaySnap.data() ?? {};
+        if (readString(replay, "merchantId") !== uid) {
+          throw new HttpsError("permission-denied", "مفتاح الطلب مستخدم لحساب آخر.");
+        }
+        return {
+          success: true,
+          orderId: readString(replay, "orderId"),
+          orderCode: readString(replay, "orderCode"),
+          status: "pending",
+          isReplay: true,
+        };
+      }
+
+      const MAX_CODE_ATTEMPTS = 25;
+      for (let attempt = 1; attempt <= MAX_CODE_ATTEMPTS; attempt++) {
+        const orderCode = generateDistinctOrderCode();
+        const orderRef = ordersRef.doc();
+        const codeRef = db.collection("order_codes").doc(orderCode);
+        const nowMs = Date.now();
+
+        try {
+          const result = await db.runTransaction(async (tx) => {
+            const [
+              merchantSnap,
+              subscriptionSnap,
+              codeSnap,
+              keySnap,
+              activeOrdersSnap,
+            ] = await Promise.all([
+              tx.get(merchantRef),
+              tx.get(subscriptionRef),
+              tx.get(codeRef),
+              tx.get(idempotencyRef),
+              tx.get(merchantOrdersQuery),
+            ]);
+
+            if (keySnap.exists) {
+              const keyData = keySnap.data() ?? {};
+              if (readString(keyData, "merchantId") !== uid) {
+                throw new HttpsError("permission-denied", "مفتاح الطلب مستخدم لحساب آخر.");
+              }
+              return {
+                replay: true,
+                orderId: readString(keyData, "orderId"),
+                orderCode: readString(keyData, "orderCode"),
+              };
+            }
+
+            if (!merchantSnap.exists || !subscriptionSnap.exists) {
+              throw new HttpsError(
+                "failed-precondition",
+                "ملف التاجر أو سجل الاشتراك غير موجود؛ لا يمكن إنشاء الطلب."
+              );
+            }
+            const merchant = merchantSnap.data() ?? {};
+            const subscription = subscriptionSnap.data() ?? {};
+            if (
+              readString(merchant, "accountType").toLowerCase() !== "merchant" ||
+              !["approved", "active"].includes(readString(merchant, "status").toLowerCase())
+            ) {
+              throw new HttpsError("permission-denied", "حساب التاجر غير معتمد أو غير نشط.");
+            }
+            assertMerchantAndSubscriptionValid(uid, merchant, subscription, nowMs);
+
+            const maxCaptains =
+              readNumber(subscription, "maxCaptains") ??
+              readNumber(merchant, "maxCaptains") ??
+              0;
+            if (maxCaptains <= 0) {
+              throw new HttpsError("failed-precondition", "لا توجد باقة نشطة تسمح بطلب الكباتن.");
+            }
+
+            const activeOrderCount = activeOrdersSnap.docs.filter((doc) =>
+              !isClosedMerchantOrderStatus(readNormalizedOrderStatus(doc.data() ?? {}))
+            ).length;
+            if (activeOrderCount >= maxCaptains) {
+              throw new HttpsError(
+                "resource-exhausted",
+                `وصلت إلى الحد المتزامن للباقة: ${activeOrderCount} من ${maxCaptains} طلبات نشطة.`
+              );
+            }
+
+            if (codeSnap.exists) {
+              throw new Error("ORDER_CODE_COLLISION");
+            }
+
+            const pickup = extractCoordinates(merchant);
+            if (!pickup) {
+              throw new HttpsError(
+                "failed-precondition",
+                "يرجى تحديد موقع المتجر وتحديث إحداثياته قبل طلب كابتن."
+              );
+            }
+
+            const merchantName = readString(merchant, "name", "merchantName") || "تاجر";
+            const pickupAddress = readString(merchant, "address", "pickupAddress");
+            const merchantPoint = new GeoPoint(pickup.lat, pickup.lng);
+            const orderNumber = `#ELB-${orderCode}`;
+            const orderPayload: Record<string, unknown> = {
+              orderId: orderRef.id,
+              orderNumber,
+              orderCode,
+              code: orderCode,
+              order_code: orderCode,
+              address: destinationAddress,
+              destinationAddress,
+              deliveryAddress: destinationAddress,
+              price: serviceFee,
+              totalAmount: serviceFee,
+              serviceFee,
+              deliveryFee,
+              delivery_fee: deliveryFee,
+              captainEarning: deliveryFee,
+              customerName,
+              customerPhone,
+              orderDetails,
+              items: orderDetails,
+              deliveryNotes,
+              notes: deliveryNotes,
+              status: "pending",
+              dispatchStatus: "searching",
+              merchantId: uid,
+              restaurantId: uid,
+              userId: uid,
+              merchantName,
+              restaurantName: merchantName,
+              storeName: merchantName,
+              merchantLocation: merchantPoint,
+              pickupLocation: merchantPoint,
+              pickupLat: pickup.lat,
+              pickupLng: pickup.lng,
+              restaurantLatitude: pickup.lat,
+              restaurantLongitude: pickup.lng,
+              pickupAddress,
+              storeAddress: pickupAddress,
+              captainId: null,
+              driverId: null,
+              offeredCaptainId: null,
+              offeredCaptainName: null,
+              offerGeneration: 0,
+              offerExpiresAt: null,
+              excludedCaptainIds: [],
+              timedOutCaptainIds: [],
+              eligibleCaptainIds: [],
+              customerDetailsSubmitted: false,
+              customerDetailsConfirmed: false,
+              customerDetailsRejected: false,
+              merchantConfirmed: false,
+              dispatchedBy: "merchant",
+              createdAt: FieldValue.serverTimestamp(),
+              created_at: FieldValue.serverTimestamp(),
+              updatedAt: FieldValue.serverTimestamp(),
+            };
+            if (customerLatitude !== null && customerLongitude !== null) {
+              const customerPoint = new GeoPoint(customerLatitude, customerLongitude);
+              orderPayload.customerLocation = customerPoint;
+              orderPayload.customerLatitude = customerLatitude;
+              orderPayload.customerLongitude = customerLongitude;
+            }
+
+            tx.create(codeRef, {
+              code: orderCode,
+              orderCode,
+              orderId: orderRef.id,
+              merchantId: uid,
+              createdAt: FieldValue.serverTimestamp(),
+            });
+            tx.create(idempotencyRef, {
+              idempotencyKey,
+              orderId: orderRef.id,
+              orderCode,
+              merchantId: uid,
+              createdAt: FieldValue.serverTimestamp(),
+            });
+            tx.create(orderRef, orderPayload);
+
+            return {
+              replay: false,
+              orderId: orderRef.id,
+              orderCode,
+            };
+          });
+
+          return {
+            success: true,
+            orderId: result.orderId,
+            orderCode: result.orderCode,
+            orderNumber: `#ELB-${result.orderCode}`,
+            status: "pending",
+            dispatchStatus: result.replay ? "existing" : "searching",
+            isReplay: result.replay,
+          };
+        } catch (err) {
+          if (err instanceof Error && err.message === "ORDER_CODE_COLLISION") {
+            continue;
+          }
+          throw err;
+        }
+      }
+
+      throw new HttpsError(
+        "resource-exhausted",
+        "تعذر تخصيص كود طلب فريد بعد عدة محاولات. يرجى إعادة المحاولة."
+      );
+    } catch (err) {
+      throw mapError(err);
+    }
+  }
+);
+
+/**
+ * Merchant cancels an order before it is picked up. Any matching offer/trip reservation
+ * is released in the same transaction so the captain becomes eligible again.
+ */
+export const merchantCancelOrder = onCall(
+  {region: "us-central1"},
+  async (request) => {
+    try {
+      const uid = request.auth?.uid;
+      if (!uid) throw new HttpsError("unauthenticated", "يجب تسجيل الدخول أولاً.");
+      if (request.auth?.token.email_verified !== true) {
+        throw new HttpsError("permission-denied", "يجب تأكيد البريد الإلكتروني أولاً.");
+      }
+
+      const orderId = requireOrderId((request.data ?? {}).orderId);
+      const reason = readString(request.data as Record<string, unknown>, "reason").slice(0, 500);
+      const db = getFirestore();
+      const orderRef = db.collection("orders").doc(orderId);
+      const merchantRef = db.collection("merchants").doc(uid);
+      const [merchantSnap] = await Promise.all([merchantRef.get()]);
+      const merchant = merchantSnap.data() ?? {};
+      if (
+        !merchantSnap.exists ||
+        readString(merchant, "accountType").toLowerCase() !== "merchant" ||
+        !["approved", "active"].includes(readString(merchant, "status").toLowerCase())
+      ) {
+        throw new HttpsError("permission-denied", "حساب التاجر غير مؤهل لإلغاء الطلب.");
+      }
+
+      const result = await db.runTransaction(async (tx) => {
+        const orderSnap = await tx.get(orderRef);
+        if (!orderSnap.exists) throw new HttpsError("not-found", "الطلب غير موجود.");
+        const order = orderSnap.data() ?? {};
+        if (readString(order, "merchantId", "restaurantId", "userId") !== uid) {
+          throw new HttpsError("permission-denied", "هذا الطلب لا يخص متجرك.");
+        }
+        const status = readNormalizedOrderStatus(order);
+        if (["picked_up", "order_data_entered", "awaiting_merchant_confirmation",
+          "awaiting_confirmation", "merchant_rejected", "en_route", "confirmed",
+          "merchant_confirmed", "out_for_delivery", "delivering", "delivered",
+          "completed", "done"].includes(status)) {
+          throw new HttpsError(
+            "failed-precondition",
+            "لا يمكن إلغاء الطلب بعد استلامه من المتجر أو بدء توصيله."
+          );
+        }
+        if (["cancelled", "canceled"].includes(status)) {
+          return {alreadyCancelled: true};
+        }
+
+        const offeredUid = readString(order, "offeredCaptainId");
+        const assignedUid = extractOrderCaptainUid(order);
+        const captainIds = Array.from(new Set([offeredUid, assignedUid].filter(Boolean)));
+        const captainRefs = captainIds.map((captainId) => db.collection("captains").doc(captainId));
+        const captainSnaps = await Promise.all(captainRefs.map((ref) => tx.get(ref)));
+
+        captainSnaps.forEach((snap, index) => {
+          if (!snap.exists) return;
+          const captain = snap.data() ?? {};
+          const patch: Record<string, unknown> = {};
+          if (readString(captain, "currentOrderId") === orderId) {
+            patch.currentOrderId = null;
+            if (readString(captain, "presenceStatus") === "on_trip") {
+              patch.presenceStatus = "available";
+            }
+          }
+          if (readString(captain, "activeOfferOrderId") === orderId) {
+            patch.activeOfferOrderId = null;
+            patch.activeOfferGeneration = null;
+            patch.activeOfferExpiresAt = null;
+          }
+          if (Object.keys(patch).length > 0) {
+            patch.updatedAt = FieldValue.serverTimestamp();
+            tx.update(captainRefs[index], patch);
+          }
+        });
+
+        tx.update(orderRef, {
+          status: "cancelled",
+          dispatchStatus: "cancelled",
+          offeredCaptainId: null,
+          offeredCaptainName: null,
+          offerExpiresAt: null,
+          cancelledAt: FieldValue.serverTimestamp(),
+          cancelledBy: uid,
+          cancellationReason: reason || "إلغاء من قبل التاجر",
+          status_ar: "ملغي",
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+        return {alreadyCancelled: false};
+      });
+
+      return {success: true, orderId, ...result};
+    } catch (err) {
+      throw mapError(err);
+    }
+  }
+);
+
 
 /**
  * Admin creates an unassigned order. The created document is the source of truth;
