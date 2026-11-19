@@ -82,7 +82,7 @@ class FirebaseStorageIntegrationTest {
     private fun openPersistentRoomDb(): AppDatabase {
         return Room.databaseBuilder(context, AppDatabase::class.java, dbFile.absolutePath)
             .allowMainThreadQueries()
-            .fallbackToDestructiveMigration()
+            .addMigrations(*AppDatabase.ALL_MIGRATIONS)
             .build()
     }
 

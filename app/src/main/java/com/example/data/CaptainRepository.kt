@@ -3034,7 +3034,8 @@ class CaptainRepository(
 
     /**
      * 6. Expire delivery offer after 60 seconds via server-verified Cloud Function.
-     * Client timer stops ringing locally and lets Cloud Tasks / server handle reassignment.
+     * Stops local ringing immediately, but treats Cloud Functions / Cloud Tasks server clock
+     * as the single source of truth before marking the offer EXPIRED locally.
      */
     suspend fun expireDeliveryOffer(orderId: Long): Result<Unit> {
         val orders = allOrdersFlow.firstOrNull() ?: emptyList()
@@ -3044,11 +3045,17 @@ class CaptainRepository(
         context?.let { CaptainNotificationManager.stopIncomingOrderBell(it, orderDocId) }
 
         val finalRes = cloudFunctionsOrderClient.expireDeliveryOffer(orderDocId, reason = "expired")
+        if (finalRes.isSuccess) {
+            orderDao.updateOrderStatus(orderId, OrderStatus.EXPIRED)
+            return Result.success(Unit)
+        }
 
-        // Always mark EXPIRED locally once the 60s offer window finishes so the order leaves this
-        // captain's screen and never keeps ringing locally.
-        orderDao.updateOrderStatus(orderId, OrderStatus.EXPIRED)
-        return if (finalRes.isSuccess) finalRes else Result.success(Unit)
+        val cfEx = finalRes.exceptionOrNull() as? com.example.data.remote.CloudFunctionException
+        if (cfEx != null && cfEx.isNotFound && !cfEx.isEndpointNotFound) {
+            orderDao.updateOrderStatus(orderId, OrderStatus.EXPIRED)
+            return Result.success(Unit)
+        }
+        return finalRes
     }
 
     /**

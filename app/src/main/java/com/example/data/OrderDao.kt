@@ -44,11 +44,47 @@ interface OrderDao {
                 }
                 val mergedOrderCode = order.orderCode.ifBlank { existing.orderCode }
                 val mergedOfferExpiresAt = if (order.offerExpiresAt > 0L) order.offerExpiresAt else existing.offerExpiresAt
+                val mergedMerchantId = order.merchantId.ifBlank { existing.merchantId }
+                val mergedStoreLocationUrl = order.storeLocationUrl.ifBlank { existing.storeLocationUrl }
+                val incomingCoordsValid = order.restaurantLatitude != null &&
+                    order.restaurantLongitude != null &&
+                    order.restaurantLatitude.isFinite() &&
+                    order.restaurantLongitude.isFinite() &&
+                    !(order.restaurantLatitude == 0.0 && order.restaurantLongitude == 0.0)
+                val mergedLat = if (incomingCoordsValid) order.restaurantLatitude else existing.restaurantLatitude
+                val mergedLng = if (incomingCoordsValid) order.restaurantLongitude else existing.restaurantLongitude
+                val mergedStorePhone = order.storePhone.ifBlank { existing.storePhone }
+                val mergedStoreImage = order.storeImage.ifBlank { existing.storeImage }
+                val mergedCaptainId = order.captainId.ifBlank { existing.captainId }
+                val mergedReceiptImagePath = order.receiptImagePath.ifBlank { existing.receiptImagePath }
+                val mergedOrderImageUrl = order.orderImageUrl.ifBlank { existing.orderImageUrl }
+                val mergedReceiptUploadedAt = if (order.receiptUploadedAt > 0L) order.receiptUploadedAt else existing.receiptUploadedAt
+                val mergedReceiptUploadedBy = order.receiptUploadedBy.ifBlank { existing.receiptUploadedBy }
+                val mergedAcceptedAt = if (order.acceptedAt > 0L) order.acceptedAt else existing.acceptedAt
+                val mergedCompletedAt = if (order.completedAt > 0L) order.completedAt else existing.completedAt
+                val mergedCancelledAt = if (order.cancelledAt > 0L) order.cancelledAt else existing.cancelledAt
+                val mergedCancellationReason = order.cancellationReason.ifBlank { existing.cancellationReason }
+
                 return insertOrder(
                     order.copy(
                         id = existing.id,
                         orderCode = mergedOrderCode,
-                        offerExpiresAt = mergedOfferExpiresAt
+                        offerExpiresAt = mergedOfferExpiresAt,
+                        merchantId = mergedMerchantId,
+                        storeLocationUrl = mergedStoreLocationUrl,
+                        restaurantLatitude = mergedLat,
+                        restaurantLongitude = mergedLng,
+                        storePhone = mergedStorePhone,
+                        storeImage = mergedStoreImage,
+                        captainId = mergedCaptainId,
+                        receiptImagePath = mergedReceiptImagePath,
+                        orderImageUrl = mergedOrderImageUrl,
+                        receiptUploadedAt = mergedReceiptUploadedAt,
+                        receiptUploadedBy = mergedReceiptUploadedBy,
+                        acceptedAt = mergedAcceptedAt,
+                        completedAt = mergedCompletedAt,
+                        cancelledAt = mergedCancelledAt,
+                        cancellationReason = mergedCancellationReason
                     )
                 )
             }

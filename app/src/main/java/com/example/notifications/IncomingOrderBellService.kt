@@ -351,6 +351,7 @@ class IncomingOrderBellService : Service() {
         storeName: String,
         orderCode: String
     ) {
+        var serverConfirmedTransfer = false
         try {
             if (db != null) {
                 val repo = CaptainRepository(
@@ -363,24 +364,27 @@ class IncomingOrderBellService : Service() {
                 val resolvedId = targetOrder?.id ?: orderId
                 if (resolvedId > 0L) {
                     val result = repo.expireDeliveryOffer(resolvedId)
+                    serverConfirmedTransfer = result.isSuccess
                     Log.i(TAG, "Auto-expire transfer result for order $resolvedId: ${result.isSuccess}")
                 } else if (orderKey.isNotBlank()) {
                     val client = com.example.data.remote.CloudFunctionsOrderClient()
-                    client.expireDeliveryOffer(orderKey, reason = "expired")
+                    serverConfirmedTransfer = client.expireDeliveryOffer(orderKey, reason = "expired").isSuccess
                 }
             } else if (orderKey.isNotBlank()) {
                 val client = com.example.data.remote.CloudFunctionsOrderClient()
-                client.expireDeliveryOffer(orderKey, reason = "expired")
+                serverConfirmedTransfer = client.expireDeliveryOffer(orderKey, reason = "expired").isSuccess
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Error transferring timed-out order to nearest captain: ${e.message}")
+            Log.w(TAG, "Error notifying server of timed-out order: ${e.message}")
         } finally {
-            CaptainNotificationManager.showOfferExpiredTransferredNotification(
-                context = applicationContext,
-                orderKey = orderKey,
-                storeName = storeName,
-                orderCode = orderCode
-            )
+            if (serverConfirmedTransfer) {
+                CaptainNotificationManager.showOfferExpiredTransferredNotification(
+                    context = applicationContext,
+                    orderKey = orderKey,
+                    storeName = storeName,
+                    orderCode = orderCode
+                )
+            }
         }
     }
 
