@@ -60,6 +60,7 @@ class IncomingOrderBellService : Service() {
 
     private var currentOrderKey: String = ""
     private var currentOrderId: Long = 0L
+    private var currentOfferId: String = ""
     private var currentNotificationId: Int = DEFAULT_NOTIFICATION_ID
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -82,6 +83,7 @@ class IncomingOrderBellService : Service() {
                 val deliveryAddress = intent.getStringExtra(EXTRA_DELIVERY_ADDRESS).orEmpty()
                 val deliveryFee = intent.getDoubleExtra(EXTRA_DELIVERY_FEE, 25.0)
                 val orderCode = intent.getStringExtra(EXTRA_ORDER_CODE).orEmpty()
+                val offerId = intent.getStringExtra(EXTRA_OFFER_ID).orEmpty()
                 val distanceKm = intent.getDoubleExtra(EXTRA_DISTANCE_KM, 3.0)
                 val rawExpiresAt = intent.getLongExtra(EXTRA_OFFER_EXPIRES_AT_MS, 0L)
                 val notificationId = intent.getIntExtra(
@@ -92,13 +94,14 @@ class IncomingOrderBellService : Service() {
                 val nowMs = System.currentTimeMillis()
                 val expiresAtMs = if (rawExpiresAt > nowMs) rawExpiresAt else nowMs + 60_000L
 
-                if (orderKey.isNotBlank() && orderKey == currentOrderKey && countdownJob?.isActive == true) {
-                    // Already ringing for this exact order
+                if (orderKey.isNotBlank() && orderKey == currentOrderKey && offerId == currentOfferId && countdownJob?.isActive == true) {
+                    // Already ringing for this exact offer
                     return START_NOT_STICKY
                 }
 
                 currentOrderKey = orderKey
                 currentOrderId = orderId
+                currentOfferId = offerId
                 currentNotificationId = notificationId
                 activeRingingOrderKey = orderKey
                 isBellActive = true
@@ -117,6 +120,7 @@ class IncomingOrderBellService : Service() {
                     deliveryAddress = deliveryAddress,
                     deliveryFee = deliveryFee,
                     orderCode = orderCode,
+                    offerId = offerId,
                     expiresAtMs = expiresAtMs,
                     remainingSeconds = initialRemaining
                 )
@@ -140,6 +144,7 @@ class IncomingOrderBellService : Service() {
                     deliveryAddress = deliveryAddress,
                     deliveryFee = deliveryFee,
                     orderCode = orderCode,
+                    offerId = offerId,
                     distanceKm = distanceKm,
                     expiresAtMs = expiresAtMs
                 )
@@ -175,6 +180,7 @@ class IncomingOrderBellService : Service() {
         deliveryAddress: String,
         deliveryFee: Double,
         orderCode: String,
+        offerId: String,
         expiresAtMs: Long,
         remainingSeconds: Int
     ): Notification {
@@ -187,6 +193,7 @@ class IncomingOrderBellService : Service() {
             deliveryAddress = deliveryAddress,
             deliveryFee = deliveryFee,
             orderCode = orderCode,
+            offerId = offerId,
             offerExpiresAtMs = expiresAtMs
         )
         val fullScreenPendingIntent = PendingIntent.getActivity(
@@ -260,6 +267,7 @@ class IncomingOrderBellService : Service() {
         deliveryAddress: String,
         deliveryFee: Double,
         orderCode: String,
+        offerId: String,
         distanceKm: Double,
         expiresAtMs: Long
     ) {
@@ -299,7 +307,8 @@ class IncomingOrderBellService : Service() {
                             orderId = orderId,
                             orderKey = orderKey,
                             storeName = storeName,
-                            orderCode = orderCode
+                            orderCode = orderCode,
+                            offerId = offerId
                         )
                         stopBellAndFinish(removeNotification = true)
                         return@launch
@@ -316,6 +325,7 @@ class IncomingOrderBellService : Service() {
                             deliveryAddress = deliveryAddress,
                             deliveryFee = deliveryFee,
                             orderCode = orderCode,
+                            offerId = offerId,
                             expiresAtMs = expiresAtMs,
                             remainingSeconds = remainingSecs.coerceIn(1, 60)
                         )
@@ -349,8 +359,10 @@ class IncomingOrderBellService : Service() {
         orderId: Long,
         orderKey: String,
         storeName: String,
-        orderCode: String
+        orderCode: String,
+        offerId: String
     ) {
+        var transferConfirmed = false
         try {
             if (db != null) {
                 val repo = CaptainRepository(
@@ -363,24 +375,31 @@ class IncomingOrderBellService : Service() {
                 val resolvedId = targetOrder?.id ?: orderId
                 if (resolvedId > 0L) {
                     val result = repo.expireDeliveryOffer(resolvedId)
+                    transferConfirmed = result.isSuccess
                     Log.i(TAG, "Auto-expire transfer result for order $resolvedId: ${result.isSuccess}")
                 } else if (orderKey.isNotBlank()) {
                     val client = com.example.data.remote.CloudFunctionsOrderClient()
-                    client.expireDeliveryOffer(orderKey, reason = "expired")
+                    client.expireDeliveryOffer(orderKey, offerId = offerId, reason = "expired").also {
+                        transferConfirmed = it.isSuccess
+                    }
                 }
             } else if (orderKey.isNotBlank()) {
                 val client = com.example.data.remote.CloudFunctionsOrderClient()
-                client.expireDeliveryOffer(orderKey, reason = "expired")
+                client.expireDeliveryOffer(orderKey, offerId = offerId, reason = "expired").also {
+                    transferConfirmed = it.isSuccess
+                }
             }
         } catch (e: Exception) {
             Log.w(TAG, "Error transferring timed-out order to nearest captain: ${e.message}")
         } finally {
-            CaptainNotificationManager.showOfferExpiredTransferredNotification(
-                context = applicationContext,
-                orderKey = orderKey,
-                storeName = storeName,
-                orderCode = orderCode
-            )
+            if (transferConfirmed) {
+                CaptainNotificationManager.showOfferExpiredTransferredNotification(
+                    context = applicationContext,
+                    orderKey = orderKey,
+                    storeName = storeName,
+                    orderCode = orderCode
+                )
+            }
         }
     }
 
@@ -514,6 +533,7 @@ class IncomingOrderBellService : Service() {
         isBellActive = false
         activeRingingOrderKey = ""
         currentOrderKey = ""
+        currentOfferId = ""
 
         if (removeNotification) {
             runCatching {
@@ -562,6 +582,7 @@ class IncomingOrderBellService : Service() {
         const val EXTRA_DELIVERY_ADDRESS = "extra_delivery_address"
         const val EXTRA_DELIVERY_FEE = "extra_delivery_fee"
         const val EXTRA_ORDER_CODE = "extra_order_code"
+        const val EXTRA_OFFER_ID = "extra_offer_id"
         const val EXTRA_DISTANCE_KM = "extra_distance_km"
         const val EXTRA_OFFER_EXPIRES_AT_MS = "extra_offer_expires_at_ms"
         const val EXTRA_NOTIFICATION_ID = "extra_notification_id"
@@ -584,6 +605,7 @@ class IncomingOrderBellService : Service() {
             deliveryAddress: String,
             deliveryFee: Double,
             orderCode: String,
+            offerId: String,
             offerExpiresAtMs: Long,
             distanceKm: Double = 3.0
         ) {
@@ -597,6 +619,7 @@ class IncomingOrderBellService : Service() {
                 putExtra(EXTRA_DELIVERY_ADDRESS, deliveryAddress)
                 putExtra(EXTRA_DELIVERY_FEE, deliveryFee)
                 putExtra(EXTRA_ORDER_CODE, orderCode)
+                putExtra(EXTRA_OFFER_ID, offerId)
                 putExtra(EXTRA_DISTANCE_KM, distanceKm)
                 putExtra(EXTRA_OFFER_EXPIRES_AT_MS, offerExpiresAtMs)
             }
