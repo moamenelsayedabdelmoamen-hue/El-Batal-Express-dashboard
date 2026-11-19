@@ -224,11 +224,13 @@ export function createAdminServerEffects(): ServerEffectsPort {
           scheduleDelaySeconds: Math.max(5, Math.min(delaySeconds, 300)),
         });
       } catch (err) {
-        logger.warn("Failed to enqueue Cloud Task reassignOrderOffer", {
+        logger.error("Failed to enqueue Cloud Task reassignOrderOffer", {
           orderId: payload.orderId,
           expectedCaptainId: payload.expectedCaptainId,
+          expectedOfferGeneration: payload.expectedOfferGeneration,
           error: err instanceof Error ? err.message : String(err),
         });
+        throw err;
       }
     },
   };
