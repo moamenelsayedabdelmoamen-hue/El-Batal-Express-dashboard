@@ -382,6 +382,15 @@ function mapDocToOrder(
     data.captain?.name ||
     data.captain?.displayName ||
     '';
+  const realOfferedCaptainId = String(data.offeredCaptainId || '').trim();
+  const realOfferedCaptainName = String(data.offeredCaptainName || '').trim();
+  const rawOfferExpiresAt = Number(data.offerExpiresAt || 0);
+  const offerExpiresAt = Number.isFinite(rawOfferExpiresAt) && rawOfferExpiresAt > 0
+    ? rawOfferExpiresAt
+    : undefined;
+  const offerGeneration = Number.isSafeInteger(Number(data.offerGeneration))
+    ? Number(data.offerGeneration)
+    : undefined;
 
   const rawCreatedAt =
     data.createdAt ||
@@ -547,6 +556,10 @@ function mapDocToOrder(
       data.deliveryAddress || data.delivery_address || data.address || data.clientAddress || '',
     captainId: realCaptainId,
     captainName: realCaptainName,
+    offeredCaptainId: realOfferedCaptainId || undefined,
+    offeredCaptainName: realOfferedCaptainName || undefined,
+    offerExpiresAt,
+    offerGeneration,
     receiptImageUrl: rawReceiptUrl,
     receiptImagePath: rawReceiptPath,
     subtotal:
