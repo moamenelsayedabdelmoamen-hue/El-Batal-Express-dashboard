@@ -1274,64 +1274,107 @@ async function handleConfirmDelivery(req, res) {
   const user = await authenticateCaptain(req, res);
   if (!user) return;
 
-  const { orderId } = req.body || {};
+  const orderId = String(req.body?.orderId || "").trim();
   if (!orderId) return res.status(400).json({ error: "معرف الطلب مطلوب" });
 
   const db = admin.firestore();
   const orderRef = await resolveOrderReference(db, orderId);
-  const cleanId = String(orderId).trim().replace(/^#+/, "");
+  if (!orderRef) return res.status(400).json({ error: "معرف الطلب غير صالح" });
+
   const captainRef = db.collection("captains").doc(user.uid);
-  const transactionRecordRef = captainRef.collection("transactions").doc(cleanId);
+  // Use the canonical Firestore order document ID for an immutable, per-order ledger key.
+  const transactionRecordRef = captainRef.collection("transactions").doc(orderRef.id);
+  const lockRef = db.collection("captain_order_locks").doc(user.uid);
 
   try {
-    let earnedDeliveryFee = 25.0;
+    let earnedDeliveryFee = 0;
+    let alreadyCompleted = false;
+
     await db.runTransaction(async (transaction) => {
-      const orderDoc = await transaction.get(orderRef);
+      const [orderDoc, captainDoc, ledgerDoc, lockDoc] = await Promise.all([
+        transaction.get(orderRef),
+        transaction.get(captainRef),
+        transaction.get(transactionRecordRef),
+        transaction.get(lockRef)
+      ]);
       if (!orderDoc.exists) throw new Error("الطلب غير موجود");
-      const orderData = orderDoc.data();
-      if (orderData.captainId !== user.uid && orderData.driverId !== user.uid) {
+      if (!captainDoc.exists) throw new Error("حساب الكابتن غير موجود");
+
+      const orderData = orderDoc.data() || {};
+      const currentCaptainId = String(orderData.captainId || orderData.driverId || "").trim();
+      if (currentCaptainId !== user.uid) {
         throw new Error("غير مصرح: هذا الطلب ليس مسنداً إليك");
       }
-      if (orderData.status === "delivered" || orderData.status === "completed") {
-        throw new Error("الطلب مسجل كمكتمل مسبقاً");
+
+      const currentStatus = String(orderData.status || "").trim().toLowerCase();
+      if (["delivered", "completed"].includes(currentStatus)) {
+        if (!ledgerDoc.exists) {
+          throw new Error("الطلب مكتمل لكن سجل مستحقاته غير موجود؛ يلزم فحص مالي قبل أي إعادة معالجة");
+        }
+        const existingLedger = ledgerDoc.data() || {};
+        earnedDeliveryFee = Number(existingLedger.amount || 0);
+        alreadyCompleted = true;
+        return;
+      }
+      if (ledgerDoc.exists) {
+        throw new Error("يوجد سجل مستحقات سابق لهذا الطلب مع أن حالته ليست مكتملة؛ تم إيقاف التحديث للحماية المالية");
       }
 
-      if (typeof orderData.deliveryFee === "number" && orderData.deliveryFee > 0) {
-        earnedDeliveryFee = orderData.deliveryFee;
+      if (!["en_route", "out_for_delivery", "delivering"].includes(currentStatus)) {
+        throw new Error("لا يمكن تأكيد التسليم قبل تأكيد التاجر وخروج الطلب للتوصيل");
+      }
+      if (orderData.merchantConfirmed !== true) {
+        throw new Error("يجب تأكيد بيانات الطلب من التاجر قبل تسجيل التسليم");
       }
 
-      // 1. Mark order delivered
+      const feeRaw = orderData.deliveryFee ?? orderData.delivery_fee ?? orderData.captainEarning;
+      const fee = Number(feeRaw);
+      if (!Number.isFinite(fee) || fee <= 0) {
+        throw new Error("قيمة مستحق الكابتن غير محددة بشكل صحيح في الطلب");
+      }
+      earnedDeliveryFee = fee;
+
+      if (
+        lockDoc.exists &&
+        String(lockDoc.data()?.orderId || "") === orderRef.id &&
+        String(lockDoc.data()?.status || "").toLowerCase() === "accepted"
+      ) {
+        transaction.delete(lockRef);
+      }
+
       transaction.update(orderRef, {
         status: "delivered",
         deliveredAt: admin.firestore.FieldValue.serverTimestamp(),
+        dispatchStatus: "completed",
         updatedAt: admin.firestore.FieldValue.serverTimestamp()
       });
 
-      // 2. Safely increment captain wallet balance and order count
       transaction.update(captainRef, {
         walletBalance: admin.firestore.FieldValue.increment(earnedDeliveryFee),
         totalOrdersCount: admin.firestore.FieldValue.increment(1),
         updatedAt: admin.firestore.FieldValue.serverTimestamp()
       });
 
-      // 3. Financial audit record
-      transaction.set(transactionRecordRef, {
+      transaction.create(transactionRecordRef, {
         amount: earnedDeliveryFee,
         type: "delivery_earning",
-        orderId: String(orderId),
-        description: `أرباح توصيل الطلب رقم #${orderId}`,
+        orderId: orderRef.id,
+        description: `أرباح توصيل الطلب رقم #${orderRef.id}`,
         createdAt: admin.firestore.FieldValue.serverTimestamp()
       });
     });
 
     return res.status(200).json({
       success: true,
-      message: "تم تسليم الطلب بنجاح وإضافة الأرباح لمحفظتك",
+      alreadyCompleted,
+      message: alreadyCompleted
+        ? "تم تسجيل تسليم هذا الطلب والمستحقات سابقاً"
+        : "تم تسليم الطلب بنجاح وإضافة الأرباح لمحفظتك",
       earnedAmount: earnedDeliveryFee
     });
   } catch (err) {
-    console.error("confirmDelivery error:", err.message);
-    return res.status(400).json({ error: err.message });
+    console.error("confirmDelivery rejected:", err.message);
+    return res.status(409).json({ error: err.message });
   }
 }
 
