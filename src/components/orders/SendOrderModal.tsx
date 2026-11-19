@@ -189,7 +189,7 @@ export const SendOrderModal: React.FC<SendOrderModalProps> = ({
         notes: notes.trim(),
       });
 
-      success(`تم إرسال الطلب ${createdOrder.orderNumber} بنجاح إلى الكابتن ${selectedCaptain.name}!`);
+      success(`تم إنشاء الطلب ${createdOrder.orderNumber} وإرسال عرض لمدة 60 ثانية إلى ${selectedCaptain.name} بانتظار قبوله.`);
 
       // Reset and close
       handleReset();
