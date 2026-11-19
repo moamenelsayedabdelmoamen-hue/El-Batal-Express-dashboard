@@ -132,11 +132,12 @@ async function authenticateOrderManager(req, res, db, orderData) {
     return null;
   }
 
-  const merchantUid = String(
-    orderData?.merchantId || orderData?.storeId || orderData?.vendorId || orderData?.ownerId || orderData?.userId || ""
-  ).trim();
+  const merchantOwners = [
+    orderData?.merchantOwnerId, orderData?.merchantUid, orderData?.merchantId,
+    orderData?.storeId, orderData?.vendorId, orderData?.ownerId, orderData?.userId
+  ].map(value => String(value || "").trim()).filter(Boolean);
 
-  if (!merchantUid || merchantUid !== user.uid) {
+  if (!merchantOwners.includes(user.uid)) {
     res.status(403).json({ error: "غير مصرح: هذا الطلب لا يخص متجرك" });
     return null;
   }
@@ -226,7 +227,8 @@ function isCaptainOnlineAndActive(captainData) {
   if (!captainData) return false;
   if (captainData.accountType && String(captainData.accountType).trim().toLowerCase() !== "captain") return false;
   if (captainData.isOnline !== true) return false;
-  if (String(captainData.presenceStatus || "").trim().toLowerCase() === "offline") return false;
+  if (captainData.canReceiveOrders === false) return false;
+  if (["offline", "disabled", "unavailable"].includes(String(captainData.presenceStatus || "").trim().toLowerCase())) return false;
   const statusStr = String(captainData.status || "active").trim().toLowerCase();
   if (INACTIVE_ACCOUNT_STATUSES.has(statusStr)) return false;
   if (captainData.isApproved === false) return false;
@@ -864,6 +866,7 @@ async function assignNearestCaptainInternal(
         status: "pending",
         dispatchStatus: "offered",
         offeredCaptainId: captainId,
+        offeredCaptainName: String(currentCaptain.driver_name || currentCaptain.name || currentCaptain.fullName || currentCaptain.displayName || ""),
         offerId,
         offerExpiresAt,
         nearestDistanceKm: distanceKm,
@@ -930,6 +933,7 @@ async function assignNearestCaptainInternal(
       status: "searching",
       dispatchStatus: "searching",
       offeredCaptainId: null,
+      offeredCaptainName: null,
       offerId: admin.firestore.FieldValue.delete(),
       offerExpiresAt: null,
       updatedAt: admin.firestore.FieldValue.serverTimestamp()
@@ -1053,6 +1057,7 @@ async function handleAcceptDeliveryOffer(req, res) {
         captainName: String(captainDoc.data()?.driver_name || captainDoc.data()?.name || captainDoc.data()?.fullName || ""),
         acceptedOfferId: offerId,
         offeredCaptainId: null,
+        offeredCaptainName: null,
         offerExpiresAt: null,
         acceptedAt: admin.firestore.FieldValue.serverTimestamp(),
         updatedAt: admin.firestore.FieldValue.serverTimestamp()
@@ -1494,6 +1499,7 @@ async function expireOfferAndReassign(db, orderRef, options = {}) {
       status: "searching",
       dispatchStatus: "searching",
       offeredCaptainId: null,
+      offeredCaptainName: null,
       offerId: admin.firestore.FieldValue.delete(),
       offerExpiresAt: null,
       excludedCaptainIds: excluded,
@@ -1717,6 +1723,7 @@ exports.createOrder = onRequest(
         order_code: "",
         order_codes: "",
         merchantId: restaurantId,
+        merchantOwnerId: String(merchantData.ownerUid || merchantData.ownerId || merchantData.userId || merchantData.merchantUid || merchantData.authUid || restaurantId).trim(),
         restaurantId,
         merchantName: restaurantName,
         restaurantName,
@@ -1958,6 +1965,7 @@ exports.adminUpdateOrderStatus = onRequest(
           updates.dispatchStatus = "cancelled";
           updates.cancelledAt = admin.firestore.FieldValue.serverTimestamp();
           updates.offeredCaptainId = null;
+          updates.offeredCaptainName = null;
           updates.offerId = admin.firestore.FieldValue.delete();
           updates.offerExpiresAt = null;
           if (lockSnap?.exists) {
@@ -2100,6 +2108,8 @@ exports.onOrderCreatedNotifyCaptains = onDocumentWritten("orders/{orderId}", asy
   const beforeData = (event.data.before && event.data.before.exists) ? (event.data.before.data() || {}) : null;
 
   if (afterData.merchantConfirmed === true) return;
+  // createOrder runs the initial dispatch itself after its idempotent creation transaction.
+  if (!beforeData && afterData.source === "admin_dashboard") return;
 
   const afterStatus = String(afterData.status || "").trim().toLowerCase();
   if (!NOTIFIABLE_NEW_ORDER_STATUSES.has(afterStatus)) return;
