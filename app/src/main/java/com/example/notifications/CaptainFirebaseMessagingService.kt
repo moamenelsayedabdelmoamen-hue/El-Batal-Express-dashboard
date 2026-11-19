@@ -87,6 +87,12 @@ class CaptainFirebaseMessagingService : FirebaseMessagingService() {
                             ?: data["Ordar codes"]
                             ?: data["code"]
                             ?: ""
+                        val storeLocationUrl = (
+                            data["storeLocationUrl"]
+                                ?: data["store_location_url"]
+                                ?: data["storeLocationLink"]
+                                ?: ""
+                        ).trim()
                         val nowMs = System.currentTimeMillis()
                         val parsedExpiresAt = data["offerExpiresAt"]?.toLongOrNull() ?: 0L
                         val effectiveExpiresAt = if (parsedExpiresAt > nowMs) parsedExpiresAt else nowMs + 60_000L
@@ -105,7 +111,7 @@ class CaptainFirebaseMessagingService : FirebaseMessagingService() {
                             storeImage = data["storeImage"].orEmpty(),
                             pickupAddress = pickup.ifBlank { "مقر التاجر" },
                             deliveryAddress = delivery.ifBlank { "عنوان العميل" },
-                            storeLocationUrl = data["storeLocationUrl"].orEmpty(),
+                            storeLocationUrl = storeLocationUrl,
                             itemsSummary = data["itemsSummary"].orEmpty().ifBlank { "طلب توصيل جديد" },
                             itemsCount = data["itemsCount"]?.toIntOrNull() ?: 1,
                             orderTotalAmount = data["orderTotalAmount"]?.toDoubleOrNull() ?: 0.0,
@@ -127,6 +133,7 @@ class CaptainFirebaseMessagingService : FirebaseMessagingService() {
                             deliveryAddress = delivery,
                             deliveryFee = fee,
                             orderCode = orderCode,
+                            storeLocationUrl = storeLocationUrl,
                             orderId = savedOrderId,
                             offerExpiresAtMs = effectiveExpiresAt,
                             distanceKm = distanceKm,
@@ -161,7 +168,9 @@ class CaptainFirebaseMessagingService : FirebaseMessagingService() {
                             orderKey = remoteMessage.messageId ?: System.currentTimeMillis().toString(),
                             storeName = notifTitle,
                             pickupAddress = notifBody,
-                            deliveryFee = data["deliveryFee"]?.toDoubleOrNull() ?: 25.0
+                            deliveryFee = data["deliveryFee"]?.toDoubleOrNull() ?: 25.0,
+                            orderCode = data["orderCode"].orEmpty(),
+                            storeLocationUrl = data["storeLocationUrl"].orEmpty()
                         )
                     }
                 }

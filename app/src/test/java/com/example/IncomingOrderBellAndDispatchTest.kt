@@ -262,10 +262,16 @@ class IncomingOrderBellAndDispatchTest {
             }
         }
 
+        composeRule.onNodeWithTag("incoming_order_number_text")
+            .performScrollTo()
+            .assertIsDisplayed()
         composeRule.onNodeWithTag("incoming_order_code_badge")
             .performScrollTo()
             .assertIsDisplayed()
         composeRule.onNodeWithText("ORD-990", substring = true)
+            .performScrollTo()
+            .assertIsDisplayed()
+        composeRule.onNodeWithTag("incoming_order_total_text")
             .performScrollTo()
             .assertIsDisplayed()
         composeRule.onNodeWithTag("incoming_order_timer_text")
@@ -507,5 +513,43 @@ class IncomingOrderBellAndDispatchTest {
         val aliasInfo = pm.getActivityInfo(aliasComponent, 0)
         assertTrue(aliasInfo.exported)
         assertEquals("com.example.MainActivity", aliasInfo.targetActivity)
+    }
+
+    @Test
+    fun `ic_notification_captain resolves cleanly and orderCode plus storeLocationUrl propagate through notification intents`() {
+        val drawable = appContext.getDrawable(R.drawable.ic_notification_captain)
+        assertNotNull("Expected R.drawable.ic_notification_captain to resolve", drawable)
+
+        val mapUrl = "https://maps.google.com/?q=30.0444,31.2357"
+        val intent = com.example.notifications.IncomingOrderActivity.createIntent(
+            context = appContext,
+            orderKey = "order_loc_1",
+            orderId = 515L,
+            storeName = "مطعم البطل",
+            pickupAddress = "مدينة نصر",
+            deliveryAddress = "مصر الجديدة",
+            deliveryFee = 35.0,
+            orderCode = "BT-515",
+            storeLocationUrl = mapUrl,
+            offerExpiresAtMs = System.currentTimeMillis() + 60_000L
+        )
+        assertEquals("BT-515", intent.getStringExtra(com.example.notifications.IncomingOrderActivity.EXTRA_ORDER_CODE))
+        assertEquals(mapUrl, intent.getStringExtra(com.example.notifications.IncomingOrderActivity.EXTRA_STORE_LOCATION_URL))
+
+        val posted = CaptainNotificationManager.showNewOrderNotification(
+            context = appContext,
+            orderKey = "order_loc_1",
+            storeName = "مطعم البطل",
+            pickupAddress = "مدينة نصر",
+            deliveryAddress = "مصر الجديدة",
+            deliveryFee = 35.0,
+            orderCode = "BT-515",
+            storeLocationUrl = mapUrl,
+            orderId = 515L,
+            offerExpiresAtMs = System.currentTimeMillis() + 60_000L,
+            startContinuousBell = false
+        )
+        assertTrue(posted)
+        CaptainNotificationManager.stopIncomingOrderBell(appContext, "order_loc_1")
     }
 }

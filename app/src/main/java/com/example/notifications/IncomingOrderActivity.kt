@@ -177,6 +177,7 @@ class IncomingOrderActivity : ComponentActivity() {
         val delivery = intent?.getStringExtra(EXTRA_DELIVERY_ADDRESS).orEmpty().ifBlank { "عنوان العميل" }
         val fee = intent?.getDoubleExtra(EXTRA_DELIVERY_FEE, 25.0) ?: 25.0
         val orderCode = intent?.getStringExtra(EXTRA_ORDER_CODE).orEmpty()
+        val storeLocationUrl = intent?.getStringExtra(EXTRA_STORE_LOCATION_URL).orEmpty().trim()
         val rawExpires = intent?.getLongExtra(EXTRA_OFFER_EXPIRES_AT_MS, 0L) ?: 0L
         val expiresAt = if (rawExpires > 0L) rawExpires else System.currentTimeMillis() + 60_000L
 
@@ -189,6 +190,7 @@ class IncomingOrderActivity : ComponentActivity() {
             storeName = storeName,
             pickupAddress = pickup,
             deliveryAddress = delivery,
+            storeLocationUrl = storeLocationUrl,
             itemsSummary = "طلب توصيل جديد",
             itemsCount = 1,
             orderTotalAmount = 0.0,
@@ -208,6 +210,7 @@ class IncomingOrderActivity : ComponentActivity() {
         const val EXTRA_DELIVERY_ADDRESS = "extra_delivery_address"
         const val EXTRA_DELIVERY_FEE = "extra_delivery_fee"
         const val EXTRA_ORDER_CODE = "extra_order_code"
+        const val EXTRA_STORE_LOCATION_URL = "extra_store_location_url"
         const val EXTRA_OFFER_EXPIRES_AT_MS = "extra_offer_expires_at_ms"
 
         fun createIntent(
@@ -218,8 +221,9 @@ class IncomingOrderActivity : ComponentActivity() {
             pickupAddress: String,
             deliveryAddress: String,
             deliveryFee: Double,
-            orderCode: String,
-            offerExpiresAtMs: Long
+            orderCode: String = "",
+            storeLocationUrl: String = "",
+            offerExpiresAtMs: Long = 0L
         ): Intent {
             return Intent(context, IncomingOrderActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
@@ -230,6 +234,7 @@ class IncomingOrderActivity : ComponentActivity() {
                 putExtra(EXTRA_DELIVERY_ADDRESS, deliveryAddress)
                 putExtra(EXTRA_DELIVERY_FEE, deliveryFee)
                 putExtra(EXTRA_ORDER_CODE, orderCode)
+                putExtra(EXTRA_STORE_LOCATION_URL, storeLocationUrl)
                 putExtra(EXTRA_OFFER_EXPIRES_AT_MS, offerExpiresAtMs)
             }
         }

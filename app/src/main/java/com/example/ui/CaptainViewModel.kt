@@ -23,7 +23,7 @@ import com.example.data.location.CaptainLocationTracker
 import com.example.data.location.GpsStatus
 import com.example.data.storage.ImageUploadState
 import android.util.Log
-import com.example.data.extractAllShifts
+import com.example.data.extractShiftsFromMap
 import com.example.notifications.CaptainNotificationManager
 import com.example.notifications.ShiftNotificationScheduler
 import com.google.firebase.auth.FirebaseAuth
@@ -85,8 +85,6 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
         } else null
     }
     private var shiftDocListener: ListenerRegistration? = null
-    private var shiftQueryListener: ListenerRegistration? = null
-    private var captainDocListener: ListenerRegistration? = null
     private var authStateListener: FirebaseAuth.AuthStateListener? = null
 
     val captainState: StateFlow<CaptainEntity?> = repository.captainFlow
@@ -96,10 +94,16 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
     val currentLocation: StateFlow<Location?> = CaptainLocationTracker.currentLocation
     val isGpsTracking: StateFlow<Boolean> = CaptainLocationTracker.isTracking
 
-    // Work Shift State & Management with Live Firestore Real-Time Updates
+    // Work Shift State & Management with Live Canonical Firestore Real-Time Updates
     private val _liveShifts = MutableStateFlow<List<ShiftEntity>>(emptyList())
-    val shifts: StateFlow<List<ShiftEntity>> = combine(repository.shiftsFlow, _liveShifts) { roomShifts, liveShifts ->
-        if (liveShifts.isNotEmpty()) liveShifts else roomShifts
+    internal val liveShiftsState: StateFlow<List<ShiftEntity>> = _liveShifts.asStateFlow()
+    private val _hasLiveShiftSnapshot = MutableStateFlow(false)
+    val shifts: StateFlow<List<ShiftEntity>> = combine(
+        repository.shiftsFlow,
+        _liveShifts,
+        _hasLiveShiftSnapshot
+    ) { roomShifts, liveShifts, hasLiveSnapshot ->
+        if (hasLiveSnapshot) liveShifts else roomShifts
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     private val _currentCairoTime = MutableStateFlow(ShiftManager.getCurrentCairoTimeFormatted())
@@ -117,9 +121,8 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
     val weeklyWorkHours: StateFlow<Double> = shifts.map { ShiftManager.calculateWeeklyWorkHours(it) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0.0)
 
-    val dailyWorkHours: StateFlow<Double> = shifts.map { list ->
-        val todayShift = list.find { it.dayOfWeek == ShiftManager.getCurrentCairoCalendar().get(java.util.Calendar.DAY_OF_WEEK) }
-        todayShift?.let { ShiftManager.calculateShiftDurationHours(it) } ?: 0.0
+    val dailyWorkHours: StateFlow<Double> = combine(shifts, _currentCairoDate) { list, _ ->
+        calculateDailyWorkHours(list)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0.0)
 
     val activeOrder: StateFlow<OrderEntity?> = repository.activeOrderFlow
@@ -453,7 +456,13 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             repository.reconcileDailyWallets()
             if (auth?.currentUser?.isEmailVerified == true) {
-                repository.syncShiftsFromFirestore()
+                val syncRes = repository.syncShiftsFromFirestore()
+                if (syncRes.isSuccess) {
+                    val synced = syncRes.getOrDefault(emptyList())
+                    _liveShifts.value = synced
+                    _hasLiveShiftSnapshot.value = true
+                    _shiftStatus.value = ShiftManager.calculateShiftStatus(synced)
+                }
                 repository.syncFcmToken()
                 repository.syncCaptainOrdersHistoryFromFirestore()
             }
@@ -467,7 +476,7 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
                 .collect { (uid, isLoggedIn, shiftList) ->
                     if (isLoggedIn && uid.isNotBlank() && shiftList.isNotEmpty()) {
                         ShiftNotificationScheduler.scheduleShiftNotifications(appContext, shiftList, uid)
-                    } else if (!isLoggedIn) {
+                    } else {
                         ShiftNotificationScheduler.cancelAllShiftAlarms(appContext)
                     }
                 }
@@ -497,6 +506,7 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
                             deliveryAddress = order.deliveryAddress,
                             deliveryFee = order.deliveryFee,
                             orderCode = order.cleanOrderCode,
+                            storeLocationUrl = order.effectiveStoreLocationUrl,
                             orderId = order.id,
                             offerExpiresAtMs = order.offerExpiresAt,
                             distanceKm = order.distanceKm,
@@ -946,6 +956,9 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
             _licenseUploadState.value = ImageUploadState.Idle
             _receiptUploadState.value = ImageUploadState.Idle
             _orderActionError.value = null
+            _liveShifts.value = emptyList()
+            _hasLiveShiftSnapshot.value = false
+            _shiftStatus.value = ShiftStatus.NoSchedule()
             repository.logout()
             onLoggedOut()
         }
@@ -1018,8 +1031,12 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
             val res = repository.syncShiftsFromFirestore()
             _isLoading.value = false
             if (res.isSuccess) {
-                val count = res.getOrDefault(emptyList()).size
-                val msg = if (count > 0) "تم تحديث جدول الشفتات ($count أيام مسجلة) بنجاح" else "تم التحديث: لا توجد شفتات مخصصة لك حالياً من الإدارة"
+                val syncedShifts = res.getOrDefault(emptyList())
+                _liveShifts.value = syncedShifts
+                _hasLiveShiftSnapshot.value = true
+                _shiftStatus.value = ShiftManager.calculateShiftStatus(syncedShifts)
+                val count = syncedShifts.size
+                val msg = if (count > 0) "تم تحديث جدول الشفتات ($count ورديات مسجلة) بنجاح" else "تم التحديث: لا توجد شفتات مخصصة لك حالياً من الإدارة"
                 _eventFlow.emit(UiEvent.ShowToast(msg))
                 onResult(true, msg)
             } else {
@@ -1428,66 +1445,47 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    internal suspend fun applyCanonicalShiftSnapshot(
+        uid: String,
+        exists: Boolean,
+        docData: Map<String, Any?>?
+    ) {
+        val latestShifts = if (exists && docData != null) {
+            extractShiftsFromMap(docData, uid, uid)
+        } else {
+            emptyList()
+        }
+        Log.i(
+            "CaptainViewModel",
+            "[ShiftSnapshotListener] Applying canonical schedule for $uid: exists=$exists, shifts=${latestShifts.size}"
+        )
+        _liveShifts.value = latestShifts
+        _hasLiveShiftSnapshot.value = true
+        _shiftStatus.value = ShiftManager.calculateShiftStatus(latestShifts)
+        repository.saveShiftsLocally(uid, latestShifts)
+    }
+
     private fun attachShiftSnapshotListeners(uid: String) {
         detachShiftSnapshotListeners()
         val dbFirestore = firestore ?: return
-        Log.i("CaptainViewModel", "[ShiftSnapshotListener] Attaching live Firestore listener for UID: $uid (target: captain_schedules/$uid)")
+        Log.i("CaptainViewModel", "[ShiftSnapshotListener] Attaching canonical Firestore listener for UID: $uid (target: captain_schedules/$uid)")
 
-        // 1. Direct document listener on captain_schedules/{uid}
+        // Canonical single source of truth: captain_schedules/{uid}
+        // Replaces _liveShifts and Room even when deleted or empty so removed shifts never linger.
         shiftDocListener = dbFirestore.collection("captain_schedules").document(uid)
             .addSnapshotListener { snapshot, error ->
                 if (error != null) {
                     Log.w("CaptainViewModel", "[ShiftSnapshotListener] captain_schedules/$uid error: ${error.message}")
                     return@addSnapshotListener
                 }
-                if (snapshot != null && snapshot.exists()) {
-                    val extracted = snapshot.extractAllShifts(uid)
-                    if (extracted.isNotEmpty()) {
-                        Log.i("CaptainViewModel", "[ShiftSnapshotListener] Live update: ${extracted.size} shifts from captain_schedules/$uid")
-                        _liveShifts.value = extracted
-                        _shiftStatus.value = ShiftManager.calculateShiftStatus(extracted)
-                        viewModelScope.launch {
-                            repository.saveShiftsLocally(uid, extracted)
-                        }
-                    }
-                }
-            }
+                if (snapshot == null) return@addSnapshotListener
 
-        // 2. Query listener on captain_schedules where captainId == uid
-        shiftQueryListener = dbFirestore.collection("captain_schedules")
-            .whereEqualTo("captainId", uid)
-            .addSnapshotListener { snapshot, error ->
-                if (error != null) return@addSnapshotListener
-                if (snapshot != null && !snapshot.isEmpty) {
-                    val allShifts = mutableListOf<ShiftEntity>()
-                    for (doc in snapshot.documents) {
-                        allShifts.addAll(doc.extractAllShifts(uid))
-                    }
-                    if (allShifts.isNotEmpty()) {
-                        Log.i("CaptainViewModel", "[ShiftSnapshotListener] Live update: ${allShifts.size} shifts from query")
-                        _liveShifts.value = allShifts
-                        _shiftStatus.value = ShiftManager.calculateShiftStatus(allShifts)
-                        viewModelScope.launch {
-                            repository.saveShiftsLocally(uid, allShifts)
-                        }
-                    }
-                }
-            }
-
-        // 3. Document listener on captains/{uid} (profile doc fallback)
-        captainDocListener = dbFirestore.collection("captains").document(uid)
-            .addSnapshotListener { snapshot, error ->
-                if (error != null) return@addSnapshotListener
-                if (snapshot != null && snapshot.exists()) {
-                    val embedded = snapshot.extractAllShifts(uid)
-                    if (embedded.isNotEmpty()) {
-                        Log.i("CaptainViewModel", "[ShiftSnapshotListener] Live update: ${embedded.size} shifts from captains/$uid")
-                        _liveShifts.value = embedded
-                        _shiftStatus.value = ShiftManager.calculateShiftStatus(embedded)
-                        viewModelScope.launch {
-                            repository.saveShiftsLocally(uid, embedded)
-                        }
-                    }
+                viewModelScope.launch {
+                    applyCanonicalShiftSnapshot(
+                        uid = uid,
+                        exists = snapshot.exists(),
+                        docData = if (snapshot.exists()) snapshot.data else null
+                    )
                 }
             }
     }
@@ -1495,10 +1493,9 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
     fun detachShiftSnapshotListeners() {
         shiftDocListener?.remove()
         shiftDocListener = null
-        shiftQueryListener?.remove()
-        shiftQueryListener = null
-        captainDocListener?.remove()
-        captainDocListener = null
+        _liveShifts.value = emptyList()
+        _hasLiveShiftSnapshot.value = false
+        _shiftStatus.value = ShiftStatus.NoSchedule()
     }
 
     override fun onCleared() {
@@ -1506,6 +1503,18 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
         detachShiftSnapshotListeners()
         authStateListener?.let { listener ->
             runCatching { auth?.removeAuthStateListener(listener) }
+        }
+    }
+
+    companion object {
+        fun calculateDailyWorkHours(
+            shifts: List<ShiftEntity>,
+            nowCal: java.util.Calendar = ShiftManager.getCurrentCairoCalendar()
+        ): Double {
+            val todayDayOfWeek = nowCal.get(java.util.Calendar.DAY_OF_WEEK)
+            return shifts
+                .filter { it.dayOfWeek == todayDayOfWeek && !it.isDayOff }
+                .sumOf { ShiftManager.calculateShiftDurationHours(it) }
         }
     }
 }

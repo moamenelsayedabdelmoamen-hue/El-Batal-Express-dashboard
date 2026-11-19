@@ -216,6 +216,16 @@ fun IncomingOrderOfferCardContent(
                 color = HeroYellow
             )
 
+            if (order.cleanOrderNumber.isNotBlank()) {
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = "رقم الطلب: #${order.cleanOrderNumber}",
+                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                    color = Color.LightGray,
+                    modifier = Modifier.testTag("incoming_order_number_text")
+                )
+            }
+
             if (order.cleanOrderCode.isNotBlank()) {
                 Spacer(modifier = Modifier.height(10.dp))
                 OrderCodeBadge(
@@ -339,6 +349,32 @@ fun IncomingOrderOfferCardContent(
                             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black),
                             color = StatusOnlineGreen
                         )
+                    }
+                }
+
+                if (order.orderTotalAmount > 0.0) {
+                    Spacer(modifier = Modifier.width(8.dp))
+
+                    Card(
+                        modifier = Modifier.weight(1f),
+                        colors = CardDefaults.cardColors(containerColor = DarkSurfaceVariant),
+                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.18f)),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(10.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text("قيمة الطلب", style = MaterialTheme.typography.labelSmall, color = Color.LightGray)
+                            Text(
+                                text = "${order.orderTotalAmount.toInt()} ج.م",
+                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                color = Color.White,
+                                modifier = Modifier.testTag("incoming_order_total_text")
+                            )
+                        }
                     }
                 }
 

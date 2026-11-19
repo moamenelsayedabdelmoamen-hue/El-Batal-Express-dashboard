@@ -159,6 +159,7 @@ object CaptainNotificationManager {
         deliveryAddress: String = "",
         deliveryFee: Double = 25.0,
         orderCode: String = "",
+        storeLocationUrl: String = "",
         bypassDedupe: Boolean = false,
         orderId: Long = 0L,
         offerExpiresAtMs: Long = 0L,
@@ -190,6 +191,7 @@ object CaptainNotificationManager {
             deliveryAddress = deliveryAddress,
             deliveryFee = deliveryFee,
             orderCode = orderCode,
+            storeLocationUrl = storeLocationUrl,
             offerExpiresAtMs = effectiveExpiresAt
         )
         val fullScreenPendingIntent = PendingIntent.getActivity(
@@ -273,6 +275,7 @@ object CaptainNotificationManager {
                 deliveryAddress = deliveryAddress,
                 deliveryFee = deliveryFee,
                 orderCode = cleanOrderCode,
+                storeLocationUrl = storeLocationUrl.trim(),
                 offerExpiresAtMs = effectiveExpiresAt,
                 distanceKm = distanceKm
             )

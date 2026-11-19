@@ -82,6 +82,7 @@ class IncomingOrderBellService : Service() {
                 val deliveryAddress = intent.getStringExtra(EXTRA_DELIVERY_ADDRESS).orEmpty()
                 val deliveryFee = intent.getDoubleExtra(EXTRA_DELIVERY_FEE, 25.0)
                 val orderCode = intent.getStringExtra(EXTRA_ORDER_CODE).orEmpty()
+                val storeLocationUrl = intent.getStringExtra(EXTRA_STORE_LOCATION_URL).orEmpty()
                 val distanceKm = intent.getDoubleExtra(EXTRA_DISTANCE_KM, 3.0)
                 val rawExpiresAt = intent.getLongExtra(EXTRA_OFFER_EXPIRES_AT_MS, 0L)
                 val notificationId = intent.getIntExtra(
@@ -117,6 +118,7 @@ class IncomingOrderBellService : Service() {
                     deliveryAddress = deliveryAddress,
                     deliveryFee = deliveryFee,
                     orderCode = orderCode,
+                    storeLocationUrl = storeLocationUrl,
                     expiresAtMs = expiresAtMs,
                     remainingSeconds = initialRemaining
                 )
@@ -140,6 +142,7 @@ class IncomingOrderBellService : Service() {
                     deliveryAddress = deliveryAddress,
                     deliveryFee = deliveryFee,
                     orderCode = orderCode,
+                    storeLocationUrl = storeLocationUrl,
                     distanceKm = distanceKm,
                     expiresAtMs = expiresAtMs
                 )
@@ -175,6 +178,7 @@ class IncomingOrderBellService : Service() {
         deliveryAddress: String,
         deliveryFee: Double,
         orderCode: String,
+        storeLocationUrl: String = "",
         expiresAtMs: Long,
         remainingSeconds: Int
     ): Notification {
@@ -187,6 +191,7 @@ class IncomingOrderBellService : Service() {
             deliveryAddress = deliveryAddress,
             deliveryFee = deliveryFee,
             orderCode = orderCode,
+            storeLocationUrl = storeLocationUrl,
             offerExpiresAtMs = expiresAtMs
         )
         val fullScreenPendingIntent = PendingIntent.getActivity(
@@ -260,6 +265,7 @@ class IncomingOrderBellService : Service() {
         deliveryAddress: String,
         deliveryFee: Double,
         orderCode: String,
+        storeLocationUrl: String = "",
         distanceKm: Double,
         expiresAtMs: Long
     ) {
@@ -316,6 +322,7 @@ class IncomingOrderBellService : Service() {
                             deliveryAddress = deliveryAddress,
                             deliveryFee = deliveryFee,
                             orderCode = orderCode,
+                            storeLocationUrl = storeLocationUrl,
                             expiresAtMs = expiresAtMs,
                             remainingSeconds = remainingSecs.coerceIn(1, 60)
                         )
@@ -566,6 +573,7 @@ class IncomingOrderBellService : Service() {
         const val EXTRA_DELIVERY_ADDRESS = "extra_delivery_address"
         const val EXTRA_DELIVERY_FEE = "extra_delivery_fee"
         const val EXTRA_ORDER_CODE = "extra_order_code"
+        const val EXTRA_STORE_LOCATION_URL = "extra_store_location_url"
         const val EXTRA_DISTANCE_KM = "extra_distance_km"
         const val EXTRA_OFFER_EXPIRES_AT_MS = "extra_offer_expires_at_ms"
         const val EXTRA_NOTIFICATION_ID = "extra_notification_id"
@@ -587,8 +595,9 @@ class IncomingOrderBellService : Service() {
             pickupAddress: String,
             deliveryAddress: String,
             deliveryFee: Double,
-            orderCode: String,
-            offerExpiresAtMs: Long,
+            orderCode: String = "",
+            storeLocationUrl: String = "",
+            offerExpiresAtMs: Long = 0L,
             distanceKm: Double = 3.0
         ) {
             val intent = Intent(context, IncomingOrderBellService::class.java).apply {
@@ -601,6 +610,7 @@ class IncomingOrderBellService : Service() {
                 putExtra(EXTRA_DELIVERY_ADDRESS, deliveryAddress)
                 putExtra(EXTRA_DELIVERY_FEE, deliveryFee)
                 putExtra(EXTRA_ORDER_CODE, orderCode)
+                putExtra(EXTRA_STORE_LOCATION_URL, storeLocationUrl)
                 putExtra(EXTRA_DISTANCE_KM, distanceKm)
                 putExtra(EXTRA_OFFER_EXPIRES_AT_MS, offerExpiresAtMs)
             }
