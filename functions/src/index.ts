@@ -237,13 +237,20 @@ export const adminCreateOrder = onCall(
         : restaurantSnap.exists
           ? restaurantSnap.data()
           : undefined;
-      if (!merchantData) {
-        throw new HttpsError("not-found", "بيانات التاجر غير موجودة.");
+      if (!merchantData || !subscriptionSnap.exists) {
+        throw new HttpsError(
+          "failed-precondition",
+          "ملف التاجر أو سجل الاشتراك غير موجود."
+        );
+      }
+      const merchantStatus = readString(merchantData, "status").toLowerCase();
+      if (!["approved", "active"].includes(merchantStatus)) {
+        throw new HttpsError("failed-precondition", "حساب التاجر غير معتمد أو غير نشط.");
       }
       assertMerchantAndSubscriptionValid(
         merchantId,
         merchantData,
-        subscriptionSnap.exists ? subscriptionSnap.data() : undefined,
+        subscriptionSnap.data(),
         Date.now()
       );
 
@@ -558,6 +565,9 @@ export const merchantConfirmOrder = onCall(
     try {
       const uid = request.auth?.uid;
       if (!uid) throw new HttpsError("unauthenticated", "يجب تسجيل الدخول أولاً.");
+      if (request.auth?.token.email_verified !== true) {
+        throw new HttpsError("permission-denied", "يجب تأكيد البريد الإلكتروني لحساب التاجر.");
+      }
       const data = (request.data ?? {}) as Record<string, unknown>;
       const orderId = requireOrderId(data.orderId);
       const confirmed = data.confirmed === true;
@@ -573,9 +583,7 @@ export const merchantConfirmOrder = onCall(
       if (
         (readString(merchant, "accountType").toLowerCase() !== "merchant" &&
           readString(merchant, "role").toLowerCase() !== "merchant") ||
-        ["banned", "suspended", "disabled", "blocked", "inactive"].includes(
-          readString(merchant, "status").toLowerCase()
-        )
+        !["approved", "active"].includes(readString(merchant, "status").toLowerCase())
       ) {
         throw new HttpsError("permission-denied", "حساب التاجر غير مؤهل لاعتماد الطلب.");
       }
