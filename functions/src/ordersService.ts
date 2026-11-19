@@ -1094,6 +1094,48 @@ export class OrderServerService {
   }
 
   /**
+   * Periodic recovery sweep for expired offers if Cloud Tasks enqueueing or execution fails.
+   * All reassignments still pass through the same expected-captain/generation transaction.
+   * @param {number} limit Maximum number of open orders to scan.
+   * @return {Promise<number>} Number of expired offers submitted for idempotent rotation.
+   */
+  async sweepExpiredOffers(limit = 100): Promise<number> {
+    const nowMs = this.effects.now();
+    const snap = await this.db
+      .collection("orders")
+      .where("status", "in", ["pending", "offered"])
+      .limit(Math.max(1, Math.min(limit, 200)))
+      .get();
+
+    let processed = 0;
+    for (const doc of snap.docs) {
+      const order = doc.data() ?? {};
+      if (extractOrderCaptainUid(order)) continue;
+      const expectedCaptainId = readString(order, "offeredCaptainId");
+      const offerExpiresAtMs = parseTimestampMs(
+        order.offerExpiresAt ?? order.offer_expires_at
+      );
+      const expectedOfferGeneration = Number(order.offerGeneration ?? 0) || 0;
+      if (
+        !expectedCaptainId ||
+        offerExpiresAtMs <= 0 ||
+        offerExpiresAtMs > nowMs ||
+        expectedOfferGeneration <= 0
+      ) {
+        continue;
+      }
+
+      await this.handleReassignOfferTask({
+        orderId: doc.id,
+        expectedCaptainId,
+        expectedOfferGeneration,
+      });
+      processed += 1;
+    }
+    return processed;
+  }
+
+  /**
    * 9. Read-only phone lookup for Captain login/reset flows (eliminates need for client direct query).
    * @param {Record<string, unknown>} data Payload containing phone and optional phone variants.
    * @return {Promise<{found: boolean, email: string | null}>} Email resolution result.
