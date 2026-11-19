@@ -1023,14 +1023,20 @@ async function handleCaptainArrivedAtMerchant(req, res) {
 
   const db = admin.firestore();
   const orderRef = await resolveOrderReference(db, orderId);
+  if (!orderRef) return res.status(400).json({ error: "معرف الطلب غير صالح" });
 
   try {
     await db.runTransaction(async (transaction) => {
       const doc = await transaction.get(orderRef);
       if (!doc.exists) throw new Error("الطلب غير موجود");
-      const data = doc.data();
+      const data = doc.data() || {};
       if (data.captainId !== user.uid && data.driverId !== user.uid) {
         throw new Error("غير مصرح: هذا الطلب ليس مسنداً إليك");
+      }
+      const currentStatus = String(data.status || "").trim().toLowerCase();
+      if (["arrived_at_merchant", "at_store"].includes(currentStatus)) return;
+      if (!["accepted", "assigned"].includes(currentStatus)) {
+        throw new Error("لا يمكن تسجيل الوصول قبل قبول الطلب");
       }
       transaction.update(orderRef, {
         status: "arrived_at_merchant",
@@ -1040,7 +1046,7 @@ async function handleCaptainArrivedAtMerchant(req, res) {
     });
     return res.status(200).json({ success: true, message: "تم تسجيل الوصول إلى التاجر بنجاح" });
   } catch (err) {
-    return res.status(400).json({ error: err.message });
+    return res.status(409).json({ error: err.message });
   }
 }
 
@@ -1062,15 +1068,23 @@ exports.confirmPickup = onRequest(
 
     const db = admin.firestore();
     const orderRef = await resolveOrderReference(db, orderId);
+    if (!orderRef) return res.status(400).json({ error: "معرف الطلب غير صالح" });
 
     try {
       await db.runTransaction(async (transaction) => {
         const doc = await transaction.get(orderRef);
         if (!doc.exists) throw new Error("الطلب غير موجود");
-        const data = doc.data();
+        const data = doc.data() || {};
         if (data.captainId !== user.uid && data.driverId !== user.uid) {
           throw new Error("غير مصرح: هذا الطلب ليس مسنداً إليك");
         }
+
+        const currentStatus = String(data.status || "").trim().toLowerCase();
+        if (currentStatus === "picked_up") return;
+        if (!["arrived_at_merchant", "at_store"].includes(currentStatus)) {
+          throw new Error("يجب تسجيل الوصول إلى التاجر قبل تأكيد استلام الطلب");
+        }
+
         transaction.update(orderRef, {
           status: "picked_up",
           pickedUpAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -1079,7 +1093,7 @@ exports.confirmPickup = onRequest(
       });
       return res.status(200).json({ success: true, message: "تم استلام الطلب من التاجر بنجاح" });
     } catch (err) {
-      return res.status(400).json({ error: err.message });
+      return res.status(409).json({ error: err.message });
     }
   }
 );
@@ -1092,26 +1106,35 @@ async function handleSubmitCustomerDeliveryDetails(req, res) {
   const user = await authenticateCaptain(req, res);
   if (!user) return;
 
-  const { orderId, customerName, customerPhone, receiptImageUrl, notes } = req.body || {};
+  const { orderId, customerName, customerPhone, receiptImageUrl, receiptImagePath, notes } = req.body || {};
+  const receiptUrl = String(receiptImageUrl || receiptImagePath || "").trim();
   if (!orderId) return res.status(400).json({ error: "معرف الطلب مطلوب" });
-  if (!receiptImageUrl) return res.status(400).json({ error: "صورة الإيصال مطلوبة" });
+  if (!receiptUrl) return res.status(400).json({ error: "صورة الإيصال مطلوبة" });
 
   const db = admin.firestore();
   const orderRef = await resolveOrderReference(db, orderId);
+  if (!orderRef) return res.status(400).json({ error: "معرف الطلب غير صالح" });
 
   try {
     await db.runTransaction(async (transaction) => {
       const doc = await transaction.get(orderRef);
       if (!doc.exists) throw new Error("الطلب غير موجود");
-      const data = doc.data();
+      const data = doc.data() || {};
       if (data.captainId !== user.uid && data.driverId !== user.uid) {
         throw new Error("غير مصرح: هذا الطلب ليس مسنداً إليك");
       }
+
+      const currentStatus = String(data.status || "").trim().toLowerCase();
+      if (!["picked_up", "order_data_entered", "merchant_rejected"].includes(currentStatus)) {
+        throw new Error("لا يمكن إرسال بيانات العميل والإيصال قبل استلام الطلب من التاجر");
+      }
+
       transaction.update(orderRef, {
-        customerName: customerName || data.customerName || "",
-        customerPhone: customerPhone || data.customerPhone || "",
-        receiptImageUrl: receiptImageUrl,
-        notes: notes || data.notes || "",
+        customerName: String(customerName || data.customerName || "").slice(0, 150),
+        customerPhone: String(customerPhone || data.customerPhone || "").slice(0, 32),
+        receiptImageUrl: receiptUrl,
+        receiptImagePath: receiptUrl,
+        notes: String(notes || data.notes || "").slice(0, 1000),
         status: "awaiting_merchant_confirmation",
         merchantConfirmed: false,
         rejectionReason: admin.firestore.FieldValue.delete(),
@@ -1124,7 +1147,7 @@ async function handleSubmitCustomerDeliveryDetails(req, res) {
       message: "تم حفظ بيانات الإيصال وبانتظار تأكيد التاجر"
     });
   } catch (err) {
-    return res.status(400).json({ error: err.message });
+    return res.status(409).json({ error: err.message });
   }
 }
 
@@ -1315,80 +1338,174 @@ async function handleConfirmDelivery(req, res) {
 exports.confirmDelivery = onRequest({ cors: true, timeoutSeconds: 30, memory: "256MiB" }, handleConfirmDelivery);
 exports.completeDelivery = onRequest({ cors: true, timeoutSeconds: 30, memory: "256MiB" }, handleConfirmDelivery);
 
+async function releaseOfferAndReassign(db, orderRef, options = {}) {
+  const {
+    expectedCaptainId = "",
+    expectedOfferId = "",
+    reason = "expired",
+    allowLegacyOffer = false,
+    system = false
+  } = options;
+
+  let released = false;
+  let latestOrderData = null;
+  let updatedExcludedIds = [];
+
+  await db.runTransaction(async (transaction) => {
+    const orderDoc = await transaction.get(orderRef);
+    if (!orderDoc.exists) throw new Error("الطلب غير موجود");
+
+    const data = orderDoc.data() || {};
+    const status = String(data.status || "").trim().toLowerCase();
+    const offeredCaptainId = String(data.offeredCaptainId || "").trim();
+    const currentOfferId = String(data.offerId || "").trim();
+    const expiresAt = Number(data.offerExpiresAt || 0);
+    const nowMs = Date.now();
+
+    if (!offeredCaptainId) return;
+    if (expectedCaptainId && offeredCaptainId !== expectedCaptainId) return;
+    if (expectedOfferId && currentOfferId !== expectedOfferId) return;
+    if (!currentOfferId && !allowLegacyOffer) {
+      throw new Error("معرف العرض غير موجود أو انتهت صلاحية هذا العرض القديم");
+    }
+    if (!["pending", "offered"].includes(status)) return;
+
+    const assignedCaptain = String(data.captainId || data.driverId || "").trim();
+    if (assignedCaptain && assignedCaptain !== offeredCaptainId) return;
+
+    if (reason === "expired" && (!Number.isFinite(expiresAt) || expiresAt <= 0 || expiresAt > nowMs)) {
+      if (!system) throw new Error("لم تنتهِ مهلة قبول العرض بعد");
+      return;
+    }
+    if (reason !== "expired" && reason !== "declined") {
+      throw new Error("سبب إنهاء العرض غير صالح");
+    }
+
+    const lockRef = db.collection("captain_order_locks").doc(offeredCaptainId);
+    const lockDoc = await transaction.get(lockRef);
+    let shouldDeleteLock = false;
+    if (lockDoc.exists) {
+      const lockData = lockDoc.data() || {};
+      const sameLock = String(lockData.orderId || "") === orderRef.id &&
+        String(lockData.offerId || "") === currentOfferId;
+      if (!sameLock) return;
+      shouldDeleteLock = true;
+    }
+
+    const excluded = Array.isArray(data.excludedCaptainIds) ? [...data.excludedCaptainIds] : [];
+    if (!excluded.includes(offeredCaptainId)) excluded.push(offeredCaptainId);
+
+    latestOrderData = data;
+    updatedExcludedIds = excluded;
+
+    transaction.update(orderRef, {
+      status: "searching",
+      dispatchStatus: "searching",
+      captainId: null,
+      driverId: null,
+      captainName: admin.firestore.FieldValue.delete(),
+      offeredCaptainId: null,
+      offerId: null,
+      offerExpiresAt: null,
+      excludedCaptainIds: excluded,
+      lastOfferClosedAt: admin.firestore.FieldValue.serverTimestamp(),
+      lastOfferCloseReason: reason,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+    if (shouldDeleteLock) transaction.delete(lockRef);
+    released = true;
+  });
+
+  if (!released || !latestOrderData) {
+    return {
+      released: false,
+      reassigned: false,
+      offeredCaptainId: null,
+      offerId: null,
+      distanceKm: null
+    };
+  }
+
+  const assignmentData = {
+    ...latestOrderData,
+    captainId: null,
+    driverId: null,
+    offeredCaptainId: null,
+    offerId: null,
+    offerExpiresAt: null,
+    excludedCaptainIds: updatedExcludedIds
+  };
+  const assignment = await assignNearestCaptainInternal(
+    db,
+    orderRef,
+    assignmentData,
+    updatedExcludedIds
+  );
+
+  return {
+    released: true,
+    reassigned: Boolean(assignment.assigned),
+    offeredCaptainId: assignment.offeredCaptainId || null,
+    offerId: assignment.offerId || null,
+    distanceKm: assignment.distanceKm || null,
+    offerExpiresAt: assignment.offerExpiresAt || null
+  };
+}
+
 // ------------------------------------------------------------------------------
 // 7. Cloud Function: expireDeliveryOffer
-// Ends the 60s window, excludes current captain, and immediately reassigns to nearest captain
+// Captains may decline immediately or report expiry only after the server deadline.
+// Scheduled processing uses the same transaction helper.
 // ------------------------------------------------------------------------------
 exports.expireDeliveryOffer = onRequest(
   { cors: true, timeoutSeconds: 30, memory: "256MiB" },
   async (req, res) => {
     if (req.method !== "POST") return res.status(405).json({ error: "Method Not Allowed" });
-    const { orderId, captainId } = req.body || {};
-    if (!orderId) return res.status(400).json({ error: "معرف الطلب مطلوب" });
+    const user = await authenticateCaptain(req, res);
+    if (!user) return;
+
+    const orderId = String(req.body?.orderId || "").trim();
+    const offerId = String(req.body?.offerId || "").trim();
+    const reason = String(req.body?.reason || "expired").trim().toLowerCase();
+    if (!orderId || !offerId) {
+      return res.status(400).json({ error: "معرف الطلب ومعرف العرض مطلوبان لإنهاء العرض" });
+    }
+    if (!["expired", "declined"].includes(reason)) {
+      return res.status(400).json({ error: "سبب إنهاء العرض غير صالح" });
+    }
 
     const db = admin.firestore();
     const orderRef = await resolveOrderReference(db, orderId);
+    if (!orderRef) return res.status(400).json({ error: "معرف الطلب غير صالح" });
 
     try {
-      let shouldReassign = false;
-      let updatedExcluded = [];
-      let latestOrderData = {};
-
-      await db.runTransaction(async (transaction) => {
-        const doc = await transaction.get(orderRef);
-        if (!doc.exists) throw new Error("الطلب غير موجود");
-        const data = doc.data() || {};
-        latestOrderData = data;
-
-        const existingAssignedCaptain = String(data.captainId || data.driverId || "").trim();
-        if (existingAssignedCaptain) {
-          return;
-        }
-
-        const currentStatus = String(data.status || "").trim().toLowerCase();
-        if (["pending", "searching", "offered", "new", "ready", "ready_for_pickup", "waiting_driver"].includes(currentStatus)) {
-          const excluded = Array.isArray(data.excludedCaptainIds) ? [...data.excludedCaptainIds] : [];
-          const targetCaptain = captainId || data.offeredCaptainId;
-          if (targetCaptain && !excluded.includes(targetCaptain)) {
-            excluded.push(targetCaptain);
-          }
-          updatedExcluded = excluded;
-
-          transaction.update(orderRef, {
-            status: "searching",
-            offeredCaptainId: null,
-            offerExpiresAt: null,
-            excludedCaptainIds: excluded,
-            updatedAt: admin.firestore.FieldValue.serverTimestamp()
-          });
-          shouldReassign = true;
-        }
+      const result = await releaseOfferAndReassign(db, orderRef, {
+        expectedCaptainId: user.uid,
+        expectedOfferId: offerId,
+        reason,
+        system: false
       });
-
-      let assignResult = null;
-      if (shouldReassign) {
-        assignResult = await assignNearestCaptainInternal(
-          db,
-          orderRef,
-          { ...latestOrderData, excludedCaptainIds: updatedExcluded },
-          updatedExcluded
-        );
-      }
 
       return res.status(200).json({
         success: true,
-        message: assignResult?.assigned
-          ? `انتهت مهلة قبول الطلب وتم تحويله إلى أقرب كابتن للتاجر (${assignResult.offeredCaptainId})`
-          : "انتهت مهلة قبول الطلب وتم تحويله للبحث عن أقرب كابتن متاح",
-        reassigned: shouldReassign,
-        offeredCaptainId: assignResult?.offeredCaptainId || null,
-        distanceKm: assignResult?.distanceKm || null
+        released: result.released,
+        reassigned: result.reassigned,
+        offeredCaptainId: result.offeredCaptainId,
+        offerId: result.offerId,
+        distanceKm: result.distanceKm,
+        message: result.released
+          ? (result.reassigned ? "تم إنهاء العرض وإرساله إلى كابتن آخر" : "انتهى العرض ويستمر النظام في البحث عن كابتن")
+          : "هذا العرض لم يعد نشطاً أو تمت معالجته بالفعل"
       });
     } catch (err) {
-      return res.status(400).json({ error: err.message });
+      const statusCode = /لم تنتهِ مهلة|معرف العرض|غير صالح/.test(err.message) ? 409 : 400;
+      return res.status(statusCode).json({ error: err.message });
     }
   }
 );
+
+// ------------------------------------------------------------------------------
+// 8. Cloud Function: assignNextAvailableCaptain
 
 // ------------------------------------------------------------------------------
 // 8. Cloud Function: assignNextAvailableCaptain
@@ -1707,8 +1824,7 @@ exports.scheduledShiftBoundaryNotifications = onSchedule(
 
 // ------------------------------------------------------------------------------
 // 13. Scheduled Trigger: scheduledReassignExpiredOffers
-// Automatically reassigns any order whose 60s offer deadline expired without acceptance
-// (e.g., if captain's phone was offline) to the nearest eligible captain to the merchant.
+// Uses the same transaction-safe expiry path as captain requests.
 // ------------------------------------------------------------------------------
 exports.scheduledReassignExpiredOffers = onSchedule(
   { schedule: "every 1 minutes", timeZone: "Africa/Cairo", memory: "256MiB" },
@@ -1717,41 +1833,40 @@ exports.scheduledReassignExpiredOffers = onSchedule(
     const nowMs = Date.now();
     const pendingSnap = await db.collection("orders")
       .where("status", "in", ["pending", "offered", "searching"])
-      .limit(100)
+      .limit(200)
       .get();
 
     for (const doc of pendingSnap.docs) {
       const data = doc.data() || {};
-      const assigned = String(data.captainId || data.driverId || "").trim();
-      if (assigned && assigned.toLowerCase() !== "null") continue;
-
-      const offerExpiresAt = Number(data.offerExpiresAt || 0);
+      const status = String(data.status || "").trim().toLowerCase();
       const offeredCaptainId = String(data.offeredCaptainId || "").trim();
-      const needsReassign =
-        data.status === "searching" ||
-        !offeredCaptainId ||
-        (offerExpiresAt > 0 && offerExpiresAt <= nowMs);
+      const offerId = String(data.offerId || "").trim();
+      const expiresAt = Number(data.offerExpiresAt || 0);
+      const assignedCaptain = String(data.captainId || data.driverId || "").trim();
 
-      if (!needsReassign) continue;
+      try {
+        if (offeredCaptainId && expiresAt > 0 && expiresAt <= nowMs) {
+          await releaseOfferAndReassign(db, doc.ref, {
+            expectedCaptainId: offeredCaptainId,
+            expectedOfferId: offerId,
+            reason: "expired",
+            allowLegacyOffer: !offerId,
+            system: true
+          });
+          continue;
+        }
 
-      const excluded = Array.isArray(data.excludedCaptainIds) ? [...data.excludedCaptainIds] : [];
-      if (offeredCaptainId && offerExpiresAt > 0 && offerExpiresAt <= nowMs && !excluded.includes(offeredCaptainId)) {
-        excluded.push(offeredCaptainId);
-        await doc.ref.update({
-          excludedCaptainIds: excluded,
-          offeredCaptainId: null,
-          offerExpiresAt: null,
-          status: "searching"
-        });
+        if (
+          !offeredCaptainId &&
+          !assignedCaptain &&
+          !offerId &&
+          ["searching", "pending", "offered"].includes(status)
+        ) {
+          await assignNearestCaptainInternal(db, doc.ref, data);
+        }
+      } catch (error) {
+        console.warn("scheduledReassignExpiredOffers failed for order:", doc.id, error.message);
       }
-
-      await assignNearestCaptainInternal(
-        db,
-        doc.ref,
-        { ...data, excludedCaptainIds: excluded },
-        excluded
-      );
     }
   }
 );
-
