@@ -229,11 +229,11 @@ class CloudFunctionsOrderClient(
     /**
      * 1. acceptDeliveryOffer (Server-only; zero direct Firestore fallback)
      */
-    suspend fun acceptDeliveryOffer(orderDocId: String, offerId: String = ""): Result<String> {
+    suspend fun acceptDeliveryOffer(orderDocId: String, offerId: String): Result<String> {
         val cleanId = sanitizeOrderId(orderDocId)
-        if (cleanId.isBlank()) {
+        if (cleanId.isBlank() || offerId.isBlank()) {
             return Result.failure(
-                CloudFunctionException("معرّف الطلب غير صالح", httpCode = 400, isRetryable = false)
+                CloudFunctionException("معرّف الطلب أو العرض غير صالح", httpCode = 400, isRetryable = false)
             )
         }
         return postAuthenticatedFunction(
@@ -245,9 +245,7 @@ class CloudFunctionsOrderClient(
             if (cleanId != orderDocId.trim()) {
                 put("rawOrderId", orderDocId.trim())
             }
-            if (offerId.isNotBlank()) {
-                put("offerId", offerId)
-            }
+            put("offerId", offerId)
         }.map { json ->
             json.optString("message").takeIf { it.isNotBlank() } ?: "تم قبول الطلب بنجاح"
         }
@@ -364,22 +362,26 @@ class CloudFunctionsOrderClient(
     /**
      * 6. expireDeliveryOffer / decline offer (Server-only; never treats network failure as local success)
      */
-    suspend fun expireDeliveryOffer(orderDocId: String, reason: String = "expired"): Result<Unit> {
+    suspend fun expireDeliveryOffer(
+        orderDocId: String,
+        offerId: String,
+        reason: String = "expired"
+    ): Result<Unit> {
         val cleanId = sanitizeOrderId(orderDocId)
-        if (cleanId.isBlank()) {
+        if (cleanId.isBlank() || offerId.isBlank() || reason !in setOf("expired", "declined")) {
             return Result.failure(
-                CloudFunctionException("معرّف الطلب غير صالح", httpCode = 400, isRetryable = false)
+                CloudFunctionException("معرّف الطلب أو العرض أو سبب الإنهاء غير صالح", httpCode = 400, isRetryable = false)
             )
         }
         return postAuthenticatedFunction(
             functionName = "expireDeliveryOffer",
             defaultClientErrorMsg = "تعذر إبلاغ الخادم بانتهاء أو رفض عرض الطلب"
-        ) { uid ->
+        ) {
             put("orderId", cleanId)
             if (cleanId != orderDocId.trim()) {
                 put("rawOrderId", orderDocId.trim())
             }
-            put("captainId", uid)
+            put("offerId", offerId)
             put("reason", reason)
         }.map { }
     }
