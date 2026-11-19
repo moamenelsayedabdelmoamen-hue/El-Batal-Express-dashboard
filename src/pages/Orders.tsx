@@ -314,7 +314,6 @@ export const OrdersPage: React.FC = () => {
       searchDurationSeconds?: number;
       searchDurationText?: string;
       distanceToMerchantKm?: number;
-      skipShiftCheck?: boolean;
     }
   ) => {
     if (!captainId) return;
@@ -334,190 +333,72 @@ export const OrdersPage: React.FC = () => {
       return;
     }
 
-    if (!extra?.skipShiftCheck) {
-      const eligibility = await ShiftService.verifyCaptainOrderEligibility(captainId);
-      if (!eligibility.isEligible) {
-        const reason =
-          eligibility.reason ||
-          'الكابتن المحدد خارج ساعات العمل المحددة له في الشفت، ولا يمكن إسناد طلبات جديدة إليه.';
-        toastError(reason);
-        await notifyCaptainAssignmentFailed({
-          orderId,
-          orderNumber: targetOrder?.orderNumber || '—',
-          restaurantName: targetOrder?.restaurantName || 'تاجر',
-          reason,
-        });
-        return;
-      }
+    const eligibility = await ShiftService.verifyCaptainOrderEligibility(captainId);
+    if (!eligibility.isEligible) {
+      const reason =
+        eligibility.reason ||
+        'الكابتن المحدد خارج ساعات العمل أو غير مؤهل لاستقبال طلبات جديدة.';
+      toastError(reason);
+      await notifyCaptainAssignmentFailed({
+        orderId,
+        orderNumber: targetOrder?.orderNumber || '—',
+        restaurantName: targetOrder?.restaurantName || 'تاجر',
+        reason,
+      });
+      return;
     }
 
     try {
       const result = await OrderService.assignCaptain(orderId, captainId, captainName, extra);
+      const offerUpdates = {
+        offeredCaptainId: result.offeredCaptainId,
+        offeredCaptainName: result.offeredCaptainName,
+        offerExpiresAt: result.offerExpiresAt,
+        offerGeneration: result.offerGeneration,
+        captainSearchDuration: result.captainSearchDuration,
+        captainSearchSeconds: result.captainSearchSeconds,
+        distanceToMerchantKm: result.distanceToMerchantKm,
+      };
       setOrders((prev) =>
-        prev.map((o) =>
-          o.id === orderId
-            ? {
-                ...o,
-                captainId,
-                captainName,
-                status: result.status,
-                assignedAt: result.assignedAt,
-                captainSearchDuration: result.captainSearchDuration,
-                captainSearchSeconds: result.captainSearchSeconds,
-                distanceToMerchantKm: result.distanceToMerchantKm,
-              }
-            : o
-        )
+        prev.map((o) => (o.id === orderId ? {...o, ...offerUpdates} : o))
       );
       if (viewingOrder && viewingOrder.id === orderId) {
-        setViewingOrder((prev) =>
-          prev
-            ? {
-                ...prev,
-                captainId,
-                captainName,
-                status: result.status,
-                assignedAt: result.assignedAt,
-                captainSearchDuration: result.captainSearchDuration,
-                captainSearchSeconds: result.captainSearchSeconds,
-                distanceToMerchantKm: result.distanceToMerchantKm,
-              }
-            : null
-        );
+        setViewingOrder((prev) => (prev ? {...prev, ...offerUpdates} : null));
       }
-      success(`تم تعيين الكابتن "${captainName}" للطلب بنجاح!`);
+      success(`تم إرسال عرض لمدة 60 ثانية إلى الكابتن "${captainName}" بانتظار قبوله.`);
     } catch (err) {
-      toastError('فشل تعيين الكابتن للطلب في قاعدة البيانات');
+      toastError(err instanceof Error ? err.message : 'فشل إرسال عرض الكابتن من السيرفر');
     }
   };
 
   /**
-   * "ابحث عن كابتن": Searches for the nearest eligible captain to the merchant and assigns the order automatically.
+   * The server owns captain ranking, eligibility, location freshness, and offer reservation.
    */
   const handleSearchAndAssignNearestCaptain = async (order: Order) => {
-    const searchStartMs = Date.now();
+    if (order.captainId) {
+      toastError('تم قبول الطلب بالفعل ولا يحتاج إلى توزيع جديد.');
+      return;
+    }
     setSearchingOrderId(order.id);
-
     try {
-      // 1. Find the merchant for this order to get its coordinates
-      const merchant = merchants.find(
-        (m) =>
-          (order.restaurantId && m.id === order.restaurantId) ||
-          (order.restaurantName &&
-            m.name.trim().toLowerCase() === order.restaurantName.trim().toLowerCase())
+      const result = await OrderService.dispatchNearestCaptain(order.id);
+      const captain = captains.find((item) => item.id === result.offeredCaptainId);
+      const offeredCaptainName = captain?.name || 'الكابتن الأقرب المؤهل';
+      const offerUpdates = {
+        offeredCaptainId: result.offeredCaptainId,
+        offeredCaptainName,
+        offerExpiresAt: result.offerExpiresAt,
+        offerGeneration: result.offerGeneration,
+      };
+      setOrders((prev) =>
+        prev.map((item) => (item.id === order.id ? {...item, ...offerUpdates} : item))
       );
-
-      const merchantCoords =
-        merchant?.coords ||
-        extractCoordinates(merchant?.raw) ||
-        extractCoordinates(order.raw?.restaurant) ||
-        extractCoordinates(order.raw);
-
-      // 2. Filter captains who have order reception enabled
-      const receptionEnabledCaptains = captains.filter((c) => c.canReceiveOrders !== false);
-
-      if (receptionEnabledCaptains.length === 0) {
-        const reason = 'لا يوجد أي كابتن مفعل لاستقبال الطلبات حالياً';
-        toastError(reason);
-        await notifyCaptainAssignmentFailed({
-          orderId: order.id,
-          orderNumber: order.orderNumber,
-          restaurantName: order.restaurantName,
-          reason,
-        });
-        return;
+      if (viewingOrder?.id === order.id) {
+        setViewingOrder((prev) => (prev ? {...prev, ...offerUpdates} : null));
       }
-
-      // 3. Check shift eligibility & online status
-      const shiftEligibleCaptains: Captain[] = [];
-      for (const cap of receptionEnabledCaptains) {
-        const check = await ShiftService.verifyCaptainOrderEligibility(cap.id);
-        if (check.isEligible) {
-          shiftEligibleCaptains.push(cap);
-        }
-      }
-
-      // Candidate pool: prefer captains in active shift; otherwise online/available captains
-      let candidatePool =
-        shiftEligibleCaptains.length > 0
-          ? shiftEligibleCaptains
-          : receptionEnabledCaptains.filter((c) => c.status === 'online' || c.status === 'available');
-
-      if (candidatePool.length === 0) {
-        candidatePool = receptionEnabledCaptains;
-      }
-
-      // 4. Rank candidates by distance to merchant (if coordinates available), then online status & lowest load
-      const rankedCandidates = candidatePool.map((cap) => {
-        const capCoords = cap.coords || extractCoordinates(cap.raw);
-        let distanceKm: number | undefined;
-        if (merchantCoords && capCoords) {
-          distanceKm = haversineDistanceKm(
-            merchantCoords.lat,
-            merchantCoords.lng,
-            capCoords.lat,
-            capCoords.lng
-          );
-        }
-        return {
-          captain: cap,
-          distanceKm,
-          isOnline: cap.status === 'online' || cap.status === 'available',
-        };
-      });
-
-      rankedCandidates.sort((a, b) => {
-        // Both have GPS distance to merchant -> nearest first
-        if (a.distanceKm !== undefined && b.distanceKm !== undefined) {
-          return a.distanceKm - b.distanceKm;
-        }
-        if (a.distanceKm !== undefined) return -1;
-        if (b.distanceKm !== undefined) return 1;
-        // Fallback: online first, then fewer orders
-        if (a.isOnline !== b.isOnline) return a.isOnline ? -1 : 1;
-        return (a.captain.ordersCount || 0) - (b.captain.ordersCount || 0);
-      });
-
-      const bestMatch = rankedCandidates[0];
-      if (!bestMatch) {
-        const reason = 'لم يتم العثور على أي كابتن متاح قريب من التاجر لتعيين الطلب';
-        toastError(reason);
-        await notifyCaptainAssignmentFailed({
-          orderId: order.id,
-          orderNumber: order.orderNumber,
-          restaurantName: order.restaurantName,
-          reason,
-        });
-        return;
-      }
-
-      // 5. Compute how long the system took to find a captain
-      const elapsedSearchSecs = Math.max(1, Math.round((Date.now() - searchStartMs) / 1000));
-      let totalWaitSeconds = elapsedSearchSecs;
-      if (order.createdAt) {
-        const createdMs = new Date(order.createdAt).getTime();
-        if (!isNaN(createdMs) && Date.now() > createdMs) {
-          totalWaitSeconds = Math.max(elapsedSearchSecs, Math.round((Date.now() - createdMs) / 1000));
-        }
-      }
-      const searchDurationText = formatDurationArabic(totalWaitSeconds);
-
-      await handleAssignCaptain(order.id, bestMatch.captain.id, {
-        searchDurationSeconds: totalWaitSeconds,
-        searchDurationText,
-        distanceToMerchantKm: bestMatch.distanceKm,
-        skipShiftCheck: shiftEligibleCaptains.length === 0,
-      });
-
-      const distMsg =
-        bestMatch.distanceKm !== undefined
-          ? ` (المسافة للتاجر: ${formatDistanceArabic(bestMatch.distanceKm)})`
-          : '';
-      success(
-        `تم العثور على أقرب كابتن "${bestMatch.captain.name}"${distMsg} وإسناد الطلب له خلال ${searchDurationText}`
-      );
+      success(`تم إرسال عرض الطلب إلى "${offeredCaptainName}" لمدة 60 ثانية.`);
     } catch (err) {
-      toastError('حدث خطأ أثناء البحث عن أقرب كابتن للتاجر');
+      toastError(err instanceof Error ? err.message : 'تعذر توزيع الطلب من السيرفر');
     } finally {
       setSearchingOrderId(null);
     }
