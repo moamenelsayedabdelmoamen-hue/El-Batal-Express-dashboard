@@ -271,7 +271,7 @@ export const OrdersPage: React.FC = () => {
         !q ||
         (o.orderNumber && o.orderNumber.toLowerCase().includes(q)) ||
         (o.restaurantName && o.restaurantName.toLowerCase().includes(q)) ||
-        (o.captainName && o.captainName.toLowerCase().includes(q)) ||
+        ((o.captainName || o.offeredCaptainName) && String(o.captainName || o.offeredCaptainName).toLowerCase().includes(q)) ||
         (o.customerName && o.customerName.toLowerCase().includes(q)) ||
         (o.customerPhone && o.customerPhone.toLowerCase().includes(q)) ||
         (o.deliveryAddress && o.deliveryAddress.toLowerCase().includes(q));
@@ -375,54 +375,6 @@ export const OrdersPage: React.FC = () => {
       success(`تم إرسال عرض الطلب إلى أقرب كابتن مؤهل${distanceMessage}. ينتظر النظام القبول خلال 60 ثانية`);
     } catch (error) {
       toastError(error instanceof Error ? error.message : 'لا يوجد كابتن مؤهل متاح حالياً');
-    } finally {
-      setSearchingOrderId(null);
-    }
-  };
-
-  return (a.captain.ordersCount || 0) - (b.captain.ordersCount || 0);
-      });
-
-      const bestMatch = rankedCandidates[0];
-      if (!bestMatch) {
-        const reason = 'لم يتم العثور على أي كابتن متاح قريب من التاجر لتعيين الطلب';
-        toastError(reason);
-        await notifyCaptainAssignmentFailed({
-          orderId: order.id,
-          orderNumber: order.orderNumber,
-          restaurantName: order.restaurantName,
-          reason,
-        });
-        return;
-      }
-
-      // 5. Compute how long the system took to find a captain
-      const elapsedSearchSecs = Math.max(1, Math.round((Date.now() - searchStartMs) / 1000));
-      let totalWaitSeconds = elapsedSearchSecs;
-      if (order.createdAt) {
-        const createdMs = new Date(order.createdAt).getTime();
-        if (!isNaN(createdMs) && Date.now() > createdMs) {
-          totalWaitSeconds = Math.max(elapsedSearchSecs, Math.round((Date.now() - createdMs) / 1000));
-        }
-      }
-      const searchDurationText = formatDurationArabic(totalWaitSeconds);
-
-      await handleAssignCaptain(order.id, bestMatch.captain.id, {
-        searchDurationSeconds: totalWaitSeconds,
-        searchDurationText,
-        distanceToMerchantKm: bestMatch.distanceKm,
-        skipShiftCheck: shiftEligibleCaptains.length === 0,
-      });
-
-      const distMsg =
-        bestMatch.distanceKm !== undefined
-          ? ` (المسافة للتاجر: ${formatDistanceArabic(bestMatch.distanceKm)})`
-          : '';
-      success(
-        `تم العثور على أقرب كابتن "${bestMatch.captain.name}"${distMsg} وإسناد الطلب له خلال ${searchDurationText}`
-      );
-    } catch (err) {
-      toastError('حدث خطأ أثناء البحث عن أقرب كابتن للتاجر');
     } finally {
       setSearchingOrderId(null);
     }
@@ -1050,12 +1002,12 @@ export const OrdersPage: React.FC = () => {
                   </button>
                 </div>
                 <select
-                  value={viewingOrder.captainId || ''}
+                  value={viewingOrder.offeredCaptainId || viewingOrder.captainId || ''}
                   onChange={(e) => handleAssignCaptain(viewingOrder.id, e.target.value)}
                   className="w-full bg-zinc-950 border border-amber-500/40 text-[11px] text-amber-400 font-bold rounded-lg px-2 py-1.5 focus:outline-none focus:border-amber-400 cursor-pointer"
                 >
                   <option value="" disabled>
-                    {viewingOrder.captainName ? 'تغيير الكابتن يدوياً' : 'تعيين كابتن يدوياً'}
+                    {viewingOrder.offeredCaptainName || viewingOrder.captainName ? 'تغيير الكابتن يدوياً' : 'تعيين كابتن يدوياً'}
                   </option>
                   {captains.map((c) => (
                     <option key={c.id} value={c.id} className="bg-zinc-900 text-white">
