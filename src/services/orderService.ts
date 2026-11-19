@@ -41,6 +41,7 @@ interface StageTimestampResponse extends OrdersBackendResponse {
 }
 
 let localOrdersCache: Order[] = [];
+const pendingCreateRequestIds = new Map<string, string>();
 
 const IGNORED_CODE_DOC_IDS = new Set([
   'counter',
@@ -813,8 +814,8 @@ export const OrderService = {
   async create(data: {
     restaurantId: string;
     restaurantName: string;
-    captainId: string;
-    captainName: string;
+    captainId?: string;
+    captainName?: string;
     deliveryAddress?: string;
     deliveryFee?: number;
     notes?: string;
@@ -828,14 +829,31 @@ export const OrderService = {
       throw new Error('لا يمكن إنشاء طلب دون اتصال بخادم Firebase');
     }
 
-    const requestId =
-      typeof globalThis.crypto?.randomUUID === 'function'
-        ? globalThis.crypto.randomUUID()
-        : `req_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-
     const deliveryFee = Number(data.deliveryFee ?? 25);
     const subtotal = Number(data.subtotal ?? 0);
     const total = Number(data.total ?? subtotal + deliveryFee);
+    const requestFingerprint = JSON.stringify({
+      restaurantId: data.restaurantId,
+      restaurantName: data.restaurantName,
+      captainId: data.captainId || "",
+      customerName: data.customerName || "",
+      customerPhone: data.customerPhone || "",
+      deliveryAddress: data.deliveryAddress || "",
+      deliveryFee,
+      subtotal,
+      total,
+      notes: data.notes || "",
+      items: data.items || [],
+    });
+
+    let requestId = pendingCreateRequestIds.get(requestFingerprint);
+    if (!requestId) {
+      requestId =
+        typeof globalThis.crypto?.randomUUID === 'function'
+          ? globalThis.crypto.randomUUID()
+          : `req_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+      pendingCreateRequestIds.set(requestFingerprint, requestId);
+    }
 
     const response = await callOrdersBackend<CreateOrderResponse>('createOrder', {
       ...data,
@@ -851,6 +869,8 @@ export const OrderService = {
         typeof response.error === 'string' ? response.error : 'لم يؤكد السيرفر إنشاء الطلب'
       );
     }
+
+    pendingCreateRequestIds.delete(requestFingerprint);
 
     const nowIso = new Date().toISOString();
     const orderNumber = String(response.orderNumber || response.orderCode || '');
