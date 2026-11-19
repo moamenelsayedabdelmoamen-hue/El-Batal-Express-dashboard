@@ -839,7 +839,10 @@ export class OrderServerService {
    * @param {string} orderId Order document ID.
    * @return {Promise<DispatchOutcome>} Dispatch outcome.
    */
-  async dispatchNewOrSearchingOrder(orderId: string): Promise<DispatchOutcome> {
+  async dispatchNewOrSearchingOrder(
+    orderId: string,
+    requestedCaptainId?: string
+  ): Promise<DispatchOutcome> {
     const orderRef = this.db.collection("orders").doc(orderId);
     const preSnap = await orderRef.get();
     if (!preSnap.exists) {
@@ -898,13 +901,18 @@ export class OrderServerService {
       ...readStringList(preOrder.excludedCaptainIds),
       ...readStringList(preOrder.timedOutCaptainIds),
     ]);
-    const candidates = await this.findNearestEligibleCaptains(
+    const allCandidates = await this.findNearestEligibleCaptains(
       preOrder,
       excludedSet,
       nowMs
     );
-    const topCandidate = candidates[0] ?? null;
-    const eligibleIds = candidates.map((c) => c.uid);
+    const requestedUid = typeof requestedCaptainId === "string"
+      ? requestedCaptainId.trim()
+      : "";
+    const candidates = requestedUid
+      ? allCandidates.filter((candidate) => candidate.uid === requestedUid)
+      : allCandidates;
+    const eligibleIds = candidates.map((candidate) => candidate.uid);
     const s = this.effects.sentinels;
 
     let selectedOfferPayload: OfferFcmPayload | null = null;
@@ -926,7 +934,54 @@ export class OrderServerService {
         return {status: "ignored_already_active", orderId} as DispatchOutcome;
       }
 
-      if (!topCandidate) {
+      let selectedCandidate: CaptainCandidate | null = null;
+      for (const candidate of candidates) {
+        const candidateRef = this.db.collection("captains").doc(candidate.uid);
+        const candidateSnap = await tx.get(candidateRef);
+        if (!candidateSnap.exists) continue;
+        const captainData = candidateSnap.data() ?? {};
+        if (!isCaptainCandidateBaseEligible(captainData, nowMs)) continue;
+
+        const currentOrderId = readString(captainData, "currentOrderId");
+        if (currentOrderId && currentOrderId !== orderId) continue;
+
+        const activeOfferOrderId = readString(captainData, "activeOfferOrderId");
+        const activeOfferExpiry = parseTimestampMs(captainData.activeOfferExpiresAt);
+        if (
+          activeOfferOrderId &&
+          activeOfferOrderId !== orderId &&
+          activeOfferExpiry > nowMs
+        ) {
+          continue;
+        }
+
+        selectedCandidate = candidate;
+        break;
+      }
+
+      const previousOfferedUid = curOffered;
+      const previousGeneration = Number(latest.offerGeneration ?? 0) || 0;
+      let previousCaptainData: Record<string, unknown> | undefined;
+      if (previousOfferedUid && previousOfferedUid !== selectedCandidate?.uid) {
+        const previousCaptainSnap = await tx.get(
+          this.db.collection("captains").doc(previousOfferedUid)
+        );
+        if (previousCaptainSnap.exists) previousCaptainData = previousCaptainSnap.data();
+      }
+
+      if (!selectedCandidate) {
+        if (
+          previousCaptainData &&
+          readString(previousCaptainData, "activeOfferOrderId") === orderId &&
+          Number(previousCaptainData.activeOfferGeneration ?? 0) === previousGeneration
+        ) {
+          tx.update(this.db.collection("captains").doc(previousOfferedUid), {
+            activeOfferOrderId: null,
+            activeOfferGeneration: null,
+            activeOfferExpiresAt: null,
+            updatedAt: s.serverTimestamp(),
+          });
+        }
         tx.update(orderRef, {
           status: "searching",
           dispatchStatus: "no_captains_available",
@@ -942,11 +997,30 @@ export class OrderServerService {
       const nextGen = (Number(latest.offerGeneration ?? 0) || 0) + 1;
       const offerExpiresAtMs = nowMs + OFFER_WINDOW_MS;
 
+      if (
+        previousCaptainData &&
+        readString(previousCaptainData, "activeOfferOrderId") === orderId &&
+        Number(previousCaptainData.activeOfferGeneration ?? 0) === previousGeneration
+      ) {
+        tx.update(this.db.collection("captains").doc(previousOfferedUid), {
+          activeOfferOrderId: null,
+          activeOfferGeneration: null,
+          activeOfferExpiresAt: null,
+          updatedAt: s.serverTimestamp(),
+        });
+      }
+
+      tx.update(this.db.collection("captains").doc(selectedCandidate.uid), {
+        activeOfferOrderId: orderId,
+        activeOfferGeneration: nextGen,
+        activeOfferExpiresAt: offerExpiresAtMs,
+        updatedAt: s.serverTimestamp(),
+      });
       tx.update(orderRef, {
         status: "pending",
         dispatchStatus: "offered",
-        offeredCaptainId: topCandidate.uid,
-        offeredCaptainName: topCandidate.name,
+        offeredCaptainId: selectedCandidate.uid,
+        offeredCaptainName: selectedCandidate.name,
         offerSentAt: s.serverTimestamp(),
         offerExpiresAt: offerExpiresAtMs,
         offerGeneration: nextGen,
@@ -957,20 +1031,20 @@ export class OrderServerService {
       selectedOfferPayload = this.buildOfferFcmPayload(
         orderId,
         latest,
-        topCandidate,
+        selectedCandidate,
         offerExpiresAtMs,
         nextGen
       );
       taskPayload = {
         orderId,
-        expectedCaptainId: topCandidate.uid,
+        expectedCaptainId: selectedCandidate.uid,
         expectedOfferGeneration: nextGen,
       };
 
       return {
         status: "offered",
         orderId,
-        offeredCaptainId: topCandidate.uid,
+        offeredCaptainId: selectedCandidate.uid,
         offerGeneration: nextGen,
         offerExpiresAtMs,
       } as DispatchOutcome;
