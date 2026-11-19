@@ -1198,7 +1198,6 @@ export class OrderServerService {
       excludedSet,
       nowMs
     );
-    const nextCandidate = candidates[0] ?? null;
     const eligibleIds = candidates.map((c) => c.uid);
     const s = this.effects.sentinels;
 
@@ -1233,9 +1232,12 @@ export class OrderServerService {
       const currentExpiryMs = parseTimestampMs(
         latest.offerExpiresAt ?? latest.offer_expires_at
       );
+      if (rotationReason === "expired" && currentExpiryMs <= 0) {
+        return {status: "ignored_stale", orderId} as DispatchOutcome;
+      }
       if (
         rotationReason === "expired" &&
-        currentExpiryMs > nowMs + 1000
+        currentExpiryMs > nowMs
       ) {
         rescheduleRemainingSec = Math.max(
           2,
@@ -1244,7 +1246,47 @@ export class OrderServerService {
         return {status: "rescheduled_early", orderId} as DispatchOutcome;
       }
 
-      if (!nextCandidate) {
+      const oldCaptainRef = this.db.collection("captains").doc(timedOutCaptainId);
+      const oldCaptainSnap = await tx.get(oldCaptainRef);
+      const oldCaptainData = oldCaptainSnap.exists ? oldCaptainSnap.data() ?? {} : {};
+      const oldLockMatches =
+        readString(oldCaptainData, "activeOfferOrderId") === orderId &&
+        Number(oldCaptainData.activeOfferGeneration ?? 0) === currentGen;
+
+      let reservedNextCandidate: CaptainCandidate | null = null;
+      for (const candidate of candidates) {
+        const candidateRef = this.db.collection("captains").doc(candidate.uid);
+        const candidateSnap = await tx.get(candidateRef);
+        if (!candidateSnap.exists) continue;
+        const captainData = candidateSnap.data() ?? {};
+        if (!isCaptainCandidateBaseEligible(captainData, nowMs)) continue;
+
+        const currentOrderId = readString(captainData, "currentOrderId");
+        if (currentOrderId && currentOrderId !== orderId) continue;
+
+        const activeOfferOrderId = readString(captainData, "activeOfferOrderId");
+        const activeOfferExpiry = parseTimestampMs(captainData.activeOfferExpiresAt);
+        if (
+          activeOfferOrderId &&
+          activeOfferOrderId !== orderId &&
+          activeOfferExpiry > nowMs
+        ) {
+          continue;
+        }
+
+        reservedNextCandidate = candidate;
+        break;
+      }
+
+      if (!reservedNextCandidate) {
+        if (oldLockMatches) {
+          tx.update(oldCaptainRef, {
+            activeOfferOrderId: null,
+            activeOfferGeneration: null,
+            activeOfferExpiresAt: null,
+            updatedAt: s.serverTimestamp(),
+          });
+        }
         tx.update(orderRef, {
           status: "searching",
           dispatchStatus: "no_captains_available",
@@ -1265,11 +1307,26 @@ export class OrderServerService {
       const nextGen = currentGen + 1;
       const offerExpiresAtMs = nowMs + OFFER_WINDOW_MS;
 
+      if (oldLockMatches) {
+        tx.update(oldCaptainRef, {
+          activeOfferOrderId: null,
+          activeOfferGeneration: null,
+          activeOfferExpiresAt: null,
+          updatedAt: s.serverTimestamp(),
+        });
+      }
+      tx.update(this.db.collection("captains").doc(reservedNextCandidate.uid), {
+        activeOfferOrderId: orderId,
+        activeOfferGeneration: nextGen,
+        activeOfferExpiresAt: offerExpiresAtMs,
+        updatedAt: s.serverTimestamp(),
+      });
+
       const updateFields: Record<string, unknown> = {
         status: "pending",
         dispatchStatus: "offered",
-        offeredCaptainId: nextCandidate.uid,
-        offeredCaptainName: nextCandidate.name,
+        offeredCaptainId: reservedNextCandidate.uid,
+        offeredCaptainName: reservedNextCandidate.name,
         offerSentAt: s.serverTimestamp(),
         offerExpiresAt: offerExpiresAtMs,
         offerGeneration: nextGen,
@@ -1286,20 +1343,20 @@ export class OrderServerService {
       offerFcm = this.buildOfferFcmPayload(
         orderId,
         latest,
-        nextCandidate,
+        reservedNextCandidate,
         offerExpiresAtMs,
         nextGen
       );
       nextTask = {
         orderId,
-        expectedCaptainId: nextCandidate.uid,
+        expectedCaptainId: reservedNextCandidate.uid,
         expectedOfferGeneration: nextGen,
       };
 
       return {
         status: "reassigned",
         orderId,
-        offeredCaptainId: nextCandidate.uid,
+        offeredCaptainId: reservedNextCandidate.uid,
         offerGeneration: nextGen,
         offerExpiresAtMs,
       } as DispatchOutcome;
