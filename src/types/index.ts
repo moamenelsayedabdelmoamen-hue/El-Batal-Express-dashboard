@@ -112,6 +112,7 @@ export interface Order {
   orderNumber: string;
   orderCode?: string;
   restaurantId?: string;
+  merchantId?: string;
   restaurantName: string;
   customerName: string;
   customerPhone?: string;
