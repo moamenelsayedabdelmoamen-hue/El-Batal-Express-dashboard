@@ -817,6 +817,7 @@ async function assignNearestCaptainInternal(db, orderRef, orderData, extraExclud
         offeredCaptainId: captainId,
         offerId,
         offerExpiresAt,
+        preferredCaptainId: admin.firestore.FieldValue.delete(),
         nearestDistanceKm: distanceKm,
         lastOfferedNotifyKey: notifyKey,
         updatedAt: admin.firestore.FieldValue.serverTimestamp()
@@ -1559,8 +1560,373 @@ exports.expireDeliveryOffer = onRequest(
   }
 );
 
+function generateUniqueSixDigitOrderCode() {
+  const digits = [];
+  digits.push(String(crypto.randomInt(1, 10)));
+  while (digits.length < 6) {
+    const candidate = String(crypto.randomInt(0, 10));
+    if (!digits.includes(candidate)) digits.push(candidate);
+  }
+  return digits.join("");
+}
+
+function parseSubscriptionDateMs(value, isEndDate = false) {
+  if (value && typeof value.toMillis === "function") return value.toMillis();
+  if (value && typeof value.toDate === "function") return value.toDate().getTime();
+  if (value instanceof Date) return value.getTime();
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value < 100000000000 ? value * 1000 : value;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const raw = value.trim();
+    const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(raw);
+    const parsed = Date.parse(dateOnly && isEndDate ? `${raw}T23:59:59.999Z` : raw);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
+}
+
+async function loadOrderableMerchantAndSubscription(db, merchantId) {
+  const [merchantSnap, subscriptionSnap] = await Promise.all([
+    db.collection("merchants").doc(merchantId).get(),
+    db.collection("subscriptions").doc(merchantId).get()
+  ]);
+
+  if (!merchantSnap.exists) throw new Error("التاجر غير موجود في قاعدة البيانات");
+  const merchantData = merchantSnap.data() || {};
+  const merchantStatus = String(merchantData.status || "").trim().toLowerCase();
+  if (
+    merchantData.isActive === false ||
+    (merchantStatus && !["approved", "active", "نشط", "معتمد"].includes(merchantStatus))
+  ) {
+    throw new Error("حساب التاجر غير نشط أو غير معتمد");
+  }
+
+  const subscriptionData = subscriptionSnap.exists ? (subscriptionSnap.data() || {}) : {};
+  const nestedSubscription = merchantData.subscription && typeof merchantData.subscription === "object"
+    ? merchantData.subscription
+    : {};
+  const nestedRecord = subscriptionData.subscription && typeof subscriptionData.subscription === "object"
+    ? subscriptionData.subscription
+    : {};
+
+  const status = String(
+    subscriptionData.status ||
+    subscriptionData.subscriptionStatus ||
+    nestedRecord.status ||
+    merchantData.subscriptionStatus ||
+    nestedSubscription.status ||
+    ""
+  ).trim().toLowerCase();
+
+  if (!["active", "نشط", "ساري"].includes(status)) {
+    throw new Error("اشتراك التاجر غير نشط؛ لا يمكن إنشاء طلب جديد");
+  }
+
+  const endDateValue =
+    subscriptionData.endDate ||
+    subscriptionData.subscriptionEndDate ||
+    subscriptionData.expiresAt ||
+    nestedRecord.endDate ||
+    nestedRecord.expiresAt ||
+    merchantData.subscriptionEndDate ||
+    merchantData.endDate ||
+    merchantData.expiresAt ||
+    nestedSubscription.endDate ||
+    nestedSubscription.expiresAt;
+  const endDateMs = parseSubscriptionDateMs(endDateValue, true);
+  if (endDateMs > 0 && endDateMs < Date.now()) {
+    throw new Error("انتهى اشتراك التاجر؛ يرجى تجديد الاشتراك");
+  }
+
+  const planText = String(
+    subscriptionData.plan || subscriptionData.subscriptionPlan ||
+    nestedRecord.plan || merchantData.subscriptionPlan ||
+    nestedSubscription.plan || ""
+  );
+  let maxCaptains = Number(
+    subscriptionData.captainsCount ??
+    subscriptionData.maxCaptains ??
+    subscriptionData.allowedCaptains ??
+    nestedRecord.captainsCount ??
+    merchantData.captainsCount ??
+    merchantData.maxCaptains ??
+    nestedSubscription.captainsCount ??
+    0
+  );
+  if (!maxCaptains) {
+    const match = planText.match(/\b(2|4|6|8)\b/);
+    maxCaptains = match ? Number(match[1]) : 0;
+  }
+  if (![2, 4, 6, 8].includes(maxCaptains)) {
+    throw new Error("باقة التاجر غير محددة بشكل صحيح؛ يجب أن تكون 2 أو 4 أو 6 أو 8 كباتن");
+  }
+
+  return { merchantData, subscriptionData, maxCaptains };
+}
+
+function isTerminalOrderStatus(status) {
+  return ["delivered", "completed", "cancelled", "canceled", "merchant_cancelled", "rejected", "declined"].includes(
+    String(status || "").trim().toLowerCase()
+  );
+}
+
+async function countActiveMerchantOrders(db, merchantId) {
+  const [merchantQuery, restaurantQuery] = await Promise.all([
+    db.collection("orders").where("merchantId", "==", merchantId).limit(1000).get(),
+    db.collection("orders").where("restaurantId", "==", merchantId).limit(1000).get()
+  ]);
+  const byId = new Map();
+  merchantQuery.docs.forEach(doc => byId.set(doc.id, doc));
+  restaurantQuery.docs.forEach(doc => byId.set(doc.id, doc));
+  return Array.from(byId.values()).filter(doc => !isTerminalOrderStatus((doc.data() || {}).status)).length;
+}
+
 // ------------------------------------------------------------------------------
-// 8. Cloud Function: assignNextAvailableCaptain
+// 8. Cloud Function: createOrder
+// Admin dashboard creates the order on the server, validates subscription limits,
+// reserves a unique six-digit order code, and starts server-side captain dispatch.
+// ------------------------------------------------------------------------------
+exports.createOrder = onRequest(
+  { cors: true, timeoutSeconds: 60, memory: "512MiB" },
+  async (req, res) => {
+    if (req.method !== "POST") return res.status(405).json({ error: "Method Not Allowed" });
+    const user = await authenticateUser(req, res);
+    if (!user) return;
+
+    const db = admin.firestore();
+    if (!(await isAdminUser(db, user))) {
+      return res.status(403).json({ error: "غير مصرح: إنشاء الطلبات من لوحة الإدارة يتطلب صلاحية مدير" });
+    }
+
+    const body = req.body || {};
+    const merchantId = String(body.restaurantId || body.merchantId || "").trim();
+    if (!merchantId) return res.status(400).json({ error: "معرف التاجر مطلوب" });
+
+    const customerName = String(body.customerName || "").trim().slice(0, 150);
+    const customerPhone = String(body.customerPhone || "").trim().slice(0, 32);
+    const deliveryAddress = String(body.deliveryAddress || "").trim().slice(0, 1000);
+    if (!customerName || !customerPhone || !deliveryAddress) {
+      return res.status(400).json({ error: "اسم العميل ورقم الهاتف وعنوان التوصيل مطلوبة" });
+    }
+
+    const deliveryFee = Number(body.deliveryFee ?? 0);
+    const subtotal = Number(body.subtotal ?? 0);
+    const total = Number(body.total ?? (subtotal + deliveryFee));
+    if (
+      !Number.isFinite(deliveryFee) || deliveryFee < 0 || deliveryFee > 10000 ||
+      !Number.isFinite(subtotal) || subtotal < 0 || subtotal > 1000000 ||
+      !Number.isFinite(total) || total < deliveryFee || total < subtotal || total > 1000000
+    ) {
+      return res.status(400).json({ error: "قيم المبالغ المالية غير صحيحة" });
+    }
+
+    const rawItems = Array.isArray(body.items) ? body.items : [];
+    if (rawItems.length > 50) return res.status(400).json({ error: "عدد عناصر الطلب يتجاوز الحد المسموح" });
+    const items = [];
+    for (const raw of rawItems) {
+      const name = String(raw?.name || "").trim().slice(0, 150);
+      const quantity = Number(raw?.quantity ?? 0);
+      const price = Number(raw?.price ?? 0);
+      if (!name || !Number.isInteger(quantity) || quantity <= 0 || quantity > 100 ||
+          !Number.isFinite(price) || price < 0 || price > 100000) {
+        return res.status(400).json({ error: "أحد عناصر الطلب يحتوي على بيانات أو أسعار غير صحيحة" });
+      }
+      items.push({ name, quantity, price });
+    }
+
+    const preferredCaptainId = String(body.captainId || "").trim();
+    const notes = String(body.notes || "").trim().slice(0, 1000);
+    const idempotencyKey = String(body.idempotencyKey || "").trim();
+    if (!idempotencyKey || idempotencyKey.length > 128) {
+      return res.status(400).json({ error: "مفتاح منع تكرار الطلب مطلوب" });
+    }
+
+    try {
+      const { merchantData, subscriptionData, maxCaptains } =
+        await loadOrderableMerchantAndSubscription(db, merchantId);
+
+      const activeOrdersBeforeCreate = await countActiveMerchantOrders(db, merchantId);
+      const counterRef = db.collection("merchant_dispatch_counters").doc(merchantId);
+      const orderRef = db.collection("orders").doc();
+      const idempotencyId = crypto.createHash("sha256")
+        .update(`${user.uid}:${idempotencyKey}`)
+        .digest("hex");
+      const idempotencyRef = db.collection("idempotency_keys").doc(idempotencyId);
+
+      let orderCode = "";
+      let orderNumber = "";
+      let persistedOrderData = null;
+      let reused = false;
+
+      for (let attempt = 0; attempt < 12; attempt++) {
+        const candidateCode = generateUniqueSixDigitOrderCode();
+        const candidateOrderNumber = `#ELB-${candidateCode}`;
+        const codeRef = db.collection("order_codes").doc(candidateCode);
+        const nowMs = Date.now();
+
+        try {
+          await db.runTransaction(async (transaction) => {
+            const [idempotencyDoc, codeDoc, counterDoc] = await Promise.all([
+              transaction.get(idempotencyRef),
+              transaction.get(codeRef),
+              transaction.get(counterRef)
+            ]);
+
+            if (idempotencyDoc.exists) {
+              const existingOrderId = String(idempotencyDoc.data()?.orderId || "").trim();
+              if (!existingOrderId) throw new Error("IDEMPOTENCY_RECORD_INVALID");
+              const existingOrderRef = db.collection("orders").doc(existingOrderId);
+              const existingOrderDoc = await transaction.get(existingOrderRef);
+              if (!existingOrderDoc.exists) throw new Error("IDEMPOTENCY_ORDER_MISSING");
+              persistedOrderData = { id: existingOrderId, ...existingOrderDoc.data() };
+              reused = true;
+              return;
+            }
+
+            if (codeDoc.exists) throw new Error("UNIQUE_ORDER_CODE_COLLISION");
+
+            const counterData = counterDoc.exists ? (counterDoc.data() || {}) : {};
+            const activeCount = counterDoc.exists
+              ? Math.max(Number(counterData.activeCount || 0), activeOrdersBeforeCreate)
+              : activeOrdersBeforeCreate;
+            if (activeCount >= maxCaptains) {
+              throw new Error(`وصل التاجر إلى الحد الأقصى للطلبات النشطة في باقة ${maxCaptains} كباتن`);
+            }
+
+            const merchantName = String(
+              merchantData.name || merchantData.nameAr || merchantData.merchantName || merchantData.restaurantName || "تاجر مسجل"
+            ).trim();
+            const merchantLocationUrl = String(
+              merchantData.mapUrl || merchantData.googleMapsUrl || merchantData.locationUrl || merchantData.storeLocationUrl || ""
+            ).trim();
+            const orderData = {
+              orderNumber: candidateOrderNumber,
+              orderCode: candidateCode,
+              order_code: candidateCode,
+              order_codes: candidateCode,
+              orderCodeId: candidateCode,
+              merchantId,
+              restaurantId: merchantId,
+              merchantName,
+              restaurantName: merchantName,
+              merchantMapUrl: merchantLocationUrl,
+              pickupAddress: String(merchantData.address || merchantData.locationAddress || "").trim(),
+              deliveryAddress,
+              customerName,
+              customerPhone,
+              captainId: null,
+              driverId: null,
+              captainName: "",
+              offeredCaptainId: null,
+              preferredCaptainId: preferredCaptainId || null,
+              offerId: null,
+              offerExpiresAt: null,
+              nearestDistanceKm: null,
+              dispatchStatus: "searching",
+              status: "searching",
+              excludedCaptainIds: [],
+              deliveryFee,
+              delivery_fee: deliveryFee,
+              deliveryPrice: deliveryFee,
+              fee: deliveryFee,
+              subtotal,
+              total,
+              notes,
+              items,
+              dispatchedBy: "admin",
+              createdBy: user.uid,
+              source: "admin_dashboard",
+              merchantSubscriptionId: subscriptionData.id || merchantId,
+              merchantMaxCaptains: maxCaptains,
+              createdAt: admin.firestore.Timestamp.fromMillis(nowMs),
+              updatedAt: admin.firestore.Timestamp.fromMillis(nowMs)
+            };
+
+            transaction.create(orderRef, orderData);
+            transaction.create(codeRef, {
+              orderId: orderRef.id,
+              merchantId,
+              orderCode: candidateCode,
+              createdAt: admin.firestore.Timestamp.fromMillis(nowMs)
+            });
+            transaction.create(idempotencyRef, {
+              actorUid: user.uid,
+              merchantId,
+              orderId: orderRef.id,
+              createdAt: admin.firestore.Timestamp.fromMillis(nowMs)
+            });
+            transaction.set(counterRef, {
+              merchantId,
+              activeCount: activeCount + 1,
+              maxCaptains,
+              updatedAt: admin.firestore.Timestamp.fromMillis(nowMs)
+            }, { merge: true });
+
+            persistedOrderData = { id: orderRef.id, ...orderData };
+            orderCode = candidateCode;
+            orderNumber = candidateOrderNumber;
+          });
+
+          if (reused) {
+            orderCode = String(persistedOrderData.orderCode || "");
+            orderNumber = String(persistedOrderData.orderNumber || "");
+          }
+          break;
+        } catch (error) {
+          if (error.message === "UNIQUE_ORDER_CODE_COLLISION") continue;
+          throw error;
+        }
+      }
+
+      if (!persistedOrderData) throw new Error("تعذر إنشاء رقم طلب فريد بعد عدة محاولات");
+
+      let dispatchResult = null;
+      const existingStatus = String(persistedOrderData.status || "").trim().toLowerCase();
+      if (
+        ["searching", "pending", "new", "offered"].includes(existingStatus) &&
+        !persistedOrderData.offeredCaptainId
+      ) {
+        try {
+          dispatchResult = await assignNearestCaptainInternal(
+            db,
+            db.collection("orders").doc(persistedOrderData.id),
+            persistedOrderData
+          );
+        } catch (dispatchError) {
+          console.error("createOrder dispatch deferred:", persistedOrderData.id, dispatchError);
+        }
+      }
+
+      return res.status(200).json({
+        success: true,
+        reused,
+        orderId: persistedOrderData.id,
+        orderNumber,
+        orderCode,
+        merchantId,
+        merchantName: persistedOrderData.merchantName,
+        assigned: Boolean(dispatchResult?.assigned || persistedOrderData.offeredCaptainId),
+        offeredCaptainId: dispatchResult?.offeredCaptainId || persistedOrderData.offeredCaptainId || null,
+        offerId: dispatchResult?.offerId || persistedOrderData.offerId || null,
+        offerExpiresAt: dispatchResult?.offerExpiresAt || persistedOrderData.offerExpiresAt || null,
+        distanceKm: dispatchResult?.distanceKm || persistedOrderData.nearestDistanceKm || null,
+        message: dispatchResult?.assigned
+          ? "تم إنشاء الطلب وإرسال عرضه إلى الكابتن"
+          : "تم إنشاء الطلب؛ وسيستمر السيرفر في البحث عن كابتن مؤهل"
+      });
+    } catch (error) {
+      const statusCode = /الحد الأقصى|اشتراك|انتهى اشتراك|باقة التاجر|التاجر غير موجود|غير نشط/.test(error.message) ? 409 : 400;
+      console.warn("createOrder rejected:", error.message);
+      return res.status(statusCode).json({ error: error.message || "تعذر إنشاء الطلب" });
+    }
+  }
+);
+
+// ------------------------------------------------------------------------------
+// 9. Cloud Function: assignNextAvailableCaptain
+
+
 
 // ------------------------------------------------------------------------------
 // 8. Cloud Function: assignNextAvailableCaptain
@@ -1648,7 +2014,7 @@ exports.assignNextAvailableCaptain = onRequest(
 );
 
 // ------------------------------------------------------------------------------
-// 9. Cloud Function: uploadImageToImgBB
+// 10. Cloud Function: uploadImageToImgBB
 // ------------------------------------------------------------------------------
 exports.uploadImageToImgBB = onRequest(
   {
