@@ -118,6 +118,10 @@ export interface Order {
   deliveryAddress?: string;
   captainId?: string;
   captainName?: string;
+  offeredCaptainId?: string;
+  offeredCaptainName?: string;
+  offerId?: string;
+  offerExpiresAt?: number | null;
   receiptImageUrl?: string;
   receiptImagePath?: string;
   subtotal: number;
