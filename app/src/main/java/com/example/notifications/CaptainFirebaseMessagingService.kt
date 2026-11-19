@@ -82,6 +82,11 @@ class CaptainFirebaseMessagingService : FirebaseMessagingService() {
                         val delivery = data["deliveryAddress"].orEmpty()
                         val fee = data["deliveryFee"]?.toDoubleOrNull() ?: 25.0
                         val distanceKm = data["distanceKm"]?.toDoubleOrNull() ?: 3.0
+                        val offerId = data["offerId"].orEmpty().trim()
+                        if (offerId.isBlank()) {
+                            Log.w(TAG, "Ignoring new-order push without an offerId")
+                            return@launch
+                        }
                         val orderCode = data["orderCode"]
                             ?: data["orderCodes"]
                             ?: data["Ordar codes"]
@@ -113,7 +118,8 @@ class CaptainFirebaseMessagingService : FirebaseMessagingService() {
                             distanceKm = distanceKm,
                             status = com.example.data.OrderStatus.PENDING,
                             firestoreDocId = orderKey,
-                            offerExpiresAt = effectiveExpiresAt
+                            offerExpiresAt = effectiveExpiresAt,
+                            offerId = offerId
                         )
                         val savedOrderId = runCatching {
                             db.orderDao().upsertByFirestoreId(pushedOrder)
@@ -128,6 +134,7 @@ class CaptainFirebaseMessagingService : FirebaseMessagingService() {
                             deliveryFee = fee,
                             orderCode = orderCode,
                             orderId = savedOrderId,
+                            offerId = offerId,
                             offerExpiresAtMs = effectiveExpiresAt,
                             distanceKm = distanceKm,
                             startContinuousBell = true
