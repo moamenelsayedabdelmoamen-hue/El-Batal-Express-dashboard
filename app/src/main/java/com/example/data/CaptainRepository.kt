@@ -2795,15 +2795,16 @@ class CaptainRepository(
         val order = orders.find { it.id == orderId }
             ?: return Result.failure(Exception("الطلب غير موجود"))
 
-        val (currentUid, currentPhone) = resolveCaptainUidAndPhone()
+        val (currentUid, _) = resolveCaptainUidAndPhone()
         if (currentUid.isBlank()) {
             return Result.failure(Exception("يجب تسجيل الدخول أولاً"))
         }
+        if (order.offerId.isBlank()) {
+            return Result.failure(IllegalStateException("معرف عرض الطلب غير موجود. يرجى تحديث الطلب من الخادم ثم المحاولة مرة أخرى."))
+        }
 
-        // Verify captain is currently online and active before assigning/accepting any order
         val currentCaptain = captainDao.getCaptain()
         if (currentCaptain != null && !currentCaptain.isOnline) {
-            Log.w("CaptainRepository", "[acceptOrder] Blocked order acceptance: captain is offline")
             return Result.failure(IllegalStateException("لا يمكنك قبول أو استلام طلبات وأنت في وضع غير متصل."))
         }
         if (currentCaptain != null &&
@@ -2812,47 +2813,30 @@ class CaptainRepository(
             return Result.failure(IllegalStateException("حسابك غير مفعل حالياً لاستقبال أو قبول الطلبات."))
         }
 
-        // Check if captain already has an ongoing active order
         val activeOrder = activeOrderFlow.firstOrNull()
         if (activeOrder != null && activeOrder.id != orderId) {
             return Result.failure(IllegalStateException("لديك طلب نشط بالفعل قيد التنفيذ، لا يمكن قبول أكثر من طلب في وقت واحد."))
         }
 
-        // Verify working shift status: captain can only accept new orders during their active shift
         val currentShifts = getShifts()
         if (currentShifts.isNotEmpty()) {
             val shiftStatus = ShiftManager.calculateShiftStatus(currentShifts)
             if (!shiftStatus.isAvailableForOrders) {
-                Log.w("CaptainRepository", "[acceptOrder] Blocked order acceptance: captain is outside active working shift")
                 return Result.failure(IllegalStateException("عفواً، أنت خارج ساعات العمل الرسمية ولا يمكنك قبول طلبات جديدة حالياً."))
             }
         }
 
         val orderDocId = resolveCleanOrderDocId(order)
-        val primaryRes = cloudFunctionsOrderClient.acceptDeliveryOffer(orderDocId)
-        val finalRes = if (primaryRes.isFailure) {
-            val cfEx = primaryRes.exceptionOrNull() as? com.example.data.remote.CloudFunctionException
-            val fallback = firestoreOrderFallbackPort
-            if (cfEx != null && cfEx.isEndpointNotFound && fallback != null) {
-                Log.i("CaptainRepository", "[acceptOrder] Cloud Function endpoint unavailable (404); falling back to atomic Firestore transaction.")
-                fallback.acceptOrder(order, currentUid, currentPhone)
-            } else {
-                primaryRes
-            }
-        } else {
-            primaryRes
-        }
+        val result = cloudFunctionsOrderClient.acceptDeliveryOffer(orderDocId, order.offerId)
 
-        return if (finalRes.isSuccess) {
+        return if (result.isSuccess) {
             context?.let { CaptainNotificationManager.stopIncomingOrderBell(it, orderDocId) }
             orderDao.markOrderAccepted(orderId, currentUid, System.currentTimeMillis())
             reconcileDailyWallets()
             Result.success(Unit)
         } else {
-            val err = finalRes.exceptionOrNull()
+            val err = result.exceptionOrNull()
             val cfEx = err as? com.example.data.remote.CloudFunctionException
-            // Remove locally ONLY if confirmed gone/claimed on server/Firestore
-            // (never when Cloud Function endpoint is 404 or on network/5xx/permission failure).
             if (cfEx != null && cfEx.isNotFound && !cfEx.isEndpointNotFound) {
                 context?.let { CaptainNotificationManager.stopIncomingOrderBell(it, orderDocId) }
                 orderDao.deleteOrderById(orderId)
@@ -3138,63 +3122,55 @@ class CaptainRepository(
     }
 
     /**
-     * 6. Expire delivery offer after 60 seconds via Cloud Function (or Firestore fallback ONLY on bare HTTP 404)
+     * 6. Expire a delivery offer only through the authenticated server endpoint.
+     * The server verifies the caller UID, offerId and authoritative expiry time.
      */
     suspend fun expireDeliveryOffer(orderId: Long): Result<Unit> {
         val orders = allOrdersFlow.firstOrNull() ?: emptyList()
         val order = orders.find { it.id == orderId }
             ?: return Result.failure(Exception("الطلب غير موجود"))
-        val (currentUid, _) = resolveCaptainUidAndPhone()
-        val orderDocId = resolveCleanOrderDocId(order)
-        context?.let { CaptainNotificationManager.stopIncomingOrderBell(it, orderDocId) }
-
-        val primaryRes = cloudFunctionsOrderClient.expireDeliveryOffer(orderDocId, reason = "expired")
-        val finalRes = if (primaryRes.isFailure) {
-            val cfEx = primaryRes.exceptionOrNull() as? com.example.data.remote.CloudFunctionException
-            val fallback = firestoreOrderFallbackPort
-            if (cfEx != null && cfEx.isEndpointNotFound && fallback != null && currentUid.isNotBlank()) {
-                fallback.expireOrDeclineOffer(order, currentUid, "expired")
-            } else {
-                primaryRes
-            }
-        } else {
-            primaryRes
+        if (order.offerId.isBlank()) {
+            return Result.failure(IllegalStateException("معرف عرض الطلب غير موجود؛ لن يتم إنهاء عرض غير معروف"))
         }
 
-        // Always mark EXPIRED locally once the 60s offer window finishes so the order leaves this
-        // captain's screen and never keeps ringing locally, while surfacing any server notice if needed.
-        orderDao.updateOrderStatus(orderId, OrderStatus.EXPIRED)
-        return if (finalRes.isSuccess) finalRes else Result.success(Unit)
+        val orderDocId = resolveCleanOrderDocId(order)
+        val result = cloudFunctionsOrderClient.expireDeliveryOffer(
+            orderDocId,
+            offerId = order.offerId,
+            reason = "expired"
+        )
+        if (result.isSuccess) {
+            context?.let { CaptainNotificationManager.stopIncomingOrderBell(it, orderDocId) }
+            orderDao.updateOrderStatus(orderId, OrderStatus.EXPIRED)
+        }
+        return result
     }
 
     /**
-     * 7. Decline incoming delivery offer via Cloud Function (or Firestore fallback ONLY on bare HTTP 404)
+     * 7. Decline a delivery offer immediately through the authenticated server endpoint.
      */
     suspend fun declineOrder(orderId: Long): Result<Unit> {
         val orders = allOrdersFlow.firstOrNull() ?: emptyList()
         val order = orders.find { it.id == orderId }
             ?: return Result.failure(Exception("الطلب غير موجود"))
-        val (currentUid, _) = resolveCaptainUidAndPhone()
-        val orderDocId = resolveCleanOrderDocId(order)
-        context?.let { CaptainNotificationManager.stopIncomingOrderBell(it, orderDocId) }
-        val primaryRes = cloudFunctionsOrderClient.expireDeliveryOffer(orderDocId, reason = "declined")
-        val finalRes = if (primaryRes.isFailure) {
-            val cfEx = primaryRes.exceptionOrNull() as? com.example.data.remote.CloudFunctionException
-            val fallback = firestoreOrderFallbackPort
-            if (cfEx != null && cfEx.isEndpointNotFound && fallback != null && currentUid.isNotBlank()) {
-                fallback.expireOrDeclineOffer(order, currentUid, "declined")
-            } else {
-                primaryRes
-            }
-        } else {
-            primaryRes
+        if (order.offerId.isBlank()) {
+            return Result.failure(IllegalStateException("معرف عرض الطلب غير موجود؛ لن يتم رفض عرض غير معروف"))
         }
 
-        if (finalRes.isSuccess) {
+        val orderDocId = resolveCleanOrderDocId(order)
+        val result = cloudFunctionsOrderClient.expireDeliveryOffer(
+            orderDocId,
+            offerId = order.offerId,
+            reason = "declined"
+        )
+        if (result.isSuccess) {
+            context?.let { CaptainNotificationManager.stopIncomingOrderBell(it, orderDocId) }
             orderDao.markOrderCancelled(orderId, System.currentTimeMillis(), "تم رفض العرض")
         }
-        return finalRes
+        return result
     }
+
+
 
     private class DefaultFirestoreOrderFallbackPort(
         private val db: FirebaseFirestore
@@ -4110,6 +4086,7 @@ fun DocumentSnapshot.toOrderEntity(): OrderEntity? {
     }
 
     val offerExpiresAt = safeLong("offerExpiresAt", "offer_expires_at")
+    val offerId = safeString("offerId", "offer_id")
     val cancelReason = safeString(
         "cancellationReason", "cancelReason", "cancellation_reason",
         "cancel_reason", "cancelledReason", "reason"
@@ -4160,6 +4137,7 @@ fun DocumentSnapshot.toOrderEntity(): OrderEntity? {
         receiptUploadedBy = receiptUpBy,
         orderDataEnteredAt = dataEnteredAt,
         offerExpiresAt = offerExpiresAt,
+        offerId = offerId,
         merchantConfirmed = merchantConfirmed,
         rejectionReason = rejectionReason,
         etaMinutes = etaMinutes,
