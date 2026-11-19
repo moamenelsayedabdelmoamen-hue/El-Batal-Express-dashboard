@@ -8,7 +8,37 @@ import {
 import { db, isFirebaseConfigured, handleFirestoreError, OperationType } from '../firebase/config';
 import { COLLECTIONS } from './collections';
 import { Order, OrderStatus } from '../types';
-import { callOrdersBackend } from './cloudFunctionsService';
+import { callOrdersBackend, OrdersBackendResponse } from './cloudFunctionsService';
+
+interface AssignmentResponse extends OrdersBackendResponse {
+  assigned?: boolean;
+  offeredCaptainId?: string | null;
+  offeredCaptainName?: string | null;
+  offerId?: string | null;
+  offerExpiresAt?: number | null;
+  distanceKm?: number | null;
+  reason?: string;
+}
+
+interface CreateOrderResponse extends OrdersBackendResponse {
+  orderId?: string;
+  orderNumber?: string;
+  orderCode?: string;
+  status?: string;
+  offeredCaptainId?: string | null;
+  offeredCaptainName?: string | null;
+  offerId?: string | null;
+  offerExpiresAt?: number | null;
+  distanceKm?: number | null;
+  assigned?: boolean;
+  duplicate?: boolean;
+  assignmentReason?: string;
+}
+
+interface StageTimestampResponse extends OrdersBackendResponse {
+  timestamp?: string;
+  field?: string;
+}
 
 let localOrdersCache: Order[] = [];
 
@@ -624,7 +654,7 @@ export const OrderService = {
   },
 
   async updateStatus(id: string, newStatus: OrderStatus): Promise<Partial<Order>> {
-    const response = await callOrdersBackend('adminUpdateOrderStatus', {
+    await callOrdersBackend('adminUpdateOrderStatus', {
       action: 'updateStatus',
       orderId: id,
       newStatus,
@@ -642,7 +672,7 @@ export const OrderService = {
     field: 'acceptedAt' | 'arrivedAtMerchantAt' | 'pickedUpAt' | 'deliveredAt',
     _customIso?: string
   ): Promise<string> {
-    const response = await callOrdersBackend('adminUpdateOrderStatus', {
+    const response = await callOrdersBackend<StageTimestampResponse>('adminUpdateOrderStatus', {
       action: 'recordStageTimestamp',
       orderId,
       field,
@@ -681,7 +711,7 @@ export const OrderService = {
   }> {
     if (!captainId) throw new Error('يجب تحديد كابتن لإرسال عرض الطلب');
 
-    const response = await callOrdersBackend('assignNextAvailableCaptain', {
+    const response = await callOrdersBackend<AssignmentResponse>('assignNextAvailableCaptain', {
       orderId,
       captainId,
     });
@@ -741,7 +771,7 @@ export const OrderService = {
     offerId?: string;
     offerExpiresAt?: number;
   }> {
-    const response = await callOrdersBackend('assignNextAvailableCaptain', { orderId });
+    const response = await callOrdersBackend<AssignmentResponse>('assignNextAvailableCaptain', { orderId });
     if (response.assigned !== true || typeof response.offeredCaptainId !== 'string') {
       throw new Error(
         typeof response.message === 'string' ? response.message : 'لا يوجد كابتن مؤهل متاح حالياً'
@@ -812,7 +842,7 @@ export const OrderService = {
     const subtotal = Number(data.subtotal ?? 0);
     const total = Number(data.total ?? subtotal + deliveryFee);
 
-    const response = await callOrdersBackend('createOrder', {
+    const response = await callOrdersBackend<CreateOrderResponse>('createOrder', {
       ...data,
       requestId,
       deliveryFee,
