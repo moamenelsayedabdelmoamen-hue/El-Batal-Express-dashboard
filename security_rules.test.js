@@ -509,7 +509,14 @@ describe('El-Batal Express Real Firebase Emulator Security Audit (Firestore + St
   });
 
   test('6. Admin account has verified management access across Storage and Firestore', async () => {
-    const adminCtx = testEnv.authenticatedContext('admin_1');
+    const unverifiedAdminDb = testEnv
+      .authenticatedContext('admin_1', { email_verified: false })
+      .firestore();
+    await assertFails(
+      updateDoc(doc(unverifiedAdminDb, 'captains', 'captain_1'), { walletBalance: 99999 })
+    );
+
+    const adminCtx = testEnv.authenticatedContext('admin_1', { email_verified: true });
     const adminDb = adminCtx.firestore();
     const adminStorage = adminCtx.storage(BUCKET_URL);
 
