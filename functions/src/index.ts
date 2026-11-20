@@ -25,6 +25,7 @@ import {
   readNormalizedOrderStatus,
   readNumber,
   readString,
+  isTerminalMerchantOrderStatus,
 } from "./validators.js";
 
 initializeApp();
@@ -220,15 +221,7 @@ function generateDistinctOrderCode(): string {
 }
 
 function isClosedMerchantOrderStatus(status: string): boolean {
-  const value = status.trim().toLowerCase();
-  // Do not use substring checks for "deliver": they also match active states such as
-  // "out_for_delivery" and "delivering", which must continue consuming merchant capacity.
-  return [
-    "delivered", "completed", "complete", "done", "cancelled", "canceled",
-    "expired", "failed", "declined", "rejected",
-    "ملغي", "ملغى", "تم الإلغاء", "تم الالغاء", "تم التسليم", "تم التوصيل",
-    "مكتمل", "مكتملة", "انتهى", "منتهي", "منتهية",
-  ].includes(value);
+  return isTerminalMerchantOrderStatus(status);
 }
 
 /**
