@@ -38,20 +38,13 @@ function collectSourceFiles(dir) {
 }
 
 describe("Static Security & Architecture Invariants (Rules + Server-Only + Paymob Removal)", () => {
-  it("1. firestore.rules enforces merchant-scoped manual_subscription_requests (pending_review/resubmission_required) and blocks direct approval/price tampering", () => {
-    assert.match(firestoreRules, /function isValidManualSubscriptionCreate\(data, uid\)/);
-    assert.match(firestoreRules, /data\.merchantId == uid/);
-    assert.match(
-      firestoreRules,
-      /\(data\.status == 'pending_review' \|\| data\.status == 'pending'\)/
-    );
-    assert.match(firestoreRules, /data\.paymentStatus == 'pending_verification'/);
-    assert.match(firestoreRules, /match\s+\/manual_subscription_requests\/\{requestId\}/);
-    assert.match(
-      firestoreRules,
-      /\(existing\(\)\.status == 'resubmission_required' \|\| existing\(\)\.status == 'resubmission_requested'\)/
-    );
-    assert.match(firestoreRules, /allow delete:\s*if false;/);
+  it("1. firestore.rules allows merchant-scoped reads but blocks every direct write to manual_subscription_requests", () => {
+    const requestRules = firestoreRules.match(
+      /match\\s+\\/manual_subscription_requests\\/\\{requestId\\}\\s*\\{([\\s\\S]*?)\\n    \\}/
+    )?.[1] || "";
+    assert.match(requestRules, /allow get, list:\\s*if isAdmin\\(\\) \\|\\|/);
+    assert.match(requestRules, /allow create, update, delete:\\s*if false;/);
+    assert.doesNotMatch(requestRules, /allow\\s+(?:create|update|delete|write):\\s*if\\s+(?!false\\s*;)/);
   });
 
   it("2. firestore.rules locks settings/manual_subscription_config, operation_logs, and retired webhook_events to server-only / read-only", () => {
