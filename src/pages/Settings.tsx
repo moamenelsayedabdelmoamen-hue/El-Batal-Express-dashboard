@@ -18,10 +18,7 @@ import {
 import { firebaseConfig } from '../firebase/config';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
-import {
-  DEFAULT_PLAN_TEMPLATES,
-  ManualSubscriptionService,
-} from '../services/manualSubscriptionService';
+import { ManualSubscriptionService } from '../services/manualSubscriptionService';
 import { ManualSubscriptionSettings, OfficialSubscriptionPlanConfig } from '../types';
 import { formatDateTime } from '../utils/formatters';
 import appLogo from '../assets/images/elbatal_logo_1789202744301.jpg';
@@ -52,7 +49,7 @@ export const SettingsPage: React.FC = () => {
   const [isAcceptingSubscriptions, setIsAcceptingSubscriptions] = useState(false);
   const [pauseMessage, setPauseMessage] = useState('');
   const [durationDays, setDurationDays] = useState(30);
-  const [plans, setPlans] = useState<OfficialSubscriptionPlanConfig[]>(DEFAULT_PLAN_TEMPLATES);
+  const [plans, setPlans] = useState<OfficialSubscriptionPlanConfig[]>([]);
 
   useEffect(() => {
     let active = true;
@@ -65,7 +62,7 @@ export const SettingsPage: React.FC = () => {
         setIsAcceptingSubscriptions(cfg.isAcceptingSubscriptions);
         setPauseMessage(cfg.pauseMessage);
         setDurationDays(cfg.durationDays);
-        setPlans(cfg.plans.length > 0 ? cfg.plans : DEFAULT_PLAN_TEMPLATES);
+        setPlans(cfg.plans);
         setManualConfigMeta({
           isConfiguredInFirestore: cfg.isConfiguredInFirestore,
           updatedAt: cfg.updatedAt,
@@ -115,7 +112,8 @@ export const SettingsPage: React.FC = () => {
         planId: `plan_${nextCap}_captains`,
         planName: `باقة ${nextCap} كابتن`,
         maxCaptains: nextCap,
-        price: nextCap * 200,
+        price: 0,
+        durationDays: durationDays || 30,
         isActive: true,
       },
     ]);
@@ -148,8 +146,25 @@ export const SettingsPage: React.FC = () => {
     }
 
     if (!Number.isInteger(durationDays) || durationDays < 1 || durationDays > 365) {
-      showError('مدة الاشتراك يجب أن تكون بين 1 و 365 يوماً.');
+      showError('المدة الافتراضية للاشتراك يجب أن تكون بين 1 و 365 يوماً.');
       return;
+    }
+
+    if (plans.length === 0) {
+      showError('يرجى إضافة باقة اشتراك واحدة على الأقل مع تحديد سعرها ومدتها.');
+      return;
+    }
+
+    for (const p of plans) {
+      if (!Number.isFinite(p.price) || p.price <= 0) {
+        showError(`يرجى إدخال سعر صحيح أكبر من صفر للباقة "${p.planName || p.planId}".`);
+        return;
+      }
+      const pDur = Number(p.durationDays || durationDays);
+      if (!Number.isInteger(pDur) || pDur < 1 || pDur > 365) {
+        showError(`مدة الباقة "${p.planName || p.planId}" يجب أن تكون بين 1 و 365 يوماً.`);
+        return;
+      }
     }
 
     setSavingManualConfig(true);
@@ -165,6 +180,7 @@ export const SettingsPage: React.FC = () => {
           planName: p.planName.trim() || `باقة ${p.maxCaptains} كابتن`,
           maxCaptains: Number(p.maxCaptains) || 1,
           price: Number(p.price) || 0,
+          durationDays: Number(p.durationDays || durationDays) || durationDays,
           isActive: p.isActive !== false,
         })),
       });
@@ -409,96 +425,124 @@ export const SettingsPage: React.FC = () => {
               </div>
 
               <div className="overflow-x-auto rounded-2xl border border-zinc-800 bg-[#0a0c12]">
-                <table className="w-full text-right text-xs min-w-[640px]">
+                <table className="w-full text-right text-xs min-w-[740px]">
                   <thead>
                     <tr className="border-b border-zinc-800 text-[11px] text-zinc-400 bg-[#0d1018]">
                       <th className="py-3 px-3">معرّف الباقة (Plan ID)</th>
                       <th className="py-3 px-3">اسم الباقة</th>
                       <th className="py-3 px-3">عدد الكباتن</th>
                       <th className="py-3 px-3">السعر الرسمي (ج.م)</th>
+                      <th className="py-3 px-3">المدة (أيام)</th>
                       <th className="py-3 px-3 text-center">الحالة</th>
                       {isMasterAdmin && <th className="py-3 px-3 text-center">حذف</th>}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-zinc-800/70">
-                    {plans.map((plan, idx) => (
-                      <tr key={`${plan.planId}-${idx}`}>
-                        <td className="py-2.5 px-3">
-                          <input
-                            type="text"
-                            dir="ltr"
-                            value={plan.planId}
-                            onChange={(e) => handlePlanChange(idx, 'planId', e.target.value)}
-                            disabled={!isMasterAdmin || savingManualConfig}
-                            className="w-36 bg-[#11141c] border border-zinc-800 rounded-lg px-2.5 py-1.5 text-zinc-300 font-mono text-[11px] focus:outline-none focus:border-amber-500 disabled:opacity-60"
-                          />
+                    {plans.length === 0 ? (
+                      <tr>
+                        <td
+                          colSpan={isMasterAdmin ? 7 : 6}
+                          className="py-8 px-4 text-center text-zinc-400"
+                        >
+                          لا توجد باقات محفوظة في Firestore بعد. اضغط على «إضافة باقة» لإدخال الباقات والأسعار والمدد الرسمية.
                         </td>
-                        <td className="py-2.5 px-3">
-                          <input
-                            type="text"
-                            value={plan.planName}
-                            onChange={(e) => handlePlanChange(idx, 'planName', e.target.value)}
-                            disabled={!isMasterAdmin || savingManualConfig}
-                            className="w-full min-w-[140px] bg-[#11141c] border border-zinc-800 rounded-lg px-2.5 py-1.5 text-white font-bold focus:outline-none focus:border-amber-500 disabled:opacity-60"
-                          />
-                        </td>
-                        <td className="py-2.5 px-3">
-                          <input
-                            type="number"
-                            min={1}
-                            max={100}
-                            value={plan.maxCaptains}
-                            onChange={(e) =>
-                              handlePlanChange(idx, 'maxCaptains', Number(e.target.value))
-                            }
-                            disabled={!isMasterAdmin || savingManualConfig}
-                            className="w-20 bg-[#11141c] border border-zinc-800 rounded-lg px-2.5 py-1.5 text-white font-mono font-bold tabular-nums focus:outline-none focus:border-amber-500 disabled:opacity-60"
-                          />
-                        </td>
-                        <td className="py-2.5 px-3">
-                          <div className="flex items-center gap-1.5">
+                      </tr>
+                    ) : (
+                      plans.map((plan, idx) => (
+                        <tr key={`${plan.planId}-${idx}`}>
+                          <td className="py-2.5 px-3">
+                            <input
+                              type="text"
+                              dir="ltr"
+                              value={plan.planId}
+                              onChange={(e) => handlePlanChange(idx, 'planId', e.target.value)}
+                              disabled={!isMasterAdmin || savingManualConfig}
+                              className="w-36 bg-[#11141c] border border-zinc-800 rounded-lg px-2.5 py-1.5 text-zinc-300 font-mono text-[11px] focus:outline-none focus:border-amber-500 disabled:opacity-60"
+                            />
+                          </td>
+                          <td className="py-2.5 px-3">
+                            <input
+                              type="text"
+                              value={plan.planName}
+                              onChange={(e) => handlePlanChange(idx, 'planName', e.target.value)}
+                              disabled={!isMasterAdmin || savingManualConfig}
+                              className="w-full min-w-[140px] bg-[#11141c] border border-zinc-800 rounded-lg px-2.5 py-1.5 text-white font-bold focus:outline-none focus:border-amber-500 disabled:opacity-60"
+                            />
+                          </td>
+                          <td className="py-2.5 px-3">
                             <input
                               type="number"
                               min={1}
-                              value={plan.price}
+                              max={100}
+                              value={plan.maxCaptains}
                               onChange={(e) =>
-                                handlePlanChange(idx, 'price', Number(e.target.value))
+                                handlePlanChange(idx, 'maxCaptains', Number(e.target.value))
                               }
                               disabled={!isMasterAdmin || savingManualConfig}
-                              className="w-24 bg-[#11141c] border border-zinc-800 rounded-lg px-2.5 py-1.5 text-emerald-400 font-mono font-black tabular-nums focus:outline-none focus:border-amber-500 disabled:opacity-60"
+                              className="w-20 bg-[#11141c] border border-zinc-800 rounded-lg px-2.5 py-1.5 text-white font-mono font-bold tabular-nums focus:outline-none focus:border-amber-500 disabled:opacity-60"
                             />
-                            <span className="text-zinc-500">ج.م</span>
-                          </div>
-                        </td>
-                        <td className="py-2.5 px-3 text-center">
-                          <button
-                            type="button"
-                            disabled={!isMasterAdmin || savingManualConfig}
-                            onClick={() => handlePlanChange(idx, 'isActive', !plan.isActive)}
-                            className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border transition-colors disabled:opacity-60 ${
-                              plan.isActive
-                                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
-                                : 'bg-zinc-800 border-zinc-700 text-zinc-400'
-                            }`}
-                          >
-                            {plan.isActive ? 'نشطة' : 'معطلة'}
-                          </button>
-                        </td>
-                        {isMasterAdmin && (
+                          </td>
+                          <td className="py-2.5 px-3">
+                            <div className="flex items-center gap-1.5">
+                              <input
+                                type="number"
+                                min={1}
+                                value={plan.price}
+                                onChange={(e) =>
+                                  handlePlanChange(idx, 'price', Number(e.target.value))
+                                }
+                                disabled={!isMasterAdmin || savingManualConfig}
+                                className="w-24 bg-[#11141c] border border-zinc-800 rounded-lg px-2.5 py-1.5 text-emerald-400 font-mono font-black tabular-nums focus:outline-none focus:border-amber-500 disabled:opacity-60"
+                              />
+                              <span className="text-zinc-500">ج.م</span>
+                            </div>
+                          </td>
+                          <td className="py-2.5 px-3">
+                            <div className="flex items-center gap-1.5">
+                              <input
+                                type="number"
+                                min={1}
+                                max={365}
+                                value={plan.durationDays || durationDays}
+                                onChange={(e) =>
+                                  handlePlanChange(idx, 'durationDays', Number(e.target.value))
+                                }
+                                disabled={!isMasterAdmin || savingManualConfig}
+                                className="w-20 bg-[#11141c] border border-zinc-800 rounded-lg px-2.5 py-1.5 text-amber-300 font-mono font-bold tabular-nums focus:outline-none focus:border-amber-500 disabled:opacity-60"
+                              />
+                              <span className="text-zinc-500">يوم</span>
+                            </div>
+                          </td>
                           <td className="py-2.5 px-3 text-center">
                             <button
                               type="button"
-                              onClick={() => handleRemovePlan(idx)}
-                              disabled={savingManualConfig || plans.length <= 1}
-                              className="p-1.5 rounded-lg text-zinc-500 hover:text-rose-400 hover:bg-rose-500/10 transition-colors disabled:opacity-30"
-                              title="حذف الباقة"
+                              disabled={!isMasterAdmin || savingManualConfig}
+                              onClick={() => handlePlanChange(idx, 'isActive', !plan.isActive)}
+                              className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border transition-colors disabled:opacity-60 ${
+                                plan.isActive
+                                  ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
+                                  : 'bg-zinc-800 border-zinc-700 text-zinc-400'
+                              }`}
                             >
-                              <Trash2 className="w-4 h-4" />
+                              {plan.isActive ? 'نشطة' : 'معطلة'}
                             </button>
                           </td>
-                        )}
-                      </tr>
-                    ))}
+                          {isMasterAdmin && (
+                            <td className="py-2.5 px-3 text-center">
+                              <button
+                                type="button"
+                                onClick={() => handleRemovePlan(idx)}
+                                disabled={savingManualConfig || plans.length <= 1}
+                                className="p-1.5 rounded-lg text-zinc-500 hover:text-rose-400 hover:bg-rose-500/10 transition-colors disabled:opacity-30"
+                                title="حذف الباقة"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </td>
+                          )}
+                        </tr>
+                      ))
+                    )}
                   </tbody>
                 </table>
               </div>

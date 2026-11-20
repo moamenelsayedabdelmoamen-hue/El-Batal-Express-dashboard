@@ -16,6 +16,7 @@ import {
 } from '../firebase/config';
 import { COLLECTIONS } from './collections';
 import {
+  ManualSubscriptionPreviousReceipt,
   ManualSubscriptionRequest,
   ManualSubscriptionRequestStatus,
   ManualSubscriptionReviewEntry,
@@ -24,13 +25,6 @@ import {
 } from '../types';
 
 export const MANUAL_SUBSCRIPTION_SETTINGS_DOC_ID = 'manual_subscription_config';
-
-export const DEFAULT_PLAN_TEMPLATES: OfficialSubscriptionPlanConfig[] = [
-  { planId: 'plan_2_captains', planName: 'باقة 2 كابتن', maxCaptains: 2, price: 400, isActive: true },
-  { planId: 'plan_4_captains', planName: 'باقة 4 كابتن', maxCaptains: 4, price: 800, isActive: true },
-  { planId: 'plan_6_captains', planName: 'باقة 6 كابتن', maxCaptains: 6, price: 1200, isActive: true },
-  { planId: 'plan_8_captains', planName: 'باقة 8 كابتن', maxCaptains: 8, price: 1600, isActive: true },
-];
 
 function toTimestampMs(val: any): number {
   if (!val) return 0;
@@ -70,11 +64,33 @@ function normalizeRequestStatus(raw: unknown): ManualSubscriptionRequestStatus {
   const s = String(raw || '').trim().toLowerCase();
   if (s === 'approved' || s === 'accepted') return 'approved';
   if (s === 'rejected' || s === 'declined') return 'rejected';
-  if (s === 'resubmission_requested' || s === 'resubmit' || s === 'needs_resubmission') {
-    return 'resubmission_requested';
+  if (
+    s === 'resubmission_required' ||
+    s === 'resubmission_requested' ||
+    s === 'resubmit' ||
+    s === 'needs_resubmission'
+  ) {
+    return 'resubmission_required';
   }
   if (s === 'under_review' || s === 'in_review') return 'under_review';
-  return 'pending';
+  return 'pending_review';
+}
+
+function normalizePreviousReceipts(raw: unknown): ManualSubscriptionPreviousReceipt[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((entry) => entry && typeof entry === 'object')
+    .map((entry: any) => ({
+      receiptImagePath: String(entry.receiptImagePath || entry.receiptPath || ''),
+      receiptImageUrl: String(entry.receiptImageUrl || entry.receiptUrl || ''),
+      senderPhone: String(entry.senderPhone || ''),
+      transactionReference: String(entry.transactionReference || ''),
+      flaggedReason: entry.flaggedReason ? String(entry.flaggedReason) : undefined,
+      flaggedAtIso:
+        toIsoString(entry.flaggedAtIso || entry.flaggedAtMs || entry.flaggedAt) || undefined,
+      replacedAtIso:
+        toIsoString(entry.replacedAtIso || entry.replacedAtMs || entry.replacedAt) || undefined,
+    }));
 }
 
 function normalizeReviewHistory(raw: unknown): ManualSubscriptionReviewEntry[] {
@@ -145,12 +161,20 @@ export function mapDocToManualSubscriptionRequest(
     rejectedByEmail: data.rejectedByEmail ? String(data.rejectedByEmail) : undefined,
     rejectedAt: toIsoString(data.rejectedAt || data.rejectedAtMs) || undefined,
     rejectionReason: data.rejectionReason ? String(data.rejectionReason) : undefined,
-    resubmissionNote: data.resubmissionNote ? String(data.resubmissionNote) : undefined,
+    resubmissionReason:
+      data.resubmissionReason || data.resubmissionNote
+        ? String(data.resubmissionReason || data.resubmissionNote)
+        : undefined,
+    resubmissionNote:
+      data.resubmissionNote || data.resubmissionReason
+        ? String(data.resubmissionNote || data.resubmissionReason)
+        : undefined,
     adminNote: data.adminNote ? String(data.adminNote) : undefined,
     merchantNote: data.merchantNote ? String(data.merchantNote) : undefined,
     paymentDocId: data.paymentDocId ? String(data.paymentDocId) : undefined,
     subscriptionStartDate: data.subscriptionStartDate ? String(data.subscriptionStartDate) : undefined,
     subscriptionEndDate: data.subscriptionEndDate ? String(data.subscriptionEndDate) : undefined,
+    previousReceipts: normalizePreviousReceipts(data.previousReceipts),
     reviewHistory: normalizeReviewHistory(data.reviewHistory),
     raw: data,
   };
@@ -288,25 +312,25 @@ export const ManualSubscriptionService = {
   },
 
   /**
-   * Calls Cloud Function `requestManualSubscriptionResubmission` (Server-Authoritative ONLY).
+   * Calls Cloud Function `requestSubscriptionReceiptResubmission` (Server-Authoritative ONLY).
    */
-  async requestResubmission(requestId: string, note: string): Promise<{
+  async requestResubmission(requestId: string, reason: string): Promise<{
     success: boolean;
     message: string;
   }> {
     if (!isFirebaseConfigured || !functions) {
       throw new Error('خدمة Firebase Cloud Functions غير مهيأة حالياً.');
     }
-    const cleanNote = note.trim();
-    if (cleanNote.length < 3) {
-      throw new Error('يرجى كتابة ملاحظة توضح للتاجر المطلوب إعادة رفعه.');
+    const cleanReason = reason.trim();
+    if (cleanReason.length < 3) {
+      throw new Error('يرجى كتابة سبب/ملاحظة توضح للتاجر المطلوب إعادة رفعه.');
     }
     try {
       const callable = httpsCallable<
-        { requestId: string; note: string },
+        { requestId: string; reason: string; note: string },
         { success: boolean; message: string }
-      >(functions, 'requestManualSubscriptionResubmission');
-      const res = await callable({ requestId, note: cleanNote });
+      >(functions, 'requestSubscriptionReceiptResubmission');
+      const res = await callable({ requestId, reason: cleanReason, note: cleanReason });
       return res.data;
     } catch (error: any) {
       throw new Error(
@@ -320,7 +344,7 @@ export const ManualSubscriptionService = {
 
   /**
    * Reads Vodafone Cash & official pricing configuration from Firestore `settings/manual_subscription_config`.
-   * Never hardcodes a wallet number.
+   * Never hardcodes wallet numbers or package prices.
    */
   async getSettings(): Promise<ManualSubscriptionSettings> {
     const emptyDefault: ManualSubscriptionSettings = {
@@ -329,7 +353,7 @@ export const ManualSubscriptionService = {
       isAcceptingSubscriptions: false,
       pauseMessage: '',
       durationDays: 30,
-      plans: DEFAULT_PLAN_TEMPLATES,
+      plans: [],
       isConfiguredInFirestore: false,
     };
 
@@ -342,15 +366,18 @@ export const ManualSubscriptionService = {
         return emptyDefault;
       }
       const d = snap.data() || {};
-      const rawPlans = Array.isArray(d.plans) && d.plans.length > 0 ? d.plans : DEFAULT_PLAN_TEMPLATES;
+      const defaultDuration = Number(d.durationDays || 30) || 30;
+      const rawPlans = Array.isArray(d.plans) ? d.plans : [];
       const plans: OfficialSubscriptionPlanConfig[] = rawPlans.map((p: any, idx: number) => {
-        const maxCaptains = Number(p.maxCaptains ?? p.captainsCount ?? (idx + 1) * 2) || 2;
-        const price = Number(p.price ?? maxCaptains * 200) || 400;
+        const maxCaptains = Number(p.maxCaptains ?? p.captainsCount ?? (idx + 1) * 2) || 1;
+        const price = Number(p.price ?? 0) || 0;
+        const planDuration = Number(p.durationDays ?? defaultDuration) || defaultDuration;
         return {
           planId: String(p.planId || `plan_${maxCaptains}_captains`),
           planName: String(p.planName || p.label || `باقة ${maxCaptains} كابتن`),
           maxCaptains,
           price,
+          durationDays: planDuration,
           isActive: p.isActive !== false,
         };
       });
@@ -360,7 +387,7 @@ export const ManualSubscriptionService = {
         walletHolderName: String(d.walletHolderName || ''),
         isAcceptingSubscriptions: d.isAcceptingSubscriptions !== false,
         pauseMessage: String(d.pauseMessage || ''),
-        durationDays: Number(d.durationDays || 30) || 30,
+        durationDays: defaultDuration,
         plans,
         updatedAt: toIsoString(d.updatedAt) || undefined,
         updatedBy: d.updatedBy ? String(d.updatedBy) : undefined,

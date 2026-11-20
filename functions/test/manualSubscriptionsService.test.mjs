@@ -249,7 +249,7 @@ const MASTER_ADMIN_AUTH = {
 const MERCHANT_AUTH = {
   uid: "merchant_1",
   token: {
-    email: "merchant1@store.com",
+    email: "alamal@merchant.com",
     email_verified: true,
     role: "merchant",
   },
@@ -260,6 +260,7 @@ function createHarness(initialNowMs = Date.UTC(2026, 10, 20, 10, 0, 0)) {
   let nowMs = initialNowMs;
   const merchantPushes = [];
   const adminPushes = [];
+  const storageFiles = new Set();
 
   const effects = {
     now: () => nowMs,
@@ -268,6 +269,9 @@ function createHarness(initialNowMs = Date.UTC(2026, 10, 20, 10, 0, 0)) {
       deleteField: () => ({__sentinel: "deleteField"}),
       increment: (operand) => ({__sentinel: "increment", operand}),
       arrayUnion: (...elements) => ({__sentinel: "arrayUnion", elements}),
+    },
+    verifyStorageReceiptExists: async (storagePath) => {
+      return storageFiles.has(storagePath);
     },
     sendMerchantSubscriptionNotification: async (payload) => {
       merchantPushes.push(payload);
@@ -301,9 +305,30 @@ function createHarness(initialNowMs = Date.UTC(2026, 10, 20, 10, 0, 0)) {
     pauseMessage: "",
     durationDays: 30,
     plans: [
-      {planId: "plan_2_captains", planName: "باقة 2 كابتن", maxCaptains: 2, price: 400, isActive: true},
-      {planId: "plan_4_captains", planName: "باقة 4 كابتن", maxCaptains: 4, price: 800, isActive: true},
-      {planId: "plan_6_captains", planName: "باقة 6 كابتن", maxCaptains: 6, price: 1200, isActive: true},
+      {
+        planId: "plan_2_captains",
+        planName: "باقة 2 كابتن",
+        maxCaptains: 2,
+        price: 400,
+        durationDays: 30,
+        isActive: true,
+      },
+      {
+        planId: "plan_4_captains",
+        planName: "باقة 4 كابتن",
+        maxCaptains: 4,
+        price: 800,
+        durationDays: 30,
+        isActive: true,
+      },
+      {
+        planId: "plan_6_captains",
+        planName: "باقة 6 كابتن",
+        maxCaptains: 6,
+        price: 1200,
+        durationDays: 45,
+        isActive: true,
+      },
     ],
   });
 
@@ -313,18 +338,14 @@ function createHarness(initialNowMs = Date.UTC(2026, 10, 20, 10, 0, 0)) {
     service,
     merchantPushes,
     adminPushes,
+    storageFiles,
     advanceMs: (delta) => {
       nowMs += delta;
     },
   };
 }
 
-function seedMerchantAndRequest(db, {
-  merchantId = "merchant_1",
-  requestId = "req_1001",
-  requestOverrides = {},
-  merchantOverrides = {},
-} = {}) {
+function seedMerchant(db, {merchantId = "merchant_1", merchantOverrides = {}} = {}) {
   db.seed(`merchants/${merchantId}`, {
     uid: merchantId,
     accountType: "merchant",
@@ -338,6 +359,30 @@ function seedMerchantAndRequest(db, {
     subscriptionVersion: 1,
     ...merchantOverrides,
   });
+}
+
+function seedMerchantAndRequest(
+  db,
+  storageFiles,
+  {
+    merchantId = "merchant_1",
+    requestId = "req_1001",
+    requestOverrides = {},
+    merchantOverrides = {},
+    uploadReceiptToStorage = true,
+  } = {}
+) {
+  seedMerchant(db, {merchantId, merchantOverrides});
+
+  const defaultPath = `subscription_receipts/${merchantId}/${requestId}.jpg`;
+  const receiptImagePath =
+    requestOverrides.receiptImagePath !== undefined
+      ? requestOverrides.receiptImagePath
+      : defaultPath;
+
+  if (uploadReceiptToStorage && receiptImagePath) {
+    storageFiles.add(receiptImagePath);
+  }
 
   db.seed(`manual_subscription_requests/${requestId}`, {
     requestNumber: "SUB-1001",
@@ -353,23 +398,215 @@ function seedMerchantAndRequest(db, {
     senderPhone: "01022223333",
     receiverWalletNumber: "01099887766",
     transactionReference: "VF-TX-998811",
-    receiptImagePath: `subscription_receipts/${merchantId}/${requestId}.jpg`,
-    status: "pending",
+    receiptImagePath,
+    status: "pending_review",
     paymentStatus: "pending_verification",
+    previousReceipts: [],
+    reviewHistory: [],
     createdAt: Date.UTC(2026, 10, 20, 9, 45, 0),
     ...requestOverrides,
   });
 }
 
-describe("Manual Vodafone Cash Subscriptions Server Service", () => {
-  it("1. New subscription request trigger creates admin notification & dispatches admin alert", async () => {
+describe("Manual Vodafone Cash Subscriptions Server Service (Full 14-Scenario Suite)", () => {
+  it("1. End-to-End Flow: merchant uploads receipt -> submitManualSubscriptionRequest -> admin approves -> subscription & merchant active + single payment", async () => {
+    const now = Date.UTC(2026, 10, 20, 10, 0, 0);
+    const {db, service, storageFiles, merchantPushes, adminPushes} = createHarness(now);
+    seedMerchant(db, {merchantId: "merchant_1"});
+
+    const receiptPath = "subscription_receipts/merchant_1/req_e2e_1.jpg";
+    storageFiles.add(receiptPath);
+
+    // Step 1-3: Merchant submits manual Vodafone Cash request via server Cloud Function
+    const submitted = await service.submitManualSubscriptionRequest(MERCHANT_AUTH, {
+      requestId: "req_e2e_1",
+      planId: "plan_6_captains",
+      senderPhone: "01055556666",
+      transactionReference: "VF-E2E-778899",
+      receiptImagePath: receiptPath,
+      merchantNote: "تم التحويل من محفظتي الشخصية",
+    });
+
+    assert.equal(submitted.success, true);
+    assert.equal(submitted.requestId, "req_e2e_1");
+    assert.equal(submitted.status, "pending_review");
+    assert.equal(submitted.paymentStatus, "pending_verification");
+    assert.equal(submitted.amount, 1200);
+    assert.equal(submitted.maxCaptains, 6);
+    assert.equal(submitted.durationDays, 45); // Per-plan durationDays!
+    assert.equal(submitted.receiverWalletNumber, "01099887766");
+    assert.equal(submitted.isResubmission, false);
+
+    // MUST NOT activate subscription or create payment on submission
+    assert.equal(db.getDocData("subscriptions/merchant_1"), undefined);
+    assert.equal(db.getDocData("merchants/merchant_1").isSubscribed, false);
+    assert.equal(db.listCollection("payments").length, 0);
+
+    // Trigger fires admin notification
+    const createdDoc = db.getDocData("manual_subscription_requests/req_e2e_1");
+    await service.handleNewManualSubscriptionRequest("req_e2e_1", createdDoc);
+    assert.equal(adminPushes.length, 1);
+
+    // Step 4-6: Admin approves via approveManualSubscriptionRequest
+    const approved = await service.approveManualSubscriptionRequest(ADMIN_AUTH, {
+      requestId: "req_e2e_1",
+      adminNote: "مطابق للتحويل الوارد",
+    });
+
+    assert.equal(approved.success, true);
+    assert.equal(approved.status, "approved");
+    assert.equal(approved.paymentStatus, "paid");
+    assert.equal(approved.maxCaptains, 6);
+    assert.equal(approved.amount, 1200);
+    assert.equal(approved.startDate, "2026-11-20");
+    assert.equal(approved.endDate, "2027-01-04"); // 45 days from 2026-11-20
+
+    // Verify subscriptions/{merchantId}, merchants/{merchantId}, and single payment
+    const subDoc = db.getDocData("subscriptions/merchant_1");
+    assert.equal(subDoc.status, "active");
+    assert.equal(subDoc.isActive, true);
+    assert.equal(subDoc.isSubscribed, true);
+    assert.equal(subDoc.maxCaptains, 6);
+    assert.equal(subDoc.captainLimit, 6);
+    assert.equal(subDoc.durationDays, 45);
+    assert.equal(subDoc.endDate, "2027-01-04");
+
+    const merchantDoc = db.getDocData("merchants/merchant_1");
+    assert.equal(merchantDoc.subscriptionStatus, "active");
+    assert.equal(merchantDoc.isSubscribed, true);
+    assert.equal(merchantDoc.maxCaptains, 6);
+    assert.equal(merchantDoc.captainLimit, 6);
+
+    const payments = db.listCollection("payments");
+    assert.equal(payments.length, 1);
+    assert.equal(payments[0].id, "manual_sub_req_e2e_1");
+    assert.equal(payments[0].data.amount, 1200);
+    assert.equal(payments[0].data.status, "success");
+    assert.equal(payments[0].data.paymentStatus, "paid");
+    assert.equal(payments[0].data.type, "merchant_subscription");
+    assert.equal(payments[0].data.source, "manual_vodafone_cash");
+    assert.equal(payments[0].data.paymentMethod, "فودافون كاش (Vodafone Cash)");
+    assert.equal(payments[0].data.billingMonth, "2026-11");
+    assert.equal(payments[0].data.createdAtMs, now);
+    assert.equal(payments[0].data.paidAtMs, now);
+    assert.equal(payments[0].data.planName, "باقة 6 كابتن");
+    assert.equal(payments[0].data.maxCaptains, 6);
+    assert.equal(payments[0].data.senderPhone, "01055556666");
+    assert.equal(payments[0].data.receiverWalletNumber, "01099887766");
+
+    assert.equal(merchantPushes.length, 1);
+    assert.equal(merchantPushes[0].eventType, "subscription_approved");
+  });
+
+  it("2. submitManualSubscriptionRequest blocks unauthenticated, forged merchantId, price tampering, missing Storage file, and duplicate requests", async () => {
+    const {db, service, storageFiles} = createHarness();
+    seedMerchant(db, {merchantId: "merchant_1"});
+
+    const receiptPath = "subscription_receipts/merchant_1/req_sec_1.jpg";
+
+    // Unauthenticated denied
+    await assert.rejects(
+      () => service.submitManualSubscriptionRequest(undefined, {
+        planId: "plan_4_captains",
+        senderPhone: "01022223333",
+        receiptImagePath: receiptPath,
+      }),
+      (err) => err instanceof DomainHttpsError && err.code === "unauthenticated"
+    );
+
+    // Forged merchantId in payload denied
+    storageFiles.add(receiptPath);
+    await assert.rejects(
+      () => service.submitManualSubscriptionRequest(MERCHANT_AUTH, {
+        merchantId: "merchant_2",
+        planId: "plan_4_captains",
+        senderPhone: "01022223333",
+        receiptImagePath: receiptPath,
+      }),
+      (err) => err instanceof DomainHttpsError && err.code === "permission-denied"
+    );
+
+    // Missing Storage file denied
+    await assert.rejects(
+      () => service.submitManualSubscriptionRequest(MERCHANT_AUTH, {
+        planId: "plan_4_captains",
+        senderPhone: "01022223333",
+        receiptImagePath: "subscription_receipts/merchant_1/nonexistent.jpg",
+      }),
+      (err) => err instanceof DomainHttpsError && err.code === "failed-precondition"
+    );
+
+    // Cross-merchant receipt path denied
+    await assert.rejects(
+      () => service.submitManualSubscriptionRequest(MERCHANT_AUTH, {
+        planId: "plan_4_captains",
+        senderPhone: "01022223333",
+        receiptImagePath: "subscription_receipts/merchant_2/stolen.jpg",
+      }),
+      (err) => err instanceof DomainHttpsError && err.code === "permission-denied"
+    );
+
+    // Price tampering denied (client attempts to pay 50 EGP for an 800 EGP plan)
+    await assert.rejects(
+      () => service.submitManualSubscriptionRequest(MERCHANT_AUTH, {
+        planId: "plan_4_captains",
+        amount: 50,
+        senderPhone: "01022223333",
+        receiptImagePath: receiptPath,
+      }),
+      (err) => err instanceof DomainHttpsError && err.code === "invalid-argument"
+    );
+
+    // First valid submission succeeds
+    const ok = await service.submitManualSubscriptionRequest(MERCHANT_AUTH, {
+      requestId: "req_sec_1",
+      planId: "plan_4_captains",
+      senderPhone: "01022223333",
+      transactionReference: "VF-DUP-CHECK-1",
+      receiptImagePath: receiptPath,
+    });
+    assert.equal(ok.success, true);
+
+    // Duplicate pending request by same merchant denied
+    const receiptPath2 = "subscription_receipts/merchant_1/req_sec_2.jpg";
+    storageFiles.add(receiptPath2);
+    await assert.rejects(
+      () => service.submitManualSubscriptionRequest(MERCHANT_AUTH, {
+        requestId: "req_sec_2",
+        planId: "plan_4_captains",
+        senderPhone: "01022223333",
+        receiptImagePath: receiptPath2,
+      }),
+      (err) => err instanceof DomainHttpsError && err.code === "already-exists"
+    );
+
+    // Duplicate transactionReference by another merchant denied
+    seedMerchant(db, {merchantId: "merchant_2"});
+    const m2Receipt = "subscription_receipts/merchant_2/req_m2.jpg";
+    storageFiles.add(m2Receipt);
+    await assert.rejects(
+      () => service.submitManualSubscriptionRequest(
+        {uid: "merchant_2", token: {email: "m2@store.com", role: "merchant"}},
+        {
+          requestId: "req_m2_dup_ref",
+          planId: "plan_4_captains",
+          senderPhone: "01033334444",
+          transactionReference: "VF-DUP-CHECK-1",
+          receiptImagePath: m2Receipt,
+        }
+      ),
+      (err) => err instanceof DomainHttpsError && err.code === "already-exists"
+    );
+  });
+
+  it("3. New subscription request trigger creates admin notification & dispatches admin alert", async () => {
     const {db, service, adminPushes} = createHarness();
     const reqData = {
       merchantId: "merchant_1",
       merchantName: "مطعم الأمل",
       planName: "باقة 4 كابتن",
       amount: 800,
-      status: "pending",
+      status: "pending_review",
     };
 
     await service.handleNewManualSubscriptionRequest("req_new_1", reqData);
@@ -387,7 +624,7 @@ describe("Manual Vodafone Cash Subscriptions Server Service", () => {
     assert.equal(adminPushes[0].merchantName, "مطعم الأمل");
   });
 
-  it("2. Receipt ownership validator blocks missing, path-traversal, and cross-merchant receipts", async () => {
+  it("4. Approval blocks missing Storage receipt, cross-merchant receipt path, and tampered request price", async () => {
     assert.equal(
       isSafeMerchantReceipt("merchant_1", "subscription_receipts/merchant_1/r1.jpg", ""),
       true
@@ -396,10 +633,7 @@ describe("Manual Vodafone Cash Subscriptions Server Service", () => {
       isSafeMerchantReceipt("merchant_1", "manual_subscription_receipts/merchant_1/r2.png", ""),
       true
     );
-    assert.equal(
-      isSafeMerchantReceipt("merchant_1", "", ""),
-      false
-    );
+    assert.equal(isSafeMerchantReceipt("merchant_1", "", ""), false);
     assert.equal(
       isSafeMerchantReceipt("merchant_1", "subscription_receipts/merchant_2/stolen.jpg", ""),
       false
@@ -409,110 +643,50 @@ describe("Manual Vodafone Cash Subscriptions Server Service", () => {
       false
     );
 
-    const {db, service} = createHarness();
-    seedMerchantAndRequest(db, {
+    const {db, service, storageFiles} = createHarness();
+
+    // Case A: cross-merchant path
+    seedMerchantAndRequest(db, storageFiles, {
       requestId: "req_bad_receipt",
       requestOverrides: {
         receiptImagePath: "subscription_receipts/other_merchant/forged.jpg",
         receiptImageUrl: "",
       },
     });
-
     await assert.rejects(
       () => service.approveManualSubscriptionRequest(ADMIN_AUTH, {requestId: "req_bad_receipt"}),
       (err) => err instanceof DomainHttpsError && err.code === "failed-precondition"
     );
 
-    // Ensure no payment or subscription activation occurred
-    assert.equal(db.getDocData("payments/manual_sub_req_bad_receipt"), undefined);
+    // Case B: file does NOT exist in Storage
+    seedMerchantAndRequest(db, storageFiles, {
+      requestId: "req_missing_storage",
+      uploadReceiptToStorage: false,
+    });
+    await assert.rejects(
+      () => service.approveManualSubscriptionRequest(ADMIN_AUTH, {requestId: "req_missing_storage"}),
+      (err) => err instanceof DomainHttpsError && err.code === "failed-precondition"
+    );
+
+    // Case C: tampered amount inside request doc (says 100 EGP instead of official 800 EGP)
+    seedMerchantAndRequest(db, storageFiles, {
+      requestId: "req_tampered_price",
+      requestOverrides: {amount: 100},
+    });
+    await assert.rejects(
+      () => service.approveManualSubscriptionRequest(ADMIN_AUTH, {requestId: "req_tampered_price"}),
+      (err) => err instanceof DomainHttpsError && err.code === "failed-precondition"
+    );
+
+    // Ensure zero payments and zero subscriptions were created
+    assert.equal(db.listCollection("payments").length, 0);
     assert.equal(db.getDocData("subscriptions/merchant_1"), undefined);
   });
 
-  it("3. Approval atomically updates request, subscriptions, merchants, creates SINGLE payment, audit log & notifies merchant", async () => {
-    const now = Date.UTC(2026, 10, 20, 10, 0, 0);
-    const {db, service, merchantPushes} = createHarness(now);
-    seedMerchantAndRequest(db, {requestId: "req_approve_1"});
-
-    const res = await service.approveManualSubscriptionRequest(ADMIN_AUTH, {
-      requestId: "req_approve_1",
-      adminNote: "تمت مطابقة الحوالة بنجاح",
-    });
-
-    assert.equal(res.success, true);
-    assert.equal(res.status, "approved");
-    assert.equal(res.paymentStatus, "paid");
-    assert.equal(res.paymentDocId, "manual_sub_req_approve_1");
-    assert.equal(res.planId, "plan_4_captains");
-    assert.equal(res.planName, "باقة 4 كابتن");
-    assert.equal(res.maxCaptains, 4);
-    assert.equal(res.amount, 800);
-    assert.equal(res.startDate, "2026-11-20");
-    assert.equal(res.endDate, "2026-12-20");
-    assert.equal(res.subscriptionVersion, 2);
-
-    // 1. Request document updated
-    const reqDoc = db.getDocData("manual_subscription_requests/req_approve_1");
-    assert.equal(reqDoc.status, "approved");
-    assert.equal(reqDoc.paymentStatus, "paid");
-    assert.equal(reqDoc.approvedBy, "admin_1");
-    assert.equal(reqDoc.paymentDocId, "manual_sub_req_approve_1");
-    assert.equal(reqDoc.reviewHistory.length, 1);
-    assert.equal(reqDoc.reviewHistory[0].action, "approved");
-
-    // 2. subscriptions/{merchantId} activated
-    const subDoc = db.getDocData("subscriptions/merchant_1");
-    assert.equal(subDoc.status, "active");
-    assert.equal(subDoc.isActive, true);
-    assert.equal(subDoc.isSubscribed, true);
-    assert.equal(subDoc.paymentStatus, "paid");
-    assert.equal(subDoc.planId, "plan_4_captains");
-    assert.equal(subDoc.planName, "باقة 4 كابتن");
-    assert.equal(subDoc.maxCaptains, 4);
-    assert.equal(subDoc.captainLimit, 4);
-    assert.equal(subDoc.startDate, "2026-11-20");
-    assert.equal(subDoc.endDate, "2026-12-20");
-    assert.equal(subDoc.subscriptionVersion, 2);
-
-    // 3. merchants/{merchantId} synced for Merchant App compatibility
-    const merchantDoc = db.getDocData("merchants/merchant_1");
-    assert.equal(merchantDoc.subscriptionStatus, "active");
-    assert.equal(merchantDoc.isSubscribed, true);
-    assert.equal(merchantDoc.planId, "plan_4_captains");
-    assert.equal(merchantDoc.planName, "باقة 4 كابتن");
-    assert.equal(merchantDoc.maxCaptains, 4);
-    assert.equal(merchantDoc.captainLimit, 4);
-    assert.equal(merchantDoc.paymentStatus, "paid");
-    assert.equal(merchantDoc.subscriptionEndDate, "2026-12-20");
-    assert.equal(merchantDoc.subscriptionVersion, 2);
-
-    // 4. Exactly ONE financial payment record created
-    const payments = db.listCollection("payments");
-    assert.equal(payments.length, 1);
-    assert.equal(payments[0].id, "manual_sub_req_approve_1");
-    assert.equal(payments[0].data.amount, 800);
-    assert.equal(payments[0].data.status, "success");
-    assert.equal(payments[0].data.paymentStatus, "paid");
-    assert.equal(payments[0].data.transactionReference, "VF-TX-998811");
-
-    // 5. Audit log recorded in operation_logs
-    const opLog = db.getDocData("operation_logs/approve_manual_sub_req_approve_1");
-    assert.ok(opLog);
-    assert.equal(opLog.action, "approve_manual_subscription_request");
-    assert.equal(opLog.adminUid, "admin_1");
-
-    // 6. Merchant notification + FCM dispatched
-    const mNotif = db.getDocData("merchants/merchant_1/notifications/sub_approved_req_approve_1");
-    assert.ok(mNotif);
-    assert.equal(mNotif.type, "subscription_approved");
-    assert.equal(merchantPushes.length, 1);
-    assert.equal(merchantPushes[0].merchantId, "merchant_1");
-    assert.equal(merchantPushes[0].eventType, "subscription_approved");
-  });
-
-  it("4. Duplicate approval is strictly prevented (sequential AND concurrent) with ONLY ONE payment record", async () => {
-    const {db, service} = createHarness();
-    db.YieldOnRead = true; // Force concurrent transaction interleaving
-    seedMerchantAndRequest(db, {requestId: "req_race"});
+  it("5. Duplicate approval is strictly prevented (sequential AND concurrent) with ONLY ONE payment record", async () => {
+    const {db, service, storageFiles} = createHarness();
+    db.YieldOnRead = true;
+    seedMerchantAndRequest(db, storageFiles, {requestId: "req_race"});
 
     const results = await Promise.allSettled([
       service.approveManualSubscriptionRequest(ADMIN_AUTH, {requestId: "req_race"}),
@@ -538,9 +712,9 @@ describe("Manual Vodafone Cash Subscriptions Server Service", () => {
     assert.equal(payments[0].id, "manual_sub_req_race");
   });
 
-  it("5. Rejection requires reason, records audit & notifies merchant, does NOT activate subscription, and blocks later approval", async () => {
-    const {db, service, merchantPushes} = createHarness();
-    seedMerchantAndRequest(db, {requestId: "req_reject_1"});
+  it("6. Rejection requires reason, records audit & notifies merchant, does NOT activate subscription, and blocks later approval", async () => {
+    const {db, service, storageFiles, merchantPushes} = createHarness();
+    seedMerchantAndRequest(db, storageFiles, {requestId: "req_reject_1"});
 
     // Empty / too-short rejection reason rejected
     await assert.rejects(
@@ -583,30 +757,59 @@ describe("Manual Vodafone Cash Subscriptions Server Service", () => {
     );
   });
 
-  it("6. Request resubmission updates status without activating subscription, then allows approval after review", async () => {
-    const {db, service, merchantPushes, advanceMs} = createHarness();
-    seedMerchantAndRequest(db, {requestId: "req_resub_1"});
+  it("7. Resubmission flow: admin requests resubmission -> archives previous receipt -> merchant resubmits via Cloud Function -> admin approves cleanly", async () => {
+    const {db, service, storageFiles, merchantPushes, advanceMs} = createHarness();
+    seedMerchantAndRequest(db, storageFiles, {requestId: "req_resub_1"});
 
-    const resub = await service.requestManualSubscriptionResubmission(ADMIN_AUTH, {
+    const resub = await service.requestSubscriptionReceiptResubmission(ADMIN_AUTH, {
       requestId: "req_resub_1",
-      note: "يرجى تصوير رقم العملية المرجعي بشكل أوضح",
+      reason: "يرجى تصوير رقم العملية المرجعي بشكل أوضح",
     });
 
     assert.equal(resub.success, true);
-    assert.equal(resub.status, "resubmission_requested");
+    assert.equal(resub.status, "resubmission_required");
     assert.equal(db.getDocData("subscriptions/merchant_1"), undefined);
     assert.equal(db.listCollection("payments").length, 0);
     assert.equal(merchantPushes.length, 1);
     assert.equal(merchantPushes[0].eventType, "subscription_resubmission_requested");
 
-    // After merchant re-uploads clearer receipt, admin approves -> succeeds cleanly
+    const afterFlag = db.getDocData("manual_subscription_requests/req_resub_1");
+    assert.equal(afterFlag.status, "resubmission_required");
+    assert.equal(afterFlag.previousReceipts.length, 1);
+    assert.equal(
+      afterFlag.previousReceipts[0].receiptImagePath,
+      "subscription_receipts/merchant_1/req_resub_1.jpg"
+    );
+
+    // Merchant uploads a clearer receipt and resubmits via submitManualSubscriptionRequest
+    advanceMs(60_000);
+    const newReceiptPath = "subscription_receipts/merchant_1/req_resub_1_v2.jpg";
+    storageFiles.add(newReceiptPath);
+
+    const resubmitted = await service.submitManualSubscriptionRequest(MERCHANT_AUTH, {
+      requestId: "req_resub_1",
+      planId: "plan_4_captains",
+      senderPhone: "01022223333",
+      transactionReference: "VF-TX-998811",
+      receiptImagePath: newReceiptPath,
+      merchantNote: "تم رفع صورة واضحة كاملة",
+    });
+
+    assert.equal(resubmitted.success, true);
+    assert.equal(resubmitted.isResubmission, true);
+    assert.equal(resubmitted.status, "pending_review");
+
+    // Admin now approves cleanly
     advanceMs(60_000);
     const approved = await service.approveManualSubscriptionRequest(ADMIN_AUTH, {
       requestId: "req_resub_1",
       adminNote: "تمت مراجعة الصورة الجديدة والموافقة",
     });
     assert.equal(approved.success, true);
-    assert.equal(db.getDocData("manual_subscription_requests/req_resub_1").reviewHistory.length, 2);
+    const finalReq = db.getDocData("manual_subscription_requests/req_resub_1");
+    assert.equal(finalReq.status, "approved");
+    assert.equal(finalReq.reviewHistory.length, 3); // resubmission_required + resubmitted + approved
+    assert.ok(finalReq.previousReceipts.length >= 1);
 
     // Rejecting or requesting resubmission on an already approved request MUST fail
     await assert.rejects(
@@ -617,17 +820,17 @@ describe("Manual Vodafone Cash Subscriptions Server Service", () => {
       (err) => err instanceof DomainHttpsError && err.code === "failed-precondition"
     );
     await assert.rejects(
-      () => service.requestManualSubscriptionResubmission(ADMIN_AUTH, {
+      () => service.requestSubscriptionReceiptResubmission(ADMIN_AUTH, {
         requestId: "req_resub_1",
-        note: "محاولة إعادة إرسال بعد التفعيل",
+        reason: "محاولة إعادة إرسال بعد التفعيل",
       }),
       (err) => err instanceof DomainHttpsError && err.code === "failed-precondition"
     );
   });
 
-  it("7. Strict authorization: blocks unauthenticated users, merchants, suspended admins, and restricts settings to Master Admin ONLY", async () => {
-    const {db, service} = createHarness();
-    seedMerchantAndRequest(db, {requestId: "req_auth_1"});
+  it("8. Strict authorization: blocks unauthenticated users, merchants self-approving, suspended admins, and restricts Vodafone Cash settings to Master Admin ONLY", async () => {
+    const {db, service, storageFiles} = createHarness();
+    seedMerchantAndRequest(db, storageFiles, {requestId: "req_auth_1"});
 
     // Unauthenticated denied
     await assert.rejects(
@@ -635,7 +838,7 @@ describe("Manual Vodafone Cash Subscriptions Server Service", () => {
       (err) => err instanceof DomainHttpsError && err.code === "unauthenticated"
     );
 
-    // Merchant attempting self-approval denied
+    // Merchant attempting self-approval or self-rejection denied
     await assert.rejects(
       () => service.approveManualSubscriptionRequest(MERCHANT_AUTH, {requestId: "req_auth_1"}),
       (err) => err instanceof DomainHttpsError && err.code === "permission-denied"
@@ -644,6 +847,13 @@ describe("Manual Vodafone Cash Subscriptions Server Service", () => {
       () => service.rejectManualSubscriptionRequest(MERCHANT_AUTH, {
         requestId: "req_auth_1",
         rejectionReason: "spoof",
+      }),
+      (err) => err instanceof DomainHttpsError && err.code === "permission-denied"
+    );
+    await assert.rejects(
+      () => service.requestSubscriptionReceiptResubmission(MERCHANT_AUTH, {
+        requestId: "req_auth_1",
+        reason: "spoof",
       }),
       (err) => err instanceof DomainHttpsError && err.code === "permission-denied"
     );
@@ -670,7 +880,22 @@ describe("Manual Vodafone Cash Subscriptions Server Service", () => {
       pauseMessage: "",
       durationDays: 30,
       plans: [
-        {planId: "plan_2_captains", planName: "باقة 2 كابتن", maxCaptains: 2, price: 450, isActive: true},
+        {
+          planId: "plan_2_captains",
+          planName: "باقة 2 كابتن",
+          maxCaptains: 2,
+          price: 450,
+          durationDays: 30,
+          isActive: true,
+        },
+        {
+          planId: "plan_8_captains",
+          planName: "باقة 8 كابتن",
+          maxCaptains: 8,
+          price: 1650,
+          durationDays: 60,
+          isActive: true,
+        },
       ],
     };
 
@@ -679,7 +904,7 @@ describe("Manual Vodafone Cash Subscriptions Server Service", () => {
       (err) => err instanceof DomainHttpsError && err.code === "permission-denied"
     );
 
-    // Master Admin succeeds with valid payload
+    // Master Admin succeeds with per-plan durationDays
     const saved = await service.updateManualSubscriptionSettings(
       MASTER_ADMIN_AUTH,
       validSettingsPayload
@@ -687,10 +912,12 @@ describe("Manual Vodafone Cash Subscriptions Server Service", () => {
     assert.equal(saved.success, true);
     assert.equal(saved.settings.vodafoneCashNumber, "01011223344");
     assert.equal(saved.settings.plans[0].price, 450);
+    assert.equal(saved.settings.plans[1].durationDays, 60);
 
     const persisted = db.getDocData("settings/manual_subscription_config");
     assert.equal(persisted.vodafoneCashNumber, "01011223344");
     assert.equal(persisted.updatedBy, "master_admin_1");
+    assert.equal(persisted.plans[1].durationDays, 60);
 
     // Master Admin invalid Egyptian wallet number rejected
     await assert.rejects(

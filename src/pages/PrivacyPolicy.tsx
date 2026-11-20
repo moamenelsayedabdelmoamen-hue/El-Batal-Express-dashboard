@@ -38,13 +38,13 @@ export const PrivacyPolicyPage: React.FC = () => {
         <p>
           توضح سياسة الخصوصية هذه كيفية قيام منصة <strong>البطل إكسبريس (El Batal Express)</strong>{' '}
           (معرّف مشروع Firebase:{' '}
-          <code className="font-mono text-amber-400">{SITE_CONFIG.firebaseProjectId}</code>) بجمع واستخدام وتخزين وحماية البيانات الشخصية والتشغيلية عبر مكوناتها: تطبيق التاجر (<code className="font-mono text-xs">{SITE_CONFIG.merchantPackageId}</code>)، وتطبيق الكابتن (<code className="font-mono text-xs">{SITE_CONFIG.captainPackageId}</code>)، ولوحة التحكم والإدارة السحابية، وخدمات الدفع الخلفية المرتبطة ببوابة Paymob.
+          <code className="font-mono text-amber-400">{SITE_CONFIG.firebaseProjectId}</code>) بجمع واستخدام وتخزين وحماية البيانات الشخصية والتشغيلية عبر مكوناتها: تطبيق التاجر (<code className="font-mono text-xs">{SITE_CONFIG.merchantPackageId}</code>)، وتطبيق الكابتن (<code className="font-mono text-xs">{SITE_CONFIG.captainPackageId}</code>)، ولوحة التحكم والإدارة السحابية، ونظام اشتراكات التجار عبر فودافون كاش وFirebase Cloud Functions.
         </p>
       ),
       contentEn: (
         <p>
           This Privacy Policy explains how <strong>El Batal Express</strong> (Firebase Project ID:{' '}
-          <code className="font-mono text-amber-400">{SITE_CONFIG.firebaseProjectId}</code>) collects, uses, stores, and protects personal and operational data across its ecosystem: the Merchant App (<code className="font-mono text-xs">{SITE_CONFIG.merchantPackageId}</code>), the Captain Delivery App (<code className="font-mono text-xs">{SITE_CONFIG.captainPackageId}</code>), the Admin Web Dashboard, and the Paymob payment backend.
+          <code className="font-mono text-amber-400">{SITE_CONFIG.firebaseProjectId}</code>) collects, uses, stores, and protects personal and operational data across its ecosystem: the Merchant App (<code className="font-mono text-xs">{SITE_CONFIG.merchantPackageId}</code>), the Captain Delivery App (<code className="font-mono text-xs">{SITE_CONFIG.captainPackageId}</code>), the Admin Web Dashboard, and the Firebase Cloud Functions manual Vodafone Cash subscription verification system.
         </p>
       ),
     },
@@ -161,18 +161,18 @@ export const PrivacyPolicyPage: React.FC = () => {
       ),
     },
     {
-      id: 'paymob',
+      id: 'vodafone-cash-subscriptions',
       num: '08',
-      titleAr: 'استخدام خدمات Paymob في معالجة المدفوعات',
-      titleEn: 'Use of Paymob for Payment Processing',
+      titleAr: 'معالجة اشتراكات التجار عبر فودافون كاش ومراجعة الإيصالات',
+      titleEn: 'Vodafone Cash Manual Subscriptions & Receipt Verification',
       contentAr: (
         <p>
-          تتم معالجة المدفوعات الإلكترونية الخاصة بالاشتراكات والتسويات عبر خادم الخلفية (Backend) المرتبط ببوابة الدفع <strong>Paymob</strong>. عند الدفع عبر Paymob، تُدخل بيانات الدفع الحساسة مباشرة عبر بوابة Paymob الآمنة الخاضعة لمعايير أمان البطاقات (PCI-DSS)، ويتلقى النظام فقط إشعاراً بحالة العملية ورقم المرجع والمبلغ لتحديث حالة الاشتراك أو الدفعة في قاعدة البيانات، دون تخزين بيانات البطاقات لدى البطل إكسبريس.
+          تُدار اشتراكات التجار عبر التحويل اليدوي إلى محفظة <strong>فودافون كاش</strong> الرسمية المُدارة مركزياً في إعدادات النظام. يرفع التاجر صورة إيصال التحويل ورقم المحفظة المحوِّلة والرقم المرجعي للعملية إلى مجلد معزول خاص بحسابه في <strong>Firebase Storage</strong>، وتتم مراجعة الطلبات واعتمادها أو رفضها أو طلب إعادة إرسال الإيصال حصرياً عبر <strong>Firebase Cloud Functions</strong> دون تخزين أي أرقام بطاقات بنكية أو رموز CVV داخل المنصة.
         </p>
       ),
       contentEn: (
         <p>
-          Electronic payment transactions are processed via our backend integration with <strong>Paymob</strong>. Sensitive payment card or wallet credentials are entered and processed directly within Paymob’s PCI-DSS compliant payment environment. El Batal Express receives only transaction status confirmations, reference IDs, and amounts to update subscription and payment records, without storing card credentials on our servers or Firestore.
+          Merchant subscriptions are fulfilled via manual <strong>Vodafone Cash</strong> transfers to the official receiving wallet configured centrally in Firestore settings. Merchants upload transfer receipt images, sender wallet numbers, and optional transaction references to merchant-isolated <strong>Firebase Storage</strong> paths, and all review, approval, rejection, and resubmission actions execute strictly through <strong>Firebase Cloud Functions</strong>. No bank card numbers or CVV codes are collected or stored.
         </p>
       ),
     },
@@ -342,12 +342,12 @@ export const PrivacyPolicyPage: React.FC = () => {
       titleEn: 'Data Storage & Security Controls',
       contentAr: (
         <p>
-          تُخزن البيانات السحابية على خوادم Google Firebase (Cloud Firestore وFirebase Storage) مع تشفير الاتصال عبر HTTPS/TLS أثناء النقل، وتطبيق قواعد أمان <code className="font-mono">firestore.rules</code> التي تفصل بين صلاحيات المسؤول العام، والمسؤولين، والتجار، والكباتن، وتمنع القراءة أو الكتابة المجهولة للبيانات الحساسة. ولا يتم تخزين مفاتيح Paymob السرية أو مفاتيح حساب الخدمة داخل كود الواجهة الأمامية.
+          تُخزن البيانات السحابية على خوادم Google Firebase (Cloud Firestore وFirebase Storage) مع تشفير الاتصال عبر HTTPS/TLS أثناء النقل، وتطبيق قواعد أمان <code className="font-mono">firestore.rules</code> و<code className="font-mono">storage.rules</code> التي تفصل بين صلاحيات المسؤول العام، والمسؤولين، والتجار، والكباتن، وتمنع القراءة أو الكتابة المجهولة للبيانات الحساسة وإيصالات التحويل. ولا يتم تخزين أي مفاتيح سرية لحساب الخدمة داخل كود الواجهة الأمامية.
         </p>
       ),
       contentEn: (
         <p>
-          Data is stored on Google Firebase infrastructure (Cloud Firestore and Firebase Storage) using HTTPS/TLS encryption in transit and enforced by <code className="font-mono">firestore.rules</code> isolating Master Admin, Admin, Merchant, and Captain permissions. Sensitive backend secrets (such as Paymob API secrets and Firebase Admin service credentials) are never exposed in frontend code.
+          Data is stored on Google Firebase infrastructure (Cloud Firestore and Firebase Storage) using HTTPS/TLS encryption in transit and enforced by <code className="font-mono">firestore.rules</code> and <code className="font-mono">storage.rules</code> isolating Master Admin, Admin, Merchant, and Captain permissions as well as receipt files. Sensitive backend service credentials are never exposed in frontend code.
         </p>
       ),
     },
@@ -374,8 +374,7 @@ export const PrivacyPolicyPage: React.FC = () => {
       titleEn: 'Third-Party Service Providers & Sharing',
       contentAr: (
         <ul className="list-disc list-inside space-y-1.5">
-          <li><strong>Google Firebase / Google Cloud:</strong> لتوفير خدمات المصادقة، قاعدة البيانات، التخزين، الإشعارات الفورية، والاستضافة.</li>
-          <li><strong>Paymob:</strong> لمعالجة عمليات الدفع الإلكتروني بأمان وفق معايير مزود الدفع.</li>
+          <li><strong>Google Firebase / Google Cloud:</strong> لتوفير خدمات المصادقة، قاعدة البيانات، التخزين الآمن للإيصالات، Cloud Functions، الإشعارات الفورية، والاستضافة.</li>
           <li><strong>Google Workspace APIs (Sheets / Drive):</strong> فقط عندما يختار المسؤول المصرح له إنشاء أو تصدير جدول بيانات إلى حسابه على Google.</li>
           <li><strong>مزودو الخرائط (OpenStreetMap / Leaflet):</strong> لعرض الخريطة التشغيلية دون إرسال بيانات هوية العملاء الشخصية.</li>
           <li><strong>الالتزام القانوني:</strong> عند وجود طلب قضائي أو تنظيمي ملزم وفق القانون المعمول به.</li>
@@ -383,8 +382,7 @@ export const PrivacyPolicyPage: React.FC = () => {
       ),
       contentEn: (
         <ul className="list-disc list-inside space-y-1.5">
-          <li><strong>Google Firebase / Google Cloud:</strong> Authentication, Firestore database, Storage, FCM push notifications, and web hosting.</li>
-          <li><strong>Paymob:</strong> Secure processing of electronic subscription and settlement payments.</li>
+          <li><strong>Google Firebase / Google Cloud:</strong> Authentication, Firestore database, private Storage for receipts, Cloud Functions, FCM push notifications, and web hosting.</li>
           <li><strong>Google Workspace APIs (Sheets / Drive):</strong> Only when an authorized administrator explicitly initiates a spreadsheet export to their own Google account.</li>
           <li><strong>Map Tile Providers (OpenStreetMap / Leaflet):</strong> Rendering geographic map tiles without transmitting user PII.</li>
           <li><strong>Legal Compliance:</strong> Where required by applicable law, court order, or regulatory authority.</li>

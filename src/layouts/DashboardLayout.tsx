@@ -15,7 +15,7 @@ export const DashboardLayout: React.FC = () => {
     if (pathname.includes('/merchants') || pathname.includes('/restaurants')) return 'إدارة التجار';
     if (pathname.includes('/captains')) return 'إدارة الكباتن';
     if (pathname.includes('/orders')) return 'إدارة الطلبات';
-    if (pathname.includes('/subscription-requests')) return 'طلبات الاشتراك';
+    if (pathname.includes('/subscription-requests')) return 'طلبات اشتراك فودافون كاش';
     if (pathname.includes('/subscriptions')) return 'إدارة الاشتراكات';
     if (pathname.includes('/payments')) return 'المدفوعات والمعاملات';
     if (pathname.includes('/sheets')) return 'تكامل وجداول Google Sheets';

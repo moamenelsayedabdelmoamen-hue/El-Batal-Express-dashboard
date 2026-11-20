@@ -49,12 +49,12 @@ export const TermsOfServicePage: React.FC = () => {
     },
     {
       num: '04',
-      titleAr: 'الاشتراكات والمدفوعات عبر Paymob',
-      titleEn: 'Subscriptions & Paymob Payment Processing',
+      titleAr: 'الاشتراكات والمدفوعات اليدوية عبر فودافون كاش',
+      titleEn: 'Merchant Subscriptions & Vodafone Cash Manual Payments',
       bodyAr:
-        'تُدار باقات اشتراكات التجار الشهريّة (400 / 800 / 1200 / 1600 جنيه مصري) وتُعالج المدفوعات الإلكترونية عبر بوابة Paymob أو وسائل الدفع المعتمدة، وتخضع عمليات السداد والتجديد لتأكيد حالة المعاملة المرجعية.',
+        'تُدار باقات اشتراكات التجار وأسعارها ومددها مركزياً من إعدادات لوحة التحكم، ويتم سدادها عبر التحويل اليدوي إلى محفظة فودافون كاش الرسمية ورفع إيصال التحويل داخل التطبيق، ولا يتم تفعيل الاشتراك إلا بعد المراجعة والاعتماد الرسمي من الإدارة عبر الخادم.',
       bodyEn:
-        'Monthly merchant subscription plans (400 / 800 / 1200 / 1600 EGP) and electronic settlements are processed through Paymob or authorized payment channels, subject to verified transaction confirmation.',
+        'Merchant subscription plans, pricing, and durations are managed centrally via the Admin Dashboard settings and fulfilled via manual Vodafone Cash transfers with uploaded receipt verification; subscriptions activate exclusively upon server-verified administrative approval.',
     },
     {
       num: '05',

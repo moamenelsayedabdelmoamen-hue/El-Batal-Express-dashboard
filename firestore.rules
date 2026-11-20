@@ -486,14 +486,14 @@ service cloud.firestore {
     // - All admin approval / rejection / resubmission decisions execute strictly through Cloud Functions (Admin SDK).
     function isValidManualSubscriptionCreate(data, uid) {
       return data.merchantId == uid
-        && data.status == 'pending'
+        && (data.status == 'pending_review' || data.status == 'pending')
         && data.paymentStatus == 'pending_verification'
         && ('planId' in data) && data.planId is string && data.planId.size() >= 1 && data.planId.size() <= 80
         && ('planName' in data) && data.planName is string && data.planName.size() >= 1 && data.planName.size() <= 120
         && ('maxCaptains' in data) && data.maxCaptains is int && data.maxCaptains >= 1 && data.maxCaptains <= 100
         && ('amount' in data) && data.amount is number && data.amount > 0 && data.amount <= 100000
         && ('senderPhone' in data) && data.senderPhone is string && data.senderPhone.size() >= 8 && data.senderPhone.size() <= 32
-        && ('transactionReference' in data) && data.transactionReference is string && data.transactionReference.size() >= 2 && data.transactionReference.size() <= 120
+        && (!('transactionReference' in data) || (data.transactionReference is string && data.transactionReference.size() <= 120))
         && ('receiptImagePath' in data) && data.receiptImagePath is string
         && (
           data.receiptImagePath.matches('^subscription_receipts/' + uid + '/.+') ||
@@ -519,13 +519,20 @@ service cloud.firestore {
 
       allow update: if isMerchantAccount()
         && existing().merchantId == request.auth.uid
-        && existing().status == 'resubmission_requested'
+        && (existing().status == 'resubmission_required' || existing().status == 'resubmission_requested')
         && incoming().merchantId == existing().merchantId
         && incoming().planId == existing().planId
         && incoming().maxCaptains == existing().maxCaptains
         && incoming().amount == existing().amount
-        && incoming().status == 'pending'
+        && (!('durationDays' in existing()) || incoming().durationDays == existing().durationDays)
+        && (incoming().status == 'pending_review' || incoming().status == 'pending')
         && incoming().paymentStatus == 'pending_verification'
+        && ('receiptImagePath' in incoming()) && incoming().receiptImagePath is string
+        && (
+          incoming().receiptImagePath.matches('^subscription_receipts/' + request.auth.uid + '/.+') ||
+          incoming().receiptImagePath.matches('^manual_subscription_receipts/' + request.auth.uid + '/.+') ||
+          incoming().receiptImagePath.matches('^merchants/' + request.auth.uid + '/.+')
+        )
         && !('approvedBy' in incoming())
         && !('approvedAt' in incoming())
         && !('paymentDocId' in incoming())
@@ -566,8 +573,10 @@ service cloud.firestore {
       allow write: if false; // Strictly written by Cloud Functions (Admin SDK)
     }
 
+    // Retired legacy Paymob webhook events: preserved read-only for historical admin audit only
     match /webhook_events/{eventId} {
-      allow read, write: if isAdmin();
+      allow read: if isAdmin();
+      allow write: if false;
     }
 
     // --- 6. Captain Schedules & Shifts (Read-Only for Owning Captain, Admin-Managed) ---

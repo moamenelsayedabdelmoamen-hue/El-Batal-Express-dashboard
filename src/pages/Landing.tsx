@@ -83,13 +83,13 @@ export const LandingPage: React.FC = () => {
     {
       num: '04',
       icon: CreditCard,
-      titleAr: 'نظام الاشتراكات ومعالجة المدفوعات (Paymob)',
-      titleEn: 'Subscriptions & Paymob Payment Backend',
+      titleAr: 'نظام اشتراكات فودافون كاش والمراجعة المركزية',
+      titleEn: 'Vodafone Cash Subscriptions & Central Verification',
       descAr:
-        'تنظيم باقات اشتراك التجار الشهرية ومتابعة تواريخ البدء والانتهاء وحالات السداد، مع معالجة المدفوعات الإلكترونية عبر بوابة Paymob دون تخزين بيانات البطاقات البنكية داخل الواجهة أو قاعدة البيانات.',
+        'تنظيم باقات اشتراك التجار الشهرية ومتابعة تواريخ البدء والانتهاء وحالات السداد عبر التحويل اليدوي على فودافون كاش ورفع الإيصالات الآمنة ومراجعتها واعتمادها حصرياً عبر Firebase Cloud Functions.',
       descEn:
-        'Manages merchant monthly subscription packages, start/expiry tracking, and payment transaction statuses, integrating with Paymob backend checkout without storing raw card credentials in the frontend or Firestore.',
-      idLabel: 'Paymob Payment Gateway',
+        'Manages merchant monthly subscription packages, start/expiry tracking, and Vodafone Cash manual transfer receipts reviewed and activated strictly via Firebase Cloud Functions.',
+      idLabel: 'Vodafone Cash & Firebase Cloud Functions',
     },
   ];
 
@@ -199,7 +199,7 @@ export const LandingPage: React.FC = () => {
                   <span aria-hidden="true">·</span>
                   <span>{isAr ? 'لوحة الإدارة السحابية' : 'Cloud Admin Panel'}</span>
                   <span aria-hidden="true">·</span>
-                  <span>{isAr ? 'مدفوعات Paymob' : 'Paymob Checkout'}</span>
+                  <span>{isAr ? 'اشتراكات فودافون كاش' : 'Vodafone Cash Subscriptions'}</span>
                 </div>
               </div>
             </div>
@@ -250,8 +250,8 @@ export const LandingPage: React.FC = () => {
               </h2>
               <p className="text-sm text-zinc-400 leading-relaxed">
                 {isAr
-                  ? 'صُممت منصة البطل إكسبريس لربط المتاجر والمطاعم بأسطول مناديب التوصيل عبر بنية سحابية تعتمد على Firebase Authentication وCloud Firestore وFirebase Hosting ومعالجة المدفوعات عبر Paymob، دون عرض أو مشاركة أي بيانات خاصة للعملاء أو الحسابات مع الزوار غير المصرح لهم.'
-                  : 'El Batal Express connects registered commercial merchants with delivery captains through a secure cloud architecture built on Firebase Authentication, Cloud Firestore, Firebase Storage, Firebase Hosting, and Paymob backend payment processing.'}
+                  ? 'صُممت منصة البطل إكسبريس لربط المتاجر والمطاعم بأسطول مناديب التوصيل عبر بنية سحابية تعتمد على Firebase Authentication وCloud Firestore وFirebase Storage وFirebase Cloud Functions وإدارة اشتراكات فودافون كاش المركزية، دون عرض أو مشاركة أي بيانات خاصة للعملاء أو الحسابات مع الزوار غير المصرح لهم.'
+                  : 'El Batal Express connects registered commercial merchants with delivery captains through a secure cloud architecture built on Firebase Authentication, Cloud Firestore, Firebase Storage, Firebase Hosting, and server-verified Vodafone Cash subscription workflows via Firebase Cloud Functions.'}
               </p>
             </div>
 

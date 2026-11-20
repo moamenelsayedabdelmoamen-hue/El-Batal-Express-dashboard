@@ -559,9 +559,11 @@ describe('El-Batal Express Real Firebase Emulator Security Audit (Firestore + St
       await setDoc(doc(db, 'manual_subscription_requests', 'req_resub'), {
         merchantId: 'merchant_1',
         planId: 'plan_2_captains',
+        maxCaptains: 2,
         amount: 400,
-        status: 'resubmission_requested',
-        paymentStatus: 'resubmission_requested',
+        durationDays: 30,
+        status: 'resubmission_required',
+        paymentStatus: 'resubmission_required',
         receiptImagePath: 'subscription_receipts/merchant_1/old.jpg',
       });
       await setDoc(doc(db, 'merchants', 'merchant_1', 'notifications', 'n1'), {
@@ -585,13 +587,15 @@ describe('El-Batal Express Real Firebase Emulator Security Audit (Firestore + St
       })
     );
 
-    // 2. Merchant 1 CAN create a pending request for self with pending_verification
+    // 2. Merchant 1 CAN create a pending_review request for self with pending_verification
     await assertSucceeds(
       setDoc(doc(merch1Db, 'manual_subscription_requests', 'req_m1_valid'), {
         merchantId: 'merchant_1',
         planId: 'plan_4_captains',
+        maxCaptains: 4,
         amount: 800,
-        status: 'pending',
+        durationDays: 30,
+        status: 'pending_review',
         paymentStatus: 'pending_verification',
         receiptImagePath: 'subscription_receipts/merchant_1/r1.jpg',
       })
@@ -612,7 +616,7 @@ describe('El-Batal Express Real Firebase Emulator Security Audit (Firestore + St
         merchantId: 'merchant_2',
         planId: 'plan_4_captains',
         amount: 800,
-        status: 'pending',
+        status: 'pending_review',
         paymentStatus: 'pending_verification',
       })
     );
@@ -622,11 +626,19 @@ describe('El-Batal Express Real Firebase Emulator Security Audit (Firestore + St
     await assertSucceeds(getDoc(doc(adminDb, 'manual_subscription_requests', 'req_m1_valid')));
     await assertFails(getDoc(doc(merch2Db, 'manual_subscription_requests', 'req_m1_valid')));
 
-    // 5. Merchant 1 can re-upload receipt ONLY when status == resubmission_requested (never directly set paid/approved)
+    // 5. Merchant 1 can re-upload receipt ONLY when status == resubmission_required (never tamper price or self-approve)
+    await assertFails(
+      updateDoc(doc(merch1Db, 'manual_subscription_requests', 'req_resub'), {
+        receiptImagePath: 'subscription_receipts/merchant_1/new.jpg',
+        amount: 10,
+        status: 'pending_review',
+        paymentStatus: 'pending_verification',
+      })
+    );
     await assertSucceeds(
       updateDoc(doc(merch1Db, 'manual_subscription_requests', 'req_resub'), {
         receiptImagePath: 'subscription_receipts/merchant_1/new.jpg',
-        status: 'pending',
+        status: 'pending_review',
         paymentStatus: 'pending_verification',
       })
     );
@@ -638,9 +650,11 @@ describe('El-Batal Express Real Firebase Emulator Security Audit (Firestore + St
     );
     await assertFails(deleteDoc(doc(merch1Db, 'manual_subscription_requests', 'req_m1_valid')));
 
-    // 6. operation_logs readable by admin, NOT writable from client
+    // 6. operation_logs & retired webhook_events readable by admin, NOT writable from client
     await assertFails(setDoc(doc(adminDb, 'operation_logs', 'fake_log'), { action: 'spoof' }));
     await assertFails(setDoc(doc(merch1Db, 'operation_logs', 'fake_log'), { action: 'spoof' }));
+    await assertFails(setDoc(doc(adminDb, 'webhook_events', 'legacy_1'), { provider: 'retired' }));
+    await assertFails(setDoc(doc(merch1Db, 'webhook_events', 'legacy_2'), { provider: 'retired' }));
 
     // 7. Merchant notifications isolated to owning merchant (can mark isRead only)
     await assertSucceeds(getDoc(doc(merch1Db, 'merchants', 'merchant_1', 'notifications', 'n1')));

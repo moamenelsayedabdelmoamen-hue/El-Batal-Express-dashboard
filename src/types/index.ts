@@ -175,15 +175,30 @@ export type PaymentStatus = 'success' | 'pending' | 'failed';
 
 export interface Payment {
   id: string;
+  requestId?: string;
+  type?: string;
+  source?: string;
   transactionId?: string;
   transactionNumber?: string;
+  transactionReference?: string;
   restaurantId?: string;
   restaurantName: string;
+  merchantPhone?: string;
+  planId?: string;
+  planName?: string;
+  maxCaptains?: number;
   amount: number;
   paymentMethod: PaymentMethod;
+  senderPhone?: string;
+  receiverWalletNumber?: string;
+  receiptImagePath?: string;
+  receiptImageUrl?: string;
   status: PaymentStatus;
+  paymentStatus?: string;
   date?: string;
+  billingMonth?: string;
   createdAt?: any;
+  createdAtMs?: number;
   notes?: string;
   raw?: Record<string, any>;
 }
@@ -322,14 +337,23 @@ export interface AdminNotification {
 // Manual Vodafone Cash Subscription Review & Payment Settings Types
 // -----------------------------------------------------------------------------
 export type ManualSubscriptionRequestStatus =
+  | 'pending_review'
   | 'pending'
   | 'under_review'
+  | 'resubmission_required'
   | 'resubmission_requested'
   | 'approved'
   | 'rejected';
 
 export interface ManualSubscriptionReviewEntry {
-  action: 'approved' | 'rejected' | 'resubmission_requested' | string;
+  action:
+    | 'submitted'
+    | 'resubmitted'
+    | 'approved'
+    | 'rejected'
+    | 'resubmission_required'
+    | 'resubmission_requested'
+    | string;
   reviewerId: string;
   reviewerEmail?: string;
   reviewerName?: string;
@@ -337,6 +361,16 @@ export interface ManualSubscriptionReviewEntry {
   reason?: string;
   timestampIso: string;
   timestampMs?: number;
+}
+
+export interface ManualSubscriptionPreviousReceipt {
+  receiptImagePath?: string;
+  receiptImageUrl?: string;
+  senderPhone?: string;
+  transactionReference?: string;
+  flaggedReason?: string;
+  flaggedAtIso?: string;
+  replacedAtIso?: string;
 }
 
 export interface ManualSubscriptionRequest {
@@ -370,12 +404,14 @@ export interface ManualSubscriptionRequest {
   rejectedByEmail?: string;
   rejectedAt?: string;
   rejectionReason?: string;
+  resubmissionReason?: string;
   resubmissionNote?: string;
   adminNote?: string;
   merchantNote?: string;
   paymentDocId?: string;
   subscriptionStartDate?: string;
   subscriptionEndDate?: string;
+  previousReceipts: ManualSubscriptionPreviousReceipt[];
   reviewHistory: ManualSubscriptionReviewEntry[];
   raw?: Record<string, any>;
 }
@@ -385,6 +421,7 @@ export interface OfficialSubscriptionPlanConfig {
   planName: string;
   maxCaptains: number;
   price: number;
+  durationDays: number;
   isActive: boolean;
 }
 

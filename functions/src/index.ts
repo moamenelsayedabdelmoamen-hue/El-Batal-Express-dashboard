@@ -235,6 +235,31 @@ export const reassignOrderOffer = onTaskDispatched(
 );
 
 /**
+ * Callable 8a: Merchant submits (or resubmits) a manual Vodafone Cash subscription request.
+ * Validates auth, merchant ownership, official server package/price/duration, Storage receipt,
+ * and prevents duplicates. Always creates/updates in pending_review without activating subscription.
+ */
+export const submitManualSubscriptionRequest = onCall(
+  {region: "us-central1"},
+  async (request) => {
+    try {
+      const payload = (request.data ?? {}) as Record<string, unknown>;
+      return await manualSubService.submitManualSubscriptionRequest(
+        request.auth
+          ? {
+            uid: request.auth.uid,
+            token: request.auth.token as Record<string, unknown>,
+          }
+          : undefined,
+        payload
+      );
+    } catch (err) {
+      throw mapError(err);
+    }
+  }
+);
+
+/**
  * Callable 8: Server-authoritative approval of a manual Vodafone Cash subscription request.
  * Atomically approves the request, activates subscriptions/{merchantId} & merchants/{merchantId},
  * creates a single financial record in payments/, writes operation_logs, and notifies the merchant.
@@ -285,13 +310,14 @@ export const rejectManualSubscriptionRequest = onCall(
 
 /**
  * Callable 10: Admin requests the merchant to re-upload a clearer Vodafone Cash receipt.
+ * Sets status to resubmission_required and preserves previous receipt attempts & audit history.
  */
-export const requestManualSubscriptionResubmission = onCall(
+export const requestSubscriptionReceiptResubmission = onCall(
   {region: "us-central1"},
   async (request) => {
     try {
       const payload = (request.data ?? {}) as Record<string, unknown>;
-      return await manualSubService.requestManualSubscriptionResubmission(
+      return await manualSubService.requestSubscriptionReceiptResubmission(
         request.auth
           ? {
             uid: request.auth.uid,
@@ -305,6 +331,12 @@ export const requestManualSubscriptionResubmission = onCall(
     }
   }
 );
+
+/**
+ * Compatibility alias for requestSubscriptionReceiptResubmission.
+ */
+export const requestManualSubscriptionResubmission =
+  requestSubscriptionReceiptResubmission;
 
 /**
  * Callable 11: Master-Admin-only update of Vodafone Cash wallet number, official pricing, and duration.

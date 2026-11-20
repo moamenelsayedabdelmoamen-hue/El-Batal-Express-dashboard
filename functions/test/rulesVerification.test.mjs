@@ -17,19 +17,44 @@ const settingsPageSrc = fs.readFileSync(
   path.join(repoRoot, "src/pages/Settings.tsx"),
   "utf8"
 );
+const functionsIndexSrc = fs.readFileSync(
+  path.join(repoRoot, "functions/src/index.ts"),
+  "utf8"
+);
 
-describe("Static Security & Architecture Invariants (Rules + Server-Only Enforcement)", () => {
-  it("1. firestore.rules enforces merchant-scoped manual_subscription_requests and blocks direct approval/paid tampering", () => {
+function collectSourceFiles(dir) {
+  const results = [];
+  if (!fs.existsSync(dir)) return results;
+  for (const entry of fs.readdirSync(dir, {withFileTypes: true})) {
+    if (entry.name === "node_modules" || entry.name === "dist" || entry.name === "lib") continue;
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      results.push(...collectSourceFiles(full));
+    } else if (/\.(ts|tsx|js|jsx|mjs|cjs)$/.test(entry.name)) {
+      results.push(full);
+    }
+  }
+  return results;
+}
+
+describe("Static Security & Architecture Invariants (Rules + Server-Only + Paymob Removal)", () => {
+  it("1. firestore.rules enforces merchant-scoped manual_subscription_requests (pending_review/resubmission_required) and blocks direct approval/price tampering", () => {
     assert.match(firestoreRules, /function isValidManualSubscriptionCreate\(data, uid\)/);
     assert.match(firestoreRules, /data\.merchantId == uid/);
-    assert.match(firestoreRules, /data\.status == 'pending'/);
+    assert.match(
+      firestoreRules,
+      /\(data\.status == 'pending_review' \|\| data\.status == 'pending'\)/
+    );
     assert.match(firestoreRules, /data\.paymentStatus == 'pending_verification'/);
     assert.match(firestoreRules, /match\s+\/manual_subscription_requests\/\{requestId\}/);
-    assert.match(firestoreRules, /existing\(\)\.status == 'resubmission_requested'/);
+    assert.match(
+      firestoreRules,
+      /\(existing\(\)\.status == 'resubmission_required' \|\| existing\(\)\.status == 'resubmission_requested'\)/
+    );
     assert.match(firestoreRules, /allow delete:\s*if false;/);
   });
 
-  it("2. firestore.rules locks settings/manual_subscription_config and operation_logs to server-side Admin SDK only", () => {
+  it("2. firestore.rules locks settings/manual_subscription_config, operation_logs, and retired webhook_events to server-only / read-only", () => {
     assert.match(
       firestoreRules,
       /match\s+\/settings\/manual_subscription_config\s*\{[\s\S]*?allow read:\s*if isSignedIn\(\);[\s\S]*?allow write:\s*if false;/
@@ -37,6 +62,10 @@ describe("Static Security & Architecture Invariants (Rules + Server-Only Enforce
     assert.match(
       firestoreRules,
       /match\s+\/operation_logs\/\{logId\}\s*\{[\s\S]*?allow read:\s*if isAdmin\(\);[\s\S]*?allow write:\s*if false;/
+    );
+    assert.match(
+      firestoreRules,
+      /match\s+\/webhook_events\/\{eventId\}\s*\{[\s\S]*?allow read:\s*if isAdmin\(\);[\s\S]*?allow write:\s*if false;/
     );
   });
 
@@ -58,7 +87,16 @@ describe("Static Security & Architecture Invariants (Rules + Server-Only Enforce
     );
   });
 
-  it("5. Frontend ManualSubscriptionService performs ZERO direct Firestore writes and invokes Cloud Functions exclusively", () => {
+  it("5. Central Cloud Functions exports all 4 required functions + settings updater + notification trigger", () => {
+    assert.match(functionsIndexSrc, /export const submitManualSubscriptionRequest\b/);
+    assert.match(functionsIndexSrc, /export const approveManualSubscriptionRequest\b/);
+    assert.match(functionsIndexSrc, /export const rejectManualSubscriptionRequest\b/);
+    assert.match(functionsIndexSrc, /export const requestSubscriptionReceiptResubmission\b/);
+    assert.match(functionsIndexSrc, /export const updateManualSubscriptionSettings\b/);
+    assert.match(functionsIndexSrc, /export const onManualSubscriptionRequestCreated\b/);
+  });
+
+  it("6. Frontend ManualSubscriptionService performs ZERO direct Firestore writes and invokes Cloud Functions exclusively", () => {
     assert.doesNotMatch(
       manualSubServiceSrc,
       /\b(setDoc|updateDoc|addDoc|deleteDoc|writeBatch|runTransaction)\b/,
@@ -66,13 +104,19 @@ describe("Static Security & Architecture Invariants (Rules + Server-Only Enforce
     );
     assert.match(manualSubServiceSrc, /'approveManualSubscriptionRequest'/);
     assert.match(manualSubServiceSrc, /'rejectManualSubscriptionRequest'/);
-    assert.match(manualSubServiceSrc, /'requestManualSubscriptionResubmission'/);
+    assert.match(manualSubServiceSrc, /'requestSubscriptionReceiptResubmission'/);
     assert.match(manualSubServiceSrc, /'updateManualSubscriptionSettings'/);
   });
 
-  it("6. No hardcoded Vodafone Cash wallet number exists in ManualSubscriptionService or Settings page", () => {
+  it("7. No hardcoded Vodafone Cash wallet number or hardcoded package prices exist in ManualSubscriptionService or Settings page", () => {
     assert.match(manualSubServiceSrc, /vodafoneCashNumber:\s*''/);
+    assert.match(manualSubServiceSrc, /plans:\s*\[\]/);
     assert.match(settingsPageSrc, /useState\(''\)/);
+    assert.doesNotMatch(
+      manualSubServiceSrc,
+      /DEFAULT_PLAN_TEMPLATES/,
+      "Package prices must NOT be hardcoded in ManualSubscriptionService"
+    );
     assert.doesNotMatch(
       manualSubServiceSrc,
       /vodafoneCashNumber:\s*['"]01[0125]\d{8}['"]/,
@@ -82,6 +126,25 @@ describe("Static Security & Architecture Invariants (Rules + Server-Only Enforce
       settingsPageSrc,
       /vodafoneCashNumber\s*=\s*['"]01[0125]\d{8}['"]/,
       "Vodafone Cash wallet number must NEVER be hardcoded in Settings.tsx"
+    );
+  });
+
+  it("8. Zero Paymob references remain anywhere in src/ or functions/src/", () => {
+    const allFiles = [
+      ...collectSourceFiles(path.join(repoRoot, "src")),
+      ...collectSourceFiles(path.join(repoRoot, "functions/src")),
+    ];
+    const offending = [];
+    for (const file of allFiles) {
+      const content = fs.readFileSync(file, "utf8");
+      if (/paymob/i.test(content)) {
+        offending.push(path.relative(repoRoot, file));
+      }
+    }
+    assert.deepEqual(
+      offending,
+      [],
+      `Found leftover Paymob references in: ${offending.join(", ")}`
     );
   });
 });

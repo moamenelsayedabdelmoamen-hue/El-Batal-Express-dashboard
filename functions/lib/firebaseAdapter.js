@@ -39,6 +39,7 @@ exports.createAdminManualSubscriptionEffects = createAdminManualSubscriptionEffe
 const firestore_1 = require("firebase-admin/firestore");
 const functions_1 = require("firebase-admin/functions");
 const messaging_1 = require("firebase-admin/messaging");
+const storage_1 = require("firebase-admin/storage");
 const logger = __importStar(require("firebase-functions/logger"));
 function wrapDocRef(ref) {
     return {
@@ -252,6 +253,31 @@ function createAdminManualSubscriptionEffects() {
             increment: (value) => firestore_1.FieldValue.increment(value),
             arrayUnion: (...elements) => firestore_1.FieldValue.arrayUnion(...elements),
         },
+        async verifyStorageReceiptExists(storagePath) {
+            const trimmed = String(storagePath || "").trim();
+            if (!trimmed)
+                return false;
+            try {
+                let objectPath = trimmed;
+                if (trimmed.startsWith("gs://")) {
+                    const withoutScheme = trimmed.slice(5);
+                    const slashIdx = withoutScheme.indexOf("/");
+                    objectPath = slashIdx >= 0 ? withoutScheme.slice(slashIdx + 1) : "";
+                }
+                objectPath = objectPath.replace(/^\/+/, "");
+                if (!objectPath)
+                    return false;
+                const [exists] = await (0, storage_1.getStorage)().bucket().file(objectPath).exists();
+                return Boolean(exists);
+            }
+            catch (err) {
+                logger.warn("Storage receipt existence verification failed", {
+                    storagePath: trimmed,
+                    error: err instanceof Error ? err.message : String(err),
+                });
+                return false;
+            }
+        },
         async sendMerchantSubscriptionNotification(payload) {
             var _a, _b, _c;
             if (!payload.fcmToken) {
@@ -262,6 +288,11 @@ function createAdminManualSubscriptionEffects() {
                 });
                 return;
             }
+            const merchantSignalTypeMap = {
+                subscription_approved: "SUBSCRIPTION_ACTIVATED",
+                subscription_rejected: "SUBSCRIPTION_REJECTED",
+                subscription_resubmission_requested: "SUBSCRIPTION_RESUBMISSION_REQUIRED",
+            };
             try {
                 await (0, messaging_1.getMessaging)().send({
                     token: payload.fcmToken,
@@ -271,9 +302,14 @@ function createAdminManualSubscriptionEffects() {
                     },
                     android: {
                         priority: "high",
+                        notification: {
+                            channelId: "subscription_sync_channel",
+                            sound: "default",
+                        },
                     },
                     data: {
-                        type: payload.eventType,
+                        type: merchantSignalTypeMap[payload.eventType] || "SUBSCRIPTION_UPDATED",
+                        eventType: payload.eventType,
                         requestId: payload.requestId,
                         merchantId: payload.merchantId,
                         planId: (_a = payload.planId) !== null && _a !== void 0 ? _a : "",

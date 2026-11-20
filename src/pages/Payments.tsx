@@ -13,7 +13,7 @@ import {
   Building2,
 } from 'lucide-react';
 import { Payment } from '../types';
-import { PaymentService } from '../services/paymentService';
+import { PaymentService, computePaymentRevenueMetrics } from '../services/paymentService';
 import { RestaurantService } from '../services/restaurantService';
 import { StatusBadge } from '../components/common/StatusBadge';
 import { EmptyState } from '../components/common/EmptyState';
@@ -63,29 +63,54 @@ export const PaymentsPage: React.FC = () => {
   };
 
   useEffect(() => {
-    fetchPayments();
+    setLoading(true);
+    const unsub = PaymentService.subscribe(
+      (livePayments) => {
+        setPayments(livePayments);
+        setLoading(false);
+      },
+      () => {
+        setLoading(false);
+      }
+    );
+
+    RestaurantService.getAll()
+      .then((restRes) => {
+        setRestaurants(restRes.data.map((r) => ({ id: r.id, name: r.name })));
+      })
+      .catch(() => {
+        // non-blocking
+      });
+
+    return () => unsub();
   }, []);
 
   const filteredPayments = useMemo(() => {
+    const q = searchQuery.toLowerCase();
     return payments.filter((p) => {
       const txn = (p.transactionId || p.transactionNumber || '').toLowerCase();
       const matchesSearch =
-        txn.includes(searchQuery.toLowerCase()) ||
-        p.restaurantName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        p.paymentMethod.toLowerCase().includes(searchQuery.toLowerCase());
+        txn.includes(q) ||
+        p.restaurantName.toLowerCase().includes(q) ||
+        p.paymentMethod.toLowerCase().includes(q) ||
+        (p.planName || '').toLowerCase().includes(q) ||
+        (p.senderPhone || '').toLowerCase().includes(q);
 
       const matchesStatus = statusFilter === 'all' ? true : p.status === statusFilter;
-      const matchesMethod = methodFilter === 'all' ? true : p.paymentMethod.includes(methodFilter);
+      const matchesMethod =
+        methodFilter === 'all'
+          ? true
+          : methodFilter === 'فودافون كاش'
+            ? p.paymentMethod.includes('فودافون') || p.paymentMethod.toLowerCase().includes('vodafone')
+            : p.paymentMethod.includes(methodFilter);
 
       return matchesSearch && matchesStatus && matchesMethod;
     });
   }, [payments, searchQuery, statusFilter, methodFilter]);
 
-  const totalSuccessful = useMemo(() => {
-    return payments
-      .filter((p) => p.status === 'success')
-      .reduce((acc, curr) => acc + curr.amount, 0);
-  }, [payments]);
+  const revenueMetrics = useMemo(() => computePaymentRevenueMetrics(payments), [payments]);
+  const totalSuccessful = revenueMetrics.totalRevenue;
+  const monthlyRevenue = revenueMetrics.monthlyRevenue;
 
   const handleCreatePayment = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -105,7 +130,7 @@ export const PaymentsPage: React.FC = () => {
         notes: formData.notes,
       });
 
-      setPayments((prev) => [newPay, ...prev]);
+      setPayments((prev) => (prev.some((p) => p.id === newPay.id) ? prev : [newPay, ...prev]));
       success('تم تسجيل المعاملة المالية بنجاح');
       setIsAddModalOpen(false);
     } catch (err) {
@@ -152,7 +177,15 @@ export const PaymentsPage: React.FC = () => {
       </div>
 
       {/* Financial Summary Cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 sm:gap-4">
+        <div className="p-5 rounded-2xl bg-[#11141c] border border-emerald-500/30 shadow-md">
+          <span className="text-xs font-bold text-emerald-400 block mb-1">الإيرادات الشهرية (الشهر الحالي)</span>
+          <span className="text-xl sm:text-2xl font-black text-white font-['Outfit',sans-serif]">
+            {monthlyRevenue.toLocaleString('ar-EG')}{' '}
+            <span className="text-xs font-bold text-emerald-400 font-['Cairo']">ج.م</span>
+          </span>
+        </div>
+
         <div className="p-5 rounded-2xl bg-[#11141c] border border-amber-500/20 shadow-md">
           <span className="text-xs font-bold text-amber-400 block mb-1">إجمالي المحصل (ناجحة)</span>
           <span className="text-xl sm:text-2xl font-black text-white font-['Outfit',sans-serif]">
@@ -175,7 +208,7 @@ export const PaymentsPage: React.FC = () => {
           </span>
         </div>
 
-        <div className="p-5 rounded-2xl bg-[#11141c] border border-zinc-800/80">
+        <div className="p-5 rounded-2xl bg-[#11141c] border border-zinc-800/80 col-span-2 lg:col-span-1">
           <span className="text-xs font-bold text-rose-400 block mb-1">المعاملات الفاشلة</span>
           <span className="text-xl sm:text-2xl font-black text-rose-400 font-['Outfit',sans-serif]">
             {payments.filter((p) => p.status === 'failed').length}
@@ -286,7 +319,12 @@ export const PaymentsPage: React.FC = () => {
                     </td>
 
                     <td className="py-4 px-4 font-bold text-zinc-100">
-                      {payment.restaurantName}
+                      <div>{payment.restaurantName}</div>
+                      {payment.planName && (
+                        <div className="text-[11px] font-semibold text-amber-400/90 mt-0.5">
+                          {payment.planName}
+                        </div>
+                      )}
                     </td>
 
                     <td className="py-4 px-4 font-mono font-black text-white text-xs font-['Outfit',sans-serif]">
@@ -347,19 +385,44 @@ export const PaymentsPage: React.FC = () => {
 
             <div className="p-4 rounded-2xl bg-zinc-950/60 border border-zinc-800 space-y-3 text-xs mb-5">
               <div className="flex items-center justify-between">
-                <span className="text-zinc-500">المطعم:</span>
+                <span className="text-zinc-500">التاجر:</span>
                 <span className="font-bold text-zinc-200">{viewingPayment.restaurantName}</span>
               </div>
+              {viewingPayment.planName && (
+                <div className="flex items-center justify-between">
+                  <span className="text-zinc-500">الباقة:</span>
+                  <span className="font-bold text-amber-400">
+                    {viewingPayment.planName}
+                    {viewingPayment.maxCaptains ? ` (${viewingPayment.maxCaptains} كابتن)` : ''}
+                  </span>
+                </div>
+              )}
               <div className="flex items-center justify-between">
                 <span className="text-zinc-500">المبلغ المسدد:</span>
                 <span className="font-black text-white font-['Outfit',sans-serif] text-sm">
-                  {viewingPayment.amount} ج.م
+                  {viewingPayment.amount.toLocaleString('ar-EG')} ج.م
                 </span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-zinc-500">وسيلة الدفع:</span>
                 <span className="text-zinc-300">{viewingPayment.paymentMethod}</span>
               </div>
+              {viewingPayment.senderPhone && (
+                <div className="flex items-center justify-between">
+                  <span className="text-zinc-500">المحفظة المحوِّلة:</span>
+                  <span className="font-mono text-zinc-300" dir="ltr">
+                    {viewingPayment.senderPhone}
+                  </span>
+                </div>
+              )}
+              {viewingPayment.receiverWalletNumber && (
+                <div className="flex items-center justify-between">
+                  <span className="text-zinc-500">المحفظة المستلمة:</span>
+                  <span className="font-mono text-amber-400" dir="ltr">
+                    {viewingPayment.receiverWalletNumber}
+                  </span>
+                </div>
+              )}
               <div className="flex items-center justify-between">
                 <span className="text-zinc-500">التاريخ:</span>
                 <span className="font-mono text-zinc-300">{viewingPayment.date}</span>

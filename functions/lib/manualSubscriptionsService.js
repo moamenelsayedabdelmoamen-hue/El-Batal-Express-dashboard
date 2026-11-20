@@ -12,9 +12,19 @@ const SUPER_ADMIN_EMAILS = new Set([
     "admin@elbatalexpress.com",
 ]);
 const REVIEWABLE_STATUSES = new Set([
+    "pending_review",
     "pending",
     "under_review",
+    "resubmission_required",
+    "resubmission_requested",
+]);
+const ACTIVE_PENDING_STATUSES = new Set([
     "pending_review",
+    "pending",
+    "under_review",
+]);
+const RESUBMISSION_STATUSES = new Set([
+    "resubmission_required",
     "resubmission_requested",
 ]);
 function isValidDocId(id) {
@@ -155,6 +165,353 @@ class ManualSubscriptionsServerService {
         return admin;
     }
     /**
+     * 0. Merchant submits a new manual Vodafone Cash subscription request (or resubmits an existing
+     * request whose status is `resubmission_required`).
+     * - Derives merchant identity strictly from Firebase Auth UID (never trusts client merchantId).
+     * - Verifies merchant account ownership in `merchants/{uid}`.
+     * - Reads authoritative package, price, durationDays, and wallet from `settings/manual_subscription_config`.
+     * - Rejects any client-tampered price or disabled package.
+     * - Verifies receipt path ownership AND verifies receipt object exists in Firebase Storage.
+     * - Prevents duplicate pending requests and duplicate transaction references.
+     * - Always writes status = `pending_review` & paymentStatus = `pending_verification`
+     *   (NEVER activates subscription or writes a payment record).
+     * @param {CallableAuthContext | undefined} authContext Merchant Firebase Auth context.
+     * @param {Record<string, unknown>} data Request payload.
+     * @return {Promise<SubmitManualSubscriptionResult>} Created/resubmitted request summary.
+     */
+    async submitManualSubscriptionRequest(authContext, data) {
+        var _a, _b, _c;
+        const uid = typeof (authContext === null || authContext === void 0 ? void 0 : authContext.uid) === "string" ? authContext.uid.trim() : "";
+        if (!uid || !isValidDocId(uid)) {
+            throw new types_js_1.DomainHttpsError("unauthenticated", "يجب تسجيل الدخول بحساب التاجر أولاً لتقديم طلب الاشتراك.");
+        }
+        const claimedMerchantId = (0, validators_js_1.readString)(data, "merchantId", "restaurantId");
+        if (claimedMerchantId && claimedMerchantId !== uid) {
+            throw new types_js_1.DomainHttpsError("permission-denied", "غير مصرح بتقديم طلب اشتراك نيابة عن تاجر آخر.");
+        }
+        const requestedPlanId = (0, validators_js_1.readString)(data, "planId");
+        const requestedNumericPlanId = (0, validators_js_1.readNumber)(data, "planId");
+        const requestedMaxCaptains = (_a = (0, validators_js_1.readNumber)(data, "maxCaptains", "captainLimit", "captainsCount")) !== null && _a !== void 0 ? _a : 0;
+        const claimedAmount = (0, validators_js_1.readNumber)(data, "amount", "price", "requiredAmount");
+        const senderPhone = normalizePhoneDigits((0, validators_js_1.readString)(data, "senderPhone", "fromWalletNumber", "transferPhone"));
+        const transactionReference = (0, validators_js_1.readString)(data, "transactionReference", "referenceNumber", "transferReference").slice(0, 120);
+        const receiptImagePath = (0, validators_js_1.readString)(data, "receiptImagePath", "receiptPath");
+        const receiptImageUrl = (0, validators_js_1.readString)(data, "receiptImageUrl", "receiptUrl");
+        const merchantNote = typeof (data === null || data === void 0 ? void 0 : data.merchantNote) === "string"
+            ? data.merchantNote.trim().slice(0, 400)
+            : "";
+        const providedRequestId = (0, validators_js_1.readString)(data, "requestId");
+        if (providedRequestId && !isValidDocId(providedRequestId)) {
+            throw new types_js_1.DomainHttpsError("invalid-argument", "معرّف الطلب غير صالح.");
+        }
+        if (!senderPhone || senderPhone.length < 8 || senderPhone.length > 20) {
+            throw new types_js_1.DomainHttpsError("invalid-argument", "يرجى إدخال رقم المحفظة المحوّل منها بشكل صحيح.");
+        }
+        if (!receiptImagePath) {
+            throw new types_js_1.DomainHttpsError("invalid-argument", "يجب رفع صورة إيصال التحويل إلى Firebase Storage قبل إرسال الطلب.");
+        }
+        if (!isSafeMerchantReceipt(uid, receiptImagePath, receiptImageUrl)) {
+            throw new types_js_1.DomainHttpsError("permission-denied", "مسار صورة الإيصال غير مرتبط بحساب التاجر الصحيح.");
+        }
+        // Verify receipt file genuinely exists in Firebase Storage
+        const receiptExists = await this.effects.verifyStorageReceiptExists(receiptImagePath);
+        if (!receiptExists) {
+            throw new types_js_1.DomainHttpsError("failed-precondition", "لم يتم العثور على صورة الإيصال في Firebase Storage. يرجى إعادة رفع الإيصال.");
+        }
+        const nowMs = this.effects.now();
+        const s = this.effects.sentinels;
+        // Pre-check merchant's existing requests & duplicate transaction references
+        const existingMerchantReqsSnap = await this.db
+            .collection("manual_subscription_requests")
+            .where("merchantId", "==", uid)
+            .get();
+        let resubmissionTargetDocId = "";
+        for (const docSnap of existingMerchantReqsSnap.docs) {
+            const d = (_b = docSnap.data()) !== null && _b !== void 0 ? _b : {};
+            const st = normalizeStatus(d.status);
+            if (providedRequestId && docSnap.id === providedRequestId) {
+                if (RESUBMISSION_STATUSES.has(st)) {
+                    resubmissionTargetDocId = docSnap.id;
+                    continue;
+                }
+                throw new types_js_1.DomainHttpsError("already-exists", "هذا الطلب موجود بالفعل ولا يقبل إعادة الإرسال في حالته الحالية.");
+            }
+            if (ACTIVE_PENDING_STATUSES.has(st)) {
+                throw new types_js_1.DomainHttpsError("already-exists", "لديك طلب اشتراك قيد المراجعة بالفعل. يرجى انتظار مراجعة الإدارة قبل إرسال طلب جديد.");
+            }
+        }
+        if (transactionReference) {
+            const dupRefSnap = await this.db
+                .collection("manual_subscription_requests")
+                .where("transactionReference", "==", transactionReference)
+                .limit(5)
+                .get();
+            for (const dSnap of dupRefSnap.docs) {
+                if (resubmissionTargetDocId && dSnap.id === resubmissionTargetDocId) {
+                    continue;
+                }
+                const st = normalizeStatus((_c = dSnap.data()) === null || _c === void 0 ? void 0 : _c.status);
+                if (st !== "rejected") {
+                    throw new types_js_1.DomainHttpsError("already-exists", "رقم العملية المرجعي مستخدم في طلب اشتراك آخر بالفعل.");
+                }
+            }
+        }
+        const requestId = resubmissionTargetDocId || providedRequestId || `subreq_${uid.slice(0, 8)}_${nowMs}`;
+        const requestRef = this.db
+            .collection("manual_subscription_requests")
+            .doc(requestId);
+        const merchantRef = this.db.collection("merchants").doc(uid);
+        const settingsRef = this.db
+            .collection("settings")
+            .doc("manual_subscription_config");
+        const opLogRef = this.db
+            .collection("operation_logs")
+            .doc(`submit_manual_sub_${requestId}_${nowMs}`);
+        return this.db.runTransaction(async (tx) => {
+            var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m;
+            const [merchantSnap, settingsSnap, existingReqSnap] = await Promise.all([
+                tx.get(merchantRef),
+                tx.get(settingsRef),
+                tx.get(requestRef),
+            ]);
+            if (!merchantSnap.exists) {
+                throw new types_js_1.DomainHttpsError("not-found", "حساب التاجر غير مسجل في النظام.");
+            }
+            const merchantData = (_a = merchantSnap.data()) !== null && _a !== void 0 ? _a : {};
+            const accountType = (0, validators_js_1.readString)(merchantData, "accountType").toLowerCase();
+            const role = (0, validators_js_1.readString)(merchantData, "role").toLowerCase();
+            if ((accountType && accountType !== "merchant") ||
+                (!accountType && role && role !== "merchant")) {
+                throw new types_js_1.DomainHttpsError("permission-denied", "هذا الإجراء مخصص لحسابات التجار فقط.");
+            }
+            const merchantDocUid = (0, validators_js_1.readString)(merchantData, "uid");
+            if (merchantDocUid && merchantDocUid !== uid) {
+                throw new types_js_1.DomainHttpsError("permission-denied", "عدم تطابق ملكية حساب التاجر.");
+            }
+            if (!settingsSnap.exists) {
+                throw new types_js_1.DomainHttpsError("failed-precondition", "إعدادات اشتراكات فودافون كاش غير مهيأة حالياً من الإدارة.");
+            }
+            const settingsData = (_b = settingsSnap.data()) !== null && _b !== void 0 ? _b : {};
+            if (settingsData.isAcceptingSubscriptions === false) {
+                const pauseMsg = (0, validators_js_1.readString)(settingsData, "pauseMessage");
+                throw new types_js_1.DomainHttpsError("failed-precondition", pauseMsg || "استقبال طلبات الاشتراك متوقف مؤقتاً من الإدارة.");
+            }
+            const receiverWalletNumber = (0, validators_js_1.readString)(settingsData, "vodafoneCashNumber");
+            if (!receiverWalletNumber) {
+                throw new types_js_1.DomainHttpsError("failed-precondition", "رقم محفظة فودافون كاش غير مضبوط في إعدادات النظام.");
+            }
+            const configuredPlans = Array.isArray(settingsData.plans)
+                ? settingsData.plans
+                : [];
+            const legacyNumericPlanToCaptains = {
+                1: 2,
+                2: 4,
+                3: 6,
+                4: 8,
+            };
+            const numericPlanKey = requestedNumericPlanId !== null
+                ? Math.round(requestedNumericPlanId)
+                : /^\d+$/.test(requestedPlanId)
+                    ? Number(requestedPlanId)
+                    : null;
+            const legacyMappedCaptains = numericPlanKey !== null ? (_c = legacyNumericPlanToCaptains[numericPlanKey]) !== null && _c !== void 0 ? _c : 0 : 0;
+            const matchedPlan = configuredPlans.find((p) => {
+                var _a;
+                const pId = (0, validators_js_1.readString)(p, "planId");
+                const pCap = (_a = (0, validators_js_1.readNumber)(p, "maxCaptains", "captainsCount")) !== null && _a !== void 0 ? _a : 0;
+                if (requestedPlanId && pId && pId === requestedPlanId)
+                    return true;
+                if (legacyMappedCaptains > 0 && pCap === legacyMappedCaptains)
+                    return true;
+                if (!requestedPlanId && numericPlanKey === null && requestedMaxCaptains > 0) {
+                    return pCap === requestedMaxCaptains;
+                }
+                return false;
+            });
+            if (!matchedPlan) {
+                throw new types_js_1.DomainHttpsError("invalid-argument", "الباقة المختارة غير موجودة ضمن الباقات الرسمية في إعدادات السيرفر.");
+            }
+            if (matchedPlan.isActive === false) {
+                throw new types_js_1.DomainHttpsError("failed-precondition", "هذه الباقة غير متاحة حالياً للاشتراك.");
+            }
+            const officialPlanId = (0, validators_js_1.readString)(matchedPlan, "planId");
+            const officialPlanName = (0, validators_js_1.readString)(matchedPlan, "planName", "label", "name") || officialPlanId;
+            const officialMaxCaptains = Math.round((_d = (0, validators_js_1.readNumber)(matchedPlan, "maxCaptains", "captainsCount")) !== null && _d !== void 0 ? _d : 0);
+            const officialPrice = (_e = (0, validators_js_1.readNumber)(matchedPlan, "price")) !== null && _e !== void 0 ? _e : 0;
+            const planDuration = (0, validators_js_1.readNumber)(matchedPlan, "durationDays");
+            const defaultDuration = (_f = (0, validators_js_1.readNumber)(settingsData, "durationDays")) !== null && _f !== void 0 ? _f : 30;
+            const officialDurationDays = Math.round(planDuration && planDuration >= 1 && planDuration <= 365
+                ? planDuration
+                : defaultDuration);
+            if (officialMaxCaptains < 1 || officialPrice <= 0) {
+                throw new types_js_1.DomainHttpsError("failed-precondition", "إعدادات الباقة الرسمية على السيرفر غير مكتملة.");
+            }
+            // Reject client price tampering if caller supplied a forged amount
+            if (claimedAmount !== null && Math.abs(claimedAmount - officialPrice) > 0.01) {
+                throw new types_js_1.DomainHttpsError("invalid-argument", "قيمة الاشتراك المرسلة لا تطابق السعر الرسمي للباقة على السيرفر.");
+            }
+            // Reject client captainLimit tampering if caller supplied a forged captain limit
+            if (requestedMaxCaptains > 0 && requestedMaxCaptains !== officialMaxCaptains) {
+                throw new types_js_1.DomainHttpsError("invalid-argument", "عدد الكباتن المرسل لا يطابق الحد الرسمي للباقة على السيرفر.");
+            }
+            const merchantName = (0, validators_js_1.readString)(merchantData, "name", "merchantName", "restaurantName") ||
+                "تاجر مسجل";
+            const merchantPhone = (0, validators_js_1.readString)(merchantData, "phone", "phoneNumber");
+            const merchantEmail = (0, validators_js_1.readString)(merchantData, "email", "ownerEmail") ||
+                (typeof ((_g = authContext === null || authContext === void 0 ? void 0 : authContext.token) === null || _g === void 0 ? void 0 : _g.email) === "string"
+                    ? authContext.token.email.trim()
+                    : "");
+            // Handle resubmission of an existing resubmission_required request
+            if (existingReqSnap.exists) {
+                const prev = (_h = existingReqSnap.data()) !== null && _h !== void 0 ? _h : {};
+                const prevMerchantId = (0, validators_js_1.readString)(prev, "merchantId", "restaurantId", "uid");
+                const prevStatus = normalizeStatus(prev.status);
+                if (prevMerchantId !== uid || !RESUBMISSION_STATUSES.has(prevStatus)) {
+                    throw new types_js_1.DomainHttpsError("already-exists", "الطلب موجود بالفعل ولا يمكن استبداله.");
+                }
+                const prevReceiptPath = (0, validators_js_1.readString)(prev, "receiptImagePath", "receiptPath");
+                const prevReceiptUrl = (0, validators_js_1.readString)(prev, "receiptImageUrl", "receiptUrl");
+                const existingArchivedReceipts = Array.isArray(prev.previousReceipts)
+                    ? prev.previousReceipts
+                    : [];
+                const alreadyArchived = existingArchivedReceipts.some((entry) => {
+                    const archivedPath = (0, validators_js_1.readString)(entry, "receiptImagePath", "receiptPath");
+                    const archivedUrl = (0, validators_js_1.readString)(entry, "receiptImageUrl", "receiptUrl");
+                    return ((Boolean(prevReceiptPath) && archivedPath === prevReceiptPath) ||
+                        (Boolean(prevReceiptUrl) && archivedUrl === prevReceiptUrl));
+                });
+                const reviewEntry = {
+                    action: "resubmitted",
+                    reviewerId: uid,
+                    reviewerEmail: merchantEmail,
+                    reviewerName: merchantName,
+                    note: merchantNote || "قام التاجر بإعادة رفع صورة إيصال جديدة للمراجعة",
+                    timestampMs: nowMs,
+                    timestampIso: new Date(nowMs).toISOString(),
+                };
+                const reqNum = (0, validators_js_1.readString)(prev, "requestNumber") ||
+                    `SUB-${requestId.slice(0, 8).toUpperCase()}`;
+                const resubmissionUpdate = {
+                    senderPhone,
+                    transactionReference,
+                    receiptImagePath,
+                    receiptImageUrl,
+                    merchantNote,
+                    status: "pending_review",
+                    paymentStatus: "pending_verification",
+                    resubmittedAt: s.serverTimestamp(),
+                    resubmittedAtMs: nowMs,
+                    reviewHistory: s.arrayUnion(reviewEntry),
+                    updatedAt: s.serverTimestamp(),
+                };
+                if ((prevReceiptPath || prevReceiptUrl) && !alreadyArchived) {
+                    resubmissionUpdate.previousReceipts = s.arrayUnion({
+                        receiptImagePath: prevReceiptPath,
+                        receiptImageUrl: prevReceiptUrl,
+                        senderPhone: (0, validators_js_1.readString)(prev, "senderPhone"),
+                        transactionReference: (0, validators_js_1.readString)(prev, "transactionReference"),
+                        replacedAtMs: nowMs,
+                        replacedAtIso: new Date(nowMs).toISOString(),
+                    });
+                }
+                tx.update(requestRef, resubmissionUpdate);
+                tx.set(opLogRef, {
+                    action: "resubmit_manual_subscription_request",
+                    entityType: "manual_subscription_request",
+                    requestId,
+                    merchantId: uid,
+                    planId: (0, validators_js_1.readString)(prev, "planId") || officialPlanId,
+                    amount: (_j = (0, validators_js_1.readNumber)(prev, "amount")) !== null && _j !== void 0 ? _j : officialPrice,
+                    receiptImagePath,
+                    createdAt: s.serverTimestamp(),
+                });
+                return {
+                    success: true,
+                    requestId,
+                    requestNumber: reqNum,
+                    merchantId: uid,
+                    planId: (0, validators_js_1.readString)(prev, "planId") || officialPlanId,
+                    planName: (0, validators_js_1.readString)(prev, "planName") || officialPlanName,
+                    maxCaptains: (_k = (0, validators_js_1.readNumber)(prev, "maxCaptains")) !== null && _k !== void 0 ? _k : officialMaxCaptains,
+                    amount: (_l = (0, validators_js_1.readNumber)(prev, "amount")) !== null && _l !== void 0 ? _l : officialPrice,
+                    durationDays: (_m = (0, validators_js_1.readNumber)(prev, "durationDays")) !== null && _m !== void 0 ? _m : officialDurationDays,
+                    receiverWalletNumber: (0, validators_js_1.readString)(prev, "receiverWalletNumber") || receiverWalletNumber,
+                    status: "pending_review",
+                    paymentStatus: "pending_verification",
+                    isResubmission: true,
+                    message: "تم إعادة إرسال الإيصال بنجاح وجارٍ مراجعته من الإدارة.",
+                };
+            }
+            const requestNumber = `SUB-${String(nowMs).slice(-6)}`;
+            const submitHistoryEntry = {
+                action: "submitted",
+                reviewerId: uid,
+                reviewerEmail: merchantEmail,
+                reviewerName: merchantName,
+                note: merchantNote || "تم إرسال طلب اشتراك فودافون كاش مع إيصال التحويل",
+                timestampMs: nowMs,
+                timestampIso: new Date(nowMs).toISOString(),
+            };
+            tx.set(requestRef, {
+                requestNumber,
+                merchantId: uid,
+                restaurantId: uid,
+                merchantName,
+                merchantPhone,
+                merchantEmail,
+                planId: officialPlanId,
+                planName: officialPlanName,
+                maxCaptains: officialMaxCaptains,
+                amount: officialPrice,
+                durationDays: officialDurationDays,
+                senderPhone,
+                receiverWalletNumber,
+                transactionReference,
+                receiptImagePath,
+                receiptImageUrl,
+                merchantNote,
+                status: "pending_review",
+                paymentStatus: "pending_verification",
+                previousReceipts: [],
+                reviewHistory: [submitHistoryEntry],
+                submittedAt: s.serverTimestamp(),
+                createdAt: s.serverTimestamp(),
+                updatedAt: s.serverTimestamp(),
+            });
+            tx.set(opLogRef, {
+                action: "submit_manual_subscription_request",
+                entityType: "manual_subscription_request",
+                requestId,
+                requestNumber,
+                merchantId: uid,
+                merchantName,
+                planId: officialPlanId,
+                planName: officialPlanName,
+                maxCaptains: officialMaxCaptains,
+                amount: officialPrice,
+                durationDays: officialDurationDays,
+                receiptImagePath,
+                createdAt: s.serverTimestamp(),
+            });
+            return {
+                success: true,
+                requestId,
+                requestNumber,
+                merchantId: uid,
+                planId: officialPlanId,
+                planName: officialPlanName,
+                maxCaptains: officialMaxCaptains,
+                amount: officialPrice,
+                durationDays: officialDurationDays,
+                receiverWalletNumber,
+                status: "pending_review",
+                paymentStatus: "pending_verification",
+                isResubmission: false,
+                message: "تم إرسال طلب الاشتراك بنجاح وهو الآن قيد مراجعة الإدارة.",
+            };
+        });
+    }
+    /**
      * 1. Approves a manual Vodafone Cash subscription request atomically inside a Firestore Transaction.
      * - Updates manual_subscription_requests/{requestId} -> approved + paymentStatus: paid
      * - Updates subscriptions/{merchantId} -> active, dates, planId, planName, maxCaptains, isSubscribed: true
@@ -189,7 +546,7 @@ class ManualSubscriptionsServerService {
         let merchantFcmToken = "";
         let notifyMerchantName = "";
         const result = await this.db.runTransaction(async (tx) => {
-            var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k;
+            var _a, _b, _c, _d, _e, _f, _g, _h, _j;
             const [reqSnap, settingsSnap, existingPaymentSnap] = await Promise.all([
                 tx.get(requestRef),
                 tx.get(settingsRef),
@@ -241,15 +598,14 @@ class ManualSubscriptionsServerService {
             if (!isSafeMerchantReceipt(merchantId, receiptPath, receiptUrl)) {
                 throw new types_js_1.DomainHttpsError("failed-precondition", "صورة إيصال التحويل مفقودة أو مسارها غير مطابق لملكية التاجر.");
             }
+            if (receiptPath && !receiptPath.startsWith("https://")) {
+                const existsInStorage = await this.effects.verifyStorageReceiptExists(receiptPath);
+                if (!existsInStorage) {
+                    throw new types_js_1.DomainHttpsError("failed-precondition", "ملف إيصال التحويل غير موجود في Firebase Storage ولا يمكن اعتماد الطلب.");
+                }
+            }
             const settingsData = settingsSnap.exists ? (_c = settingsSnap.data()) !== null && _c !== void 0 ? _c : {} : {};
-            const configuredDuration = (0, validators_js_1.readNumber)(settingsData, "durationDays");
-            const requestDuration = (0, validators_js_1.readNumber)(reqData, "durationDays");
-            const durationDays = configuredDuration && configuredDuration >= 1 && configuredDuration <= 365
-                ? Math.round(configuredDuration)
-                : requestDuration && requestDuration >= 1 && requestDuration <= 365
-                    ? Math.round(requestDuration)
-                    : 30;
-            // Resolve official plan from settings if matched, while keeping compatibility with request fields
+            // Resolve official plan from server settings to guarantee authoritative price, captains & duration
             const configuredPlans = Array.isArray(settingsData.plans)
                 ? settingsData.plans
                 : [];
@@ -262,6 +618,19 @@ class ManualSubscriptionsServerService {
                 return ((reqPlanId && pId && pId === reqPlanId) ||
                     (reqMaxCaptains > 0 && pCap === reqMaxCaptains));
             });
+            if (configuredPlans.length > 0 && !matchedPlan) {
+                throw new types_js_1.DomainHttpsError("failed-precondition", "الباقة المطلوبة في الطلب لا تطابق أي باقة رسمية معتمدة في إعدادات النظام.");
+            }
+            const planDuration = (0, validators_js_1.readNumber)(matchedPlan, "durationDays");
+            const configuredDuration = (0, validators_js_1.readNumber)(settingsData, "durationDays");
+            const requestDuration = (0, validators_js_1.readNumber)(reqData, "durationDays");
+            const durationDays = planDuration && planDuration >= 1 && planDuration <= 365
+                ? Math.round(planDuration)
+                : configuredDuration && configuredDuration >= 1 && configuredDuration <= 365
+                    ? Math.round(configuredDuration)
+                    : requestDuration && requestDuration >= 1 && requestDuration <= 365
+                        ? Math.round(requestDuration)
+                        : 30;
             const maxCaptains = (_e = (0, validators_js_1.readNumber)(matchedPlan, "maxCaptains", "captainsCount")) !== null && _e !== void 0 ? _e : (reqMaxCaptains > 0 ? Math.round(reqMaxCaptains) : 2);
             const planId = (0, validators_js_1.readString)(matchedPlan, "planId") ||
                 reqPlanId ||
@@ -269,7 +638,14 @@ class ManualSubscriptionsServerService {
             const planName = (0, validators_js_1.readString)(matchedPlan, "planName", "label", "name") ||
                 (0, validators_js_1.readString)(reqData, "planName", "plan") ||
                 `باقة ${maxCaptains} كابتن`;
-            const amount = (_g = (_f = (0, validators_js_1.readNumber)(reqData, "amount", "price", "requiredAmount")) !== null && _f !== void 0 ? _f : (0, validators_js_1.readNumber)(matchedPlan, "price")) !== null && _g !== void 0 ? _g : 0;
+            const officialPlanPrice = (0, validators_js_1.readNumber)(matchedPlan, "price");
+            const reqAmount = (0, validators_js_1.readNumber)(reqData, "amount", "price", "requiredAmount");
+            if (officialPlanPrice !== null &&
+                reqAmount !== null &&
+                Math.abs(reqAmount - officialPlanPrice) > 0.01) {
+                throw new types_js_1.DomainHttpsError("failed-precondition", `المبلغ المسجل في الطلب (${reqAmount}) لا يطابق السعر الرسمي للباقة (${officialPlanPrice}).`);
+            }
+            const amount = (_f = officialPlanPrice !== null && officialPlanPrice !== void 0 ? officialPlanPrice : reqAmount) !== null && _f !== void 0 ? _f : 0;
             if (amount <= 0) {
                 throw new types_js_1.DomainHttpsError("failed-precondition", "قيمة المبلغ المطلوب غير صالحة لإتمام تفعيل الاشتراك.");
             }
@@ -277,8 +653,8 @@ class ManualSubscriptionsServerService {
             const endDateMs = nowMs + durationDays * 24 * 60 * 60 * 1000;
             const startDateYmd = formatYmdUtc(startDateMs);
             const endDateYmd = formatYmdUtc(endDateMs);
-            const subData = subSnap.exists ? (_h = subSnap.data()) !== null && _h !== void 0 ? _h : {} : {};
-            const prevVersion = Math.max((_j = (0, validators_js_1.readNumber)(subData, "subscriptionVersion")) !== null && _j !== void 0 ? _j : 0, (_k = (0, validators_js_1.readNumber)(merchantData, "subscriptionVersion")) !== null && _k !== void 0 ? _k : 0);
+            const subData = subSnap.exists ? (_g = subSnap.data()) !== null && _g !== void 0 ? _g : {} : {};
+            const prevVersion = Math.max((_h = (0, validators_js_1.readNumber)(subData, "subscriptionVersion")) !== null && _h !== void 0 ? _h : 0, (_j = (0, validators_js_1.readNumber)(merchantData, "subscriptionVersion")) !== null && _j !== void 0 ? _j : 0);
             const nextVersion = prevVersion + 1;
             const merchantName = (0, validators_js_1.readString)(merchantData, "name", "merchantName", "restaurantName") ||
                 (0, validators_js_1.readString)(reqData, "merchantName", "restaurantName") ||
@@ -334,6 +710,7 @@ class ManualSubscriptionsServerService {
                 merchantPhone,
                 merchantEmail,
                 status: "active",
+                subscriptionStatus: "active",
                 isActive: true,
                 isSubscribed: true,
                 planId,
@@ -353,14 +730,20 @@ class ManualSubscriptionsServerService {
                 startDateMs,
                 endDateMs,
                 expiresAt: endDateMs,
+                activatedAt: s.serverTimestamp(),
                 durationDays,
+                suspensionReason: null,
+                cancellationReason: null,
                 approvedBy: admin.uid,
                 approvedByEmail: admin.email,
                 approvedAt: s.serverTimestamp(),
+                updatedBy: admin.uid,
+                updatedByAdminUid: admin.uid,
                 subscriptionVersion: nextVersion,
+                subscriptionUpdatedAt: s.serverTimestamp(),
                 updatedAt: s.serverTimestamp(),
             }, { merge: true });
-            // 3. Sync merchants/{merchantId} (fully compatible with Merchant App)
+            // 3. Sync merchants/{merchantId} (fully compatible with Merchant App SubscriptionSyncResolver)
             tx.set(merchantRef, {
                 subscriptionStatus: "active",
                 isSubscribed: true,
@@ -371,6 +754,7 @@ class ManualSubscriptionsServerService {
                 maxCaptains,
                 captainLimit: maxCaptains,
                 captainsCount: maxCaptains,
+                price: amount,
                 paymentStatus: "paid",
                 subscriptionStartDate: startDateYmd,
                 subscriptionEndDate: endDateYmd,
@@ -378,15 +762,23 @@ class ManualSubscriptionsServerService {
                 startDate: startDateYmd,
                 endDate: endDateYmd,
                 expiresAt: endDateMs,
+                activatedAt: s.serverTimestamp(),
+                suspensionReason: null,
+                cancellationReason: null,
                 lastApprovedRequestId: requestId,
                 lastPaymentId: paymentDocId,
+                updatedBy: admin.uid,
+                updatedByAdminUid: admin.uid,
                 subscriptionVersion: nextVersion,
+                subscriptionUpdatedAt: s.serverTimestamp(),
                 updatedAt: s.serverTimestamp(),
             }, { merge: true });
             // 4. Create single deterministic financial payment transaction
             tx.set(paymentRef, {
                 id: paymentDocId,
                 requestId,
+                type: "merchant_subscription",
+                source: "manual_vodafone_cash",
                 transactionId: transactionReference || paymentDocId,
                 transactionNumber: transactionReference || paymentDocId,
                 transactionReference,
@@ -400,7 +792,7 @@ class ManualSubscriptionsServerService {
                 maxCaptains,
                 amount,
                 currency: "EGP",
-                paymentMethod: "Vodafone Cash",
+                paymentMethod: "فودافون كاش (Vodafone Cash)",
                 method: "vodafone_cash",
                 senderPhone,
                 receiverWalletNumber,
@@ -411,9 +803,14 @@ class ManualSubscriptionsServerService {
                 approvedBy: admin.uid,
                 approvedByEmail: admin.email,
                 approvedAt: s.serverTimestamp(),
+                approvedAtMs: nowMs,
+                paidAt: s.serverTimestamp(),
+                paidAtMs: nowMs,
                 date: startDateYmd,
-                notes: `تفعيل اشتراك يدوي (${planName}) عبر فودافون كاش — طلب #${requestId}`,
+                billingMonth: startDateYmd.slice(0, 7),
+                notes: `تفعيل اشتراك (${planName}) عبر فودافون كاش — طلب #${requestId}`,
                 createdAt: s.serverTimestamp(),
+                createdAtMs: nowMs,
                 updatedAt: s.serverTimestamp(),
             });
             // 5. Write audit trail to operation_logs
@@ -618,19 +1015,21 @@ class ManualSubscriptionsServerService {
     }
     /**
      * 3. Requests the merchant to re-upload their Vodafone Cash receipt without activating subscription.
+     * Sets status to `resubmission_required`, records reason, archives previous receipt attempt,
+     * writes audit trail, and notifies the merchant.
      * @param {CallableAuthContext | undefined} authContext Caller auth context.
-     * @param {Record<string, unknown>} data Payload containing requestId and note.
+     * @param {Record<string, unknown>} data Payload containing requestId and note/reason.
      * @return {Promise<ResubmissionRequestResult>} Resubmission request result.
      */
-    async requestManualSubscriptionResubmission(authContext, data) {
+    async requestSubscriptionReceiptResubmission(authContext, data) {
         const admin = await this.requireAdmin(authContext);
         const requestId = (0, validators_js_1.readString)(data, "requestId");
-        const note = (0, validators_js_1.readString)(data, "note", "resubmissionNote", "reason");
+        const note = (0, validators_js_1.readString)(data, "reason", "note", "resubmissionNote");
         if (!requestId || !isValidDocId(requestId)) {
             throw new types_js_1.DomainHttpsError("invalid-argument", "معرّف طلب الاشتراك غير صالح.");
         }
         if (!note || note.length < 3) {
-            throw new types_js_1.DomainHttpsError("invalid-argument", "يرجى كتابة ملاحظة واضحة للتاجر توضح المطلوب إعادة رفعه.");
+            throw new types_js_1.DomainHttpsError("invalid-argument", "يرجى كتابة سبب واضح للتاجر يوضح المطلوب إعادة رفعه.");
         }
         const cleanNote = note.slice(0, 500);
         const nowMs = this.effects.now();
@@ -650,7 +1049,7 @@ class ManualSubscriptionsServerService {
                 throw new types_js_1.DomainHttpsError("not-found", "طلب الاشتراك غير موجود أو تم حذفه.");
             }
             const reqData = (_a = reqSnap.data()) !== null && _a !== void 0 ? _a : {};
-            const currentStatus = normalizeStatus(reqData.status) || "pending";
+            const currentStatus = normalizeStatus(reqData.status) || "pending_review";
             if (currentStatus === "approved") {
                 throw new types_js_1.DomainHttpsError("failed-precondition", "لا يمكن طلب إعادة إرسال لطلب تمت الموافقة عليه بالفعل.");
             }
@@ -666,17 +1065,21 @@ class ManualSubscriptionsServerService {
             merchantFcmToken = (0, validators_js_1.readString)(merchantData, "fcmToken");
             planName = (0, validators_js_1.readString)(reqData, "planName", "plan") || "باقة الاشتراك";
             const reviewEntry = {
-                action: "resubmission_requested",
+                action: "resubmission_required",
                 reviewerId: admin.uid,
                 reviewerEmail: admin.email,
                 reviewerName: admin.name,
+                reason: cleanNote,
                 note: cleanNote,
                 timestampMs: nowMs,
                 timestampIso: new Date(nowMs).toISOString(),
             };
-            tx.update(requestRef, {
-                status: "resubmission_requested",
-                paymentStatus: "resubmission_requested",
+            const existingReceiptPath = (0, validators_js_1.readString)(reqData, "receiptImagePath", "receiptPath");
+            const existingReceiptUrl = (0, validators_js_1.readString)(reqData, "receiptImageUrl", "receiptUrl");
+            const updatePatch = {
+                status: "resubmission_required",
+                paymentStatus: "resubmission_required",
+                resubmissionReason: cleanNote,
                 resubmissionNote: cleanNote,
                 lastReviewedBy: admin.uid,
                 lastReviewedByEmail: admin.email,
@@ -685,12 +1088,25 @@ class ManualSubscriptionsServerService {
                 lastReviewedAtMs: nowMs,
                 reviewHistory: s.arrayUnion(reviewEntry),
                 updatedAt: s.serverTimestamp(),
-            });
+            };
+            if (existingReceiptPath || existingReceiptUrl) {
+                updatePatch.previousReceipts = s.arrayUnion({
+                    receiptImagePath: existingReceiptPath,
+                    receiptImageUrl: existingReceiptUrl,
+                    senderPhone: (0, validators_js_1.readString)(reqData, "senderPhone"),
+                    transactionReference: (0, validators_js_1.readString)(reqData, "transactionReference"),
+                    flaggedReason: cleanNote,
+                    flaggedAtMs: nowMs,
+                    flaggedAtIso: new Date(nowMs).toISOString(),
+                });
+            }
+            tx.update(requestRef, updatePatch);
             tx.set(opLogRef, {
-                action: "request_manual_subscription_resubmission",
+                action: "request_subscription_receipt_resubmission",
                 entityType: "manual_subscription_request",
                 requestId,
                 merchantId,
+                reason: cleanNote,
                 note: cleanNote,
                 adminUid: admin.uid,
                 adminEmail: admin.email,
@@ -701,14 +1117,14 @@ class ManualSubscriptionsServerService {
                 success: true,
                 requestId,
                 merchantId,
-                status: "resubmission_requested",
+                status: "resubmission_required",
                 note: cleanNote,
                 reviewedBy: admin.uid,
                 message: "تم إرسال طلب إعادة رفع الإيصال إلى التاجر دون تفعيل الاشتراك.",
             };
         });
         const notifTitle = "مطلوب إعادة رفع إيصال التحويل";
-        const notifBody = `يرجى إعادة رفع إيصال الاشتراك (${planName}). ملاحظة الإدارة: ${cleanNote}`;
+        const notifBody = `يرجى إعادة رفع إيصال الاشتراك (${planName}). السبب: ${cleanNote}`;
         await this.db
             .collection("merchants")
             .doc(result.merchantId)
@@ -721,6 +1137,7 @@ class ManualSubscriptionsServerService {
             requestId,
             merchantId: result.merchantId,
             note: cleanNote,
+            reason: cleanNote,
             isRead: false,
             createdAt: s.serverTimestamp(),
         });
@@ -736,6 +1153,15 @@ class ManualSubscriptionsServerService {
             dedupeKey: `sub_resubmit_${requestId}_${nowMs}`,
         });
         return result;
+    }
+    /**
+     * Backwards-compatible alias delegating to requestSubscriptionReceiptResubmission.
+     * @param {CallableAuthContext | undefined} authContext Caller auth context.
+     * @param {Record<string, unknown>} data Payload containing requestId and note/reason.
+     * @return {Promise<ResubmissionRequestResult>} Resubmission request result.
+     */
+    async requestManualSubscriptionResubmission(authContext, data) {
+        return this.requestSubscriptionReceiptResubmission(authContext, data);
     }
     /**
      * 4. Updates Vodafone Cash & manual subscription settings in Firestore (Master Admin ONLY).
@@ -781,8 +1207,10 @@ class ManualSubscriptionsServerService {
             const obj = item;
             const maxCaptainsRaw = (0, validators_js_1.readNumber)(obj, "maxCaptains", "captainsCount");
             const priceRaw = (0, validators_js_1.readNumber)(obj, "price");
+            const planDurationRaw = (0, validators_js_1.readNumber)(obj, "durationDays");
             const maxCaptains = maxCaptainsRaw !== null ? Math.round(maxCaptainsRaw) : 0;
             const price = priceRaw !== null ? Math.round(priceRaw * 100) / 100 : 0;
+            const planDurationDays = planDurationRaw !== null ? Math.round(planDurationRaw) : durationDays;
             const planId = (0, validators_js_1.readString)(obj, "planId") || `plan_${maxCaptains}_captains`;
             const planName = (0, validators_js_1.readString)(obj, "planName", "label", "name") ||
                 `${maxCaptains} كابتن - ${price} جنيه`;
@@ -795,12 +1223,16 @@ class ManualSubscriptionsServerService {
             if (price <= 0 || price > 100000) {
                 throw new types_js_1.DomainHttpsError("invalid-argument", `سعر الباقة "${planName}" غير صالح.`);
             }
+            if (planDurationDays < 1 || planDurationDays > 365) {
+                throw new types_js_1.DomainHttpsError("invalid-argument", `مدة الباقة "${planName}" يجب أن تكون بين 1 و 365 يوماً.`);
+            }
             seenPlanIds.add(planId);
             plans.push({
                 planId,
                 planName,
                 maxCaptains,
                 price,
+                durationDays: planDurationDays,
                 isActive: obj.isActive !== false,
             });
         }

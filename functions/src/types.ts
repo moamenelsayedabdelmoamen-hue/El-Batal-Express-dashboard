@@ -174,6 +174,7 @@ export interface AdminManualSubFcmPayload {
 export interface ManualSubscriptionEffectsPort {
   now(): number;
   sentinels: SentinelFactory;
+  verifyStorageReceiptExists(storagePath: string): Promise<boolean>;
   sendMerchantSubscriptionNotification(
     payload: MerchantSubscriptionFcmPayload
   ): Promise<void>;

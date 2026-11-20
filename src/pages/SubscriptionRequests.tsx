@@ -38,12 +38,17 @@ import { FirebaseImage } from '../components/common/FirebaseImage';
 import { resolveStorageImageDetailed } from '../utils/storageUtils';
 import { formatDateTime, formatCurrency } from '../utils/formatters';
 
-type StatusFilter = 'all' | 'pending' | 'resubmission_requested' | 'approved' | 'rejected';
+type StatusFilter = 'all' | 'pending_review' | 'resubmission_required' | 'approved' | 'rejected';
 
 const STATUS_META: Record<
   ManualSubscriptionRequestStatus,
   { label: string; badgeClass: string; dotClass: string }
 > = {
+  pending_review: {
+    label: 'قيد المراجعة',
+    badgeClass: 'bg-amber-500/10 text-amber-400 border-amber-500/30',
+    dotClass: 'bg-amber-400',
+  },
   pending: {
     label: 'قيد المراجعة',
     badgeClass: 'bg-amber-500/10 text-amber-400 border-amber-500/30',
@@ -53,6 +58,11 @@ const STATUS_META: Record<
     label: 'جاري المراجعة',
     badgeClass: 'bg-sky-500/10 text-sky-400 border-sky-500/30',
     dotClass: 'bg-sky-400',
+  },
+  resubmission_required: {
+    label: 'مطلوب إعادة إرسال',
+    badgeClass: 'bg-orange-500/10 text-orange-400 border-orange-500/30',
+    dotClass: 'bg-orange-400',
   },
   resubmission_requested: {
     label: 'مطلوب إعادة إرسال',
@@ -77,8 +87,11 @@ function getHistoryActionLabel(action: string): string {
       return 'موافقة وتفعيل الاشتراك';
     case 'rejected':
       return 'رفض الطلب';
+    case 'resubmission_required':
     case 'resubmission_requested':
       return 'طلب إعادة إرسال الإيصال';
+    case 'resubmitted':
+      return 'إعادة رفع إيصال جديد من التاجر';
     case 'submitted':
       return 'تقديم الطلب من التاجر';
     default:
@@ -220,9 +233,14 @@ export const SubscriptionRequestsPage: React.FC = () => {
     let approvedRevenue = 0;
 
     for (const r of requests) {
-      if (r.status === 'pending' || r.status === 'under_review') pending++;
-      else if (r.status === 'resubmission_requested') resubmission++;
-      else if (r.status === 'approved') {
+      if (r.status === 'pending_review' || r.status === 'pending' || r.status === 'under_review') {
+        pending++;
+      } else if (
+        r.status === 'resubmission_required' ||
+        r.status === 'resubmission_requested'
+      ) {
+        resubmission++;
+      } else if (r.status === 'approved') {
         approved++;
         approvedRevenue += r.amount || 0;
       } else if (r.status === 'rejected') rejected++;
@@ -241,8 +259,21 @@ export const SubscriptionRequestsPage: React.FC = () => {
   const filteredRequests = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     const list = requests.filter((req) => {
-      if (statusFilter === 'pending') {
-        if (req.status !== 'pending' && req.status !== 'under_review') return false;
+      if (statusFilter === 'pending_review') {
+        if (
+          req.status !== 'pending_review' &&
+          req.status !== 'pending' &&
+          req.status !== 'under_review'
+        ) {
+          return false;
+        }
+      } else if (statusFilter === 'resubmission_required') {
+        if (
+          req.status !== 'resubmission_required' &&
+          req.status !== 'resubmission_requested'
+        ) {
+          return false;
+        }
       } else if (statusFilter !== 'all' && req.status !== statusFilter) {
         return false;
       }
@@ -335,7 +366,7 @@ export const SubscriptionRequestsPage: React.FC = () => {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h2 className="text-xl sm:text-2xl font-black text-white">
-            طلبات الاشتراك (فودافون كاش)
+            طلبات اشتراك فودافون كاش
           </h2>
           <p className="text-xs sm:text-sm text-zinc-400 mt-0.5">
             مراجعة إيصالات التحويل اليدوية واعتماد تفعيل باقات التجار عبر السيرفر بشكل آمن
@@ -427,8 +458,8 @@ export const SubscriptionRequestsPage: React.FC = () => {
           {(
             [
               { key: 'all', label: `الكل (${stats.total})` },
-              { key: 'pending', label: `قيد المراجعة (${stats.pending})` },
-              { key: 'resubmission_requested', label: `إعادة إرسال (${stats.resubmission})` },
+              { key: 'pending_review', label: `قيد المراجعة (${stats.pending})` },
+              { key: 'resubmission_required', label: `إعادة إرسال (${stats.resubmission})` },
               { key: 'approved', label: `مقبول (${stats.approved})` },
               { key: 'rejected', label: `مرفوض (${stats.rejected})` },
             ] as { key: StatusFilter; label: string }[]
@@ -498,7 +529,7 @@ export const SubscriptionRequestsPage: React.FC = () => {
                 </tr>
               ) : (
                 filteredRequests.map((req) => {
-                  const statusMeta = STATUS_META[req.status] || STATUS_META.pending;
+                  const statusMeta = STATUS_META[req.status] || STATUS_META.pending_review;
                   const receiptSrc = req.receiptImagePath || req.receiptImageUrl;
                   return (
                     <tr
@@ -633,10 +664,10 @@ export const SubscriptionRequestsPage: React.FC = () => {
                     </h3>
                     <span
                       className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg border text-[11px] font-bold ${
-                        (STATUS_META[selectedRequest.status] || STATUS_META.pending).badgeClass
+                        (STATUS_META[selectedRequest.status] || STATUS_META.pending_review).badgeClass
                       }`}
                     >
-                      {(STATUS_META[selectedRequest.status] || STATUS_META.pending).label}
+                      {(STATUS_META[selectedRequest.status] || STATUS_META.pending_review).label}
                     </span>
                   </div>
                   <p className="text-xs text-zinc-400 mt-0.5 tabular-nums">
@@ -904,16 +935,59 @@ export const SubscriptionRequestsPage: React.FC = () => {
                   </section>
                 )}
 
-                {selectedRequest.status === 'resubmission_requested' &&
-                  selectedRequest.resubmissionNote && (
+                {(selectedRequest.status === 'resubmission_required' ||
+                  selectedRequest.status === 'resubmission_requested') &&
+                  (selectedRequest.resubmissionReason || selectedRequest.resubmissionNote) && (
                     <section className="p-4 rounded-2xl bg-orange-500/10 border border-orange-500/30 text-xs space-y-1">
                       <div className="flex items-center gap-2 font-black text-orange-400">
                         <RotateCcw className="w-4 h-4" />
                         <span>بانتظار إعادة رفع الإيصال من التاجر</span>
                       </div>
-                      <p className="text-zinc-200">{selectedRequest.resubmissionNote}</p>
+                      <p className="text-zinc-200">
+                        {selectedRequest.resubmissionReason || selectedRequest.resubmissionNote}
+                      </p>
                     </section>
                   )}
+
+                {/* Previous Receipt Attempts (if resubmitted) */}
+                {selectedRequest.previousReceipts.length > 0 && (
+                  <section className="bg-[#0a0c12] border border-zinc-800/90 rounded-2xl p-4 space-y-2.5">
+                    <h4 className="text-xs font-black text-orange-400 flex items-center gap-2">
+                      <RotateCcw className="w-4 h-4" />
+                      <span>الإيصالات السابقة المؤرشفة ({selectedRequest.previousReceipts.length})</span>
+                    </h4>
+                    <div className="space-y-2 max-h-40 overflow-y-auto pl-1">
+                      {selectedRequest.previousReceipts.map((prev, idx) => (
+                        <div
+                          key={`${prev.receiptImagePath || idx}-${prev.flaggedAtIso || prev.replacedAtIso || idx}`}
+                          className="p-2.5 rounded-xl bg-[#11141c] border border-zinc-800 text-[11px] space-y-1"
+                        >
+                          <div className="flex items-center justify-between gap-2 text-zinc-400">
+                            <span className="font-mono" dir="ltr">
+                              {prev.senderPhone || '—'}
+                              {prev.transactionReference ? ` • ${prev.transactionReference}` : ''}
+                            </span>
+                            <span className="font-mono text-[10px]">
+                              {prev.replacedAtIso
+                                ? formatDateTime(prev.replacedAtIso)
+                                : prev.flaggedAtIso
+                                  ? formatDateTime(prev.flaggedAtIso)
+                                  : '—'}
+                            </span>
+                          </div>
+                          {prev.flaggedReason && (
+                            <p className="text-orange-300">{prev.flaggedReason}</p>
+                          )}
+                          {prev.receiptImagePath && (
+                            <p className="font-mono text-[10px] text-zinc-500 truncate" dir="ltr">
+                              {prev.receiptImagePath}
+                            </p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                )}
 
                 {/* Previous Review History */}
                 <section className="bg-[#0a0c12] border border-zinc-800/90 rounded-2xl p-4 space-y-3">

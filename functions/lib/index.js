@@ -33,7 +33,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.onManualSubscriptionRequestCreated = exports.updateManualSubscriptionSettings = exports.requestManualSubscriptionResubmission = exports.rejectManualSubscriptionRequest = exports.approveManualSubscriptionRequest = exports.reassignOrderOffer = exports.onOrderUpdatedDispatch = exports.onOrderCreatedDispatch = exports.resolveCaptainEmailByPhone = exports.expireDeliveryOffer = exports.confirmDelivery = exports.submitCustomerDeliveryDetails = exports.confirmPickup = exports.captainArrivedAtMerchant = exports.acceptOrder = void 0;
+exports.onManualSubscriptionRequestCreated = exports.updateManualSubscriptionSettings = exports.requestManualSubscriptionResubmission = exports.requestSubscriptionReceiptResubmission = exports.rejectManualSubscriptionRequest = exports.approveManualSubscriptionRequest = exports.submitManualSubscriptionRequest = exports.reassignOrderOffer = exports.onOrderUpdatedDispatch = exports.onOrderCreatedDispatch = exports.resolveCaptainEmailByPhone = exports.expireDeliveryOffer = exports.confirmDelivery = exports.submitCustomerDeliveryDetails = exports.confirmPickup = exports.captainArrivedAtMerchant = exports.acceptOrder = void 0;
 const app_1 = require("firebase-admin/app");
 const firestore_1 = require("firebase-admin/firestore");
 const firebase_functions_1 = require("firebase-functions");
@@ -225,6 +225,26 @@ exports.reassignOrderOffer = (0, tasks_1.onTaskDispatched)({
     }
 });
 /**
+ * Callable 8a: Merchant submits (or resubmits) a manual Vodafone Cash subscription request.
+ * Validates auth, merchant ownership, official server package/price/duration, Storage receipt,
+ * and prevents duplicates. Always creates/updates in pending_review without activating subscription.
+ */
+exports.submitManualSubscriptionRequest = (0, https_1.onCall)({ region: "us-central1" }, async (request) => {
+    var _a;
+    try {
+        const payload = ((_a = request.data) !== null && _a !== void 0 ? _a : {});
+        return await manualSubService.submitManualSubscriptionRequest(request.auth
+            ? {
+                uid: request.auth.uid,
+                token: request.auth.token,
+            }
+            : undefined, payload);
+    }
+    catch (err) {
+        throw mapError(err);
+    }
+});
+/**
  * Callable 8: Server-authoritative approval of a manual Vodafone Cash subscription request.
  * Atomically approves the request, activates subscriptions/{merchantId} & merchants/{merchantId},
  * creates a single financial record in payments/, writes operation_logs, and notifies the merchant.
@@ -265,12 +285,13 @@ exports.rejectManualSubscriptionRequest = (0, https_1.onCall)({ region: "us-cent
 });
 /**
  * Callable 10: Admin requests the merchant to re-upload a clearer Vodafone Cash receipt.
+ * Sets status to resubmission_required and preserves previous receipt attempts & audit history.
  */
-exports.requestManualSubscriptionResubmission = (0, https_1.onCall)({ region: "us-central1" }, async (request) => {
+exports.requestSubscriptionReceiptResubmission = (0, https_1.onCall)({ region: "us-central1" }, async (request) => {
     var _a;
     try {
         const payload = ((_a = request.data) !== null && _a !== void 0 ? _a : {});
-        return await manualSubService.requestManualSubscriptionResubmission(request.auth
+        return await manualSubService.requestSubscriptionReceiptResubmission(request.auth
             ? {
                 uid: request.auth.uid,
                 token: request.auth.token,
@@ -281,6 +302,10 @@ exports.requestManualSubscriptionResubmission = (0, https_1.onCall)({ region: "u
         throw mapError(err);
     }
 });
+/**
+ * Compatibility alias for requestSubscriptionReceiptResubmission.
+ */
+exports.requestManualSubscriptionResubmission = exports.requestSubscriptionReceiptResubmission;
 /**
  * Callable 11: Master-Admin-only update of Vodafone Cash wallet number, official pricing, and duration.
  */

@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { DashboardStats, Order } from '../types';
 import { DashboardService, EMPTY_STATS } from '../services/dashboardService';
+import { PaymentService, computePaymentRevenueMetrics } from '../services/paymentService';
 import { StatusBadge } from '../components/common/StatusBadge';
 import { EmptyState } from '../components/common/EmptyState';
 import { MetricsSummary } from '../components/dashboard/MetricsSummary';
@@ -43,6 +44,27 @@ export const DashboardPage: React.FC = () => {
 
   useEffect(() => {
     fetchDashboard();
+
+    // Live listener on `payments` so newly approved merchant subscriptions immediately
+    // update "الإيرادات الشهرية" (monthlyRevenue) and "التراكمي الإجمالي" (totalRevenue).
+    const unsubPayments = PaymentService.subscribe((livePayments) => {
+      const { totalRevenue, monthlyRevenue } = computePaymentRevenueMetrics(livePayments);
+      setStats((prev) =>
+        prev
+          ? {
+              ...prev,
+              totalRevenue,
+              monthlyRevenue,
+            }
+          : {
+              ...EMPTY_STATS,
+              totalRevenue,
+              monthlyRevenue,
+            }
+      );
+    });
+
+    return () => unsubPayments();
   }, []);
 
   const handleRefresh = () => {

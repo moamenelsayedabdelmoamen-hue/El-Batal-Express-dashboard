@@ -7,6 +7,7 @@ import {
 } from "firebase-admin/firestore";
 import {getFunctions} from "firebase-admin/functions";
 import {getMessaging} from "firebase-admin/messaging";
+import {getStorage} from "firebase-admin/storage";
 import * as logger from "firebase-functions/logger";
 import {
   AdminManualSubFcmPayload,
@@ -251,6 +252,29 @@ export function createAdminManualSubscriptionEffects(): ManualSubscriptionEffect
       increment: (value: number) => FieldValue.increment(value),
       arrayUnion: (...elements: unknown[]) => FieldValue.arrayUnion(...elements),
     },
+    async verifyStorageReceiptExists(storagePath: string): Promise<boolean> {
+      const trimmed = String(storagePath || "").trim();
+      if (!trimmed) return false;
+      try {
+        let objectPath = trimmed;
+        if (trimmed.startsWith("gs://")) {
+          const withoutScheme = trimmed.slice(5);
+          const slashIdx = withoutScheme.indexOf("/");
+          objectPath = slashIdx >= 0 ? withoutScheme.slice(slashIdx + 1) : "";
+        }
+        objectPath = objectPath.replace(/^\/+/, "");
+        if (!objectPath) return false;
+
+        const [exists] = await getStorage().bucket().file(objectPath).exists();
+        return Boolean(exists);
+      } catch (err) {
+        logger.warn("Storage receipt existence verification failed", {
+          storagePath: trimmed,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        return false;
+      }
+    },
     async sendMerchantSubscriptionNotification(
       payload: MerchantSubscriptionFcmPayload
     ): Promise<void> {
@@ -263,6 +287,15 @@ export function createAdminManualSubscriptionEffects(): ManualSubscriptionEffect
         return;
       }
 
+      const merchantSignalTypeMap: Record<
+        MerchantSubscriptionFcmPayload["eventType"],
+        string
+      > = {
+        subscription_approved: "SUBSCRIPTION_ACTIVATED",
+        subscription_rejected: "SUBSCRIPTION_REJECTED",
+        subscription_resubmission_requested: "SUBSCRIPTION_RESUBMISSION_REQUIRED",
+      };
+
       try {
         await getMessaging().send({
           token: payload.fcmToken,
@@ -272,9 +305,14 @@ export function createAdminManualSubscriptionEffects(): ManualSubscriptionEffect
           },
           android: {
             priority: "high",
+            notification: {
+              channelId: "subscription_sync_channel",
+              sound: "default",
+            },
           },
           data: {
-            type: payload.eventType,
+            type: merchantSignalTypeMap[payload.eventType] || "SUBSCRIPTION_UPDATED",
+            eventType: payload.eventType,
             requestId: payload.requestId,
             merchantId: payload.merchantId,
             planId: payload.planId ?? "",

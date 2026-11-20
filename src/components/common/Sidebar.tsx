@@ -48,7 +48,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
     { to: '/orders', label: 'الطلبات', icon: ShoppingBag },
     {
       to: '/subscription-requests',
-      label: 'طلبات الاشتراك',
+      label: 'طلبات اشتراك فودافون كاش',
       icon: ClipboardCheck,
       badgeCount: pendingSubscriptionRequestsCount,
     },

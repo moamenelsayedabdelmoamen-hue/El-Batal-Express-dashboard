@@ -2,7 +2,7 @@ import { DashboardStats, Order } from '../types';
 import { RestaurantService } from './restaurantService';
 import { CaptainService } from './captainService';
 import { OrderService } from './orderService';
-import { PaymentService } from './paymentService';
+import { PaymentService, computePaymentRevenueMetrics } from './paymentService';
 
 export const EMPTY_STATS: DashboardStats = {
   totalRestaurants: 0,
@@ -56,17 +56,8 @@ export const DashboardService = {
       const todayOrders = todayOrderList.length;
       const dailyOrderVolume = todayOrderList.reduce((sum, o) => sum + (Number(o.total) || 0), 0);
 
-      // Calculate total and monthly revenue strictly from real successful payments
-      const successfulPayments = payments.filter((p) => p.status === 'success');
-      const totalRevenue = successfulPayments.reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
-
-      const now = new Date();
-      const currentMonthPrefix = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-      const thisMonthPayments = successfulPayments.filter((p) => {
-        const dateStr = typeof p.createdAt === 'string' ? p.createdAt : (typeof p.date === 'string' ? p.date : '');
-        return dateStr.startsWith(currentMonthPrefix);
-      });
-      const monthlyRevenue = thisMonthPayments.reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
+      // Calculate total and monthly revenue strictly from real successful payments (including approved Vodafone Cash subscriptions)
+      const { totalRevenue, monthlyRevenue } = computePaymentRevenueMetrics(payments);
 
       const totalOrdersAmount = orders.reduce((sum, o) => sum + (Number(o.total) || 0), 0);
       const avgOrderValue = totalOrders > 0
