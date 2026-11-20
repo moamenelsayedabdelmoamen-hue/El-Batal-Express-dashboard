@@ -655,6 +655,21 @@ describe("Manual Vodafone Cash Subscriptions Server Service (Full 14-Scenario Su
       }),
       (err) => err instanceof DomainHttpsError && err.code === "invalid-argument"
     );
+
+    const forgedLimitReceipt = "subscription_receipts/merchant_1/forged_limit.jpg";
+    isolatedStorage.add(forgedLimitReceipt);
+    await assert.rejects(
+      () => isolatedService.submitManualSubscriptionRequest(MERCHANT_AUTH, {
+        requestId: "req_forged_captain_limit",
+        planId: "plan_4_captains",
+        amount: 800,
+        maxCaptains: 4,
+        captainLimit: 8,
+        senderPhone: "01022223333",
+        receiptStoragePath: forgedLimitReceipt,
+      }),
+      (err) => err instanceof DomainHttpsError && err.code === "invalid-argument"
+    );
   });
 
   it("2b. Serializes concurrent merchant requests and globally reserves transaction references", async () => {
