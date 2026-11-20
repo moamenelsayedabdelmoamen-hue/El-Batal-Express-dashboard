@@ -169,6 +169,25 @@ export class OrderServerService {
       const order = orderSnap.data() ?? {};
       const status = readNormalizedOrderStatus(order) || "pending";
       const assignedUid = extractOrderCaptainUid(order);
+      const currentOrderId = readString(captainData, "currentOrderId");
+      if (currentOrderId && currentOrderId !== orderId) {
+        throw new DomainHttpsError(
+          "failed-precondition",
+          "لديك طلب آخر مرتبط بحسابك، لا يمكن قبول طلب جديد حالياً."
+        );
+      }
+      const lockedOrderId = readString(captainData, "activeOfferOrderId");
+      const lockGeneration = Number(captainData.activeOfferGeneration ?? 0) || 0;
+      const orderGeneration = Number(order.offerGeneration ?? 0) || 0;
+      if (
+        lockedOrderId &&
+        (lockedOrderId !== orderId || (lockGeneration > 0 && lockGeneration !== orderGeneration))
+      ) {
+        throw new DomainHttpsError(
+          "failed-precondition",
+          "هذا العرض لم يعد محجوزاً لحسابك أو تم استبداله بعرض أحدث."
+        );
+      }
 
       // Idempotent retry by the same captain who already owns the accepted order
       if (
@@ -215,20 +234,14 @@ export class OrderServerService {
         order.offerExpiresAt ?? order.offer_expires_at
       );
 
-      if (offeredUid && offeredUid !== uid) {
-        if (offerExpiresAtMs === 0 || nowMs < offerExpiresAtMs) {
-          throw new DomainHttpsError(
-            "failed-precondition",
-            "هذا الطلب معروض حالياً لكابتن آخر ولم يتحول إليك."
-          );
-        }
+      if (!offeredUid || offeredUid !== uid) {
+        throw new DomainHttpsError(
+          "failed-precondition",
+          "هذا الطلب غير معروض حالياً لحسابك."
+        );
       }
 
-      if (
-        offeredUid === uid &&
-        offerExpiresAtMs > 0 &&
-        nowMs > offerExpiresAtMs
-      ) {
+      if (offerExpiresAtMs <= 0 || nowMs >= offerExpiresAtMs) {
         throw new DomainHttpsError(
           "failed-precondition",
           "انتهت مهلة الـ 60 ثانية لقبول هذا الطلب وتم تحويله لكابتن آخر."
@@ -251,7 +264,13 @@ export class OrderServerService {
         "vendorId",
         "ownerId"
       );
-      if (merchantId) {
+      if (!merchantId) {
+        throw new DomainHttpsError(
+          "failed-precondition",
+          "بيانات التاجر غير مكتملة ولا يمكن قبول الطلب بأمان."
+        );
+      }
+      {
         const [merchantSnap, restaurantSnap, subSnap] = await Promise.all([
           tx.get(this.db.collection("merchants").doc(merchantId)),
           tx.get(this.db.collection("restaurants").doc(merchantId)),
@@ -262,8 +281,18 @@ export class OrderServerService {
           : restaurantSnap.exists
             ? restaurantSnap.data()
             : undefined;
-        const sData = subSnap.exists ? subSnap.data() : undefined;
-        assertMerchantAndSubscriptionValid(merchantId, mData, sData, nowMs);
+        if (!mData || !subSnap.exists) {
+          throw new DomainHttpsError(
+            "failed-precondition",
+            "ملف التاجر أو سجل الاشتراك غير موجود؛ لا يمكن قبول الطلب."
+          );
+        }
+        assertMerchantAndSubscriptionValid(
+          merchantId,
+          mData,
+          subSnap.data(),
+          nowMs
+        );
       }
 
       const captainName = readString(captainData, "fullName", "name");
@@ -300,6 +329,9 @@ export class OrderServerService {
       tx.update(captainRef, {
         presenceStatus: "on_trip",
         currentOrderId: orderId,
+        activeOfferOrderId: null,
+        activeOfferGeneration: null,
+        activeOfferExpiresAt: null,
         updatedAt: s.serverTimestamp(),
       });
 
@@ -719,6 +751,9 @@ export class OrderServerService {
         totalOrdersCount: s.increment(1),
         presenceStatus: "available",
         currentOrderId: null,
+        activeOfferOrderId: null,
+        activeOfferGeneration: null,
+        activeOfferExpiresAt: null,
         updatedAt: s.serverTimestamp(),
       });
 
@@ -763,6 +798,9 @@ export class OrderServerService {
     const uid = requireAuthUid(authUid);
     const orderId = requireValidOrderId(data?.orderId ?? data?.rawOrderId);
     const reason = readString(data, "reason").toLowerCase() || "expired";
+    if (reason !== "expired" && reason !== "declined") {
+      throw new DomainHttpsError("invalid-argument", "سبب إنهاء العرض غير صالح.");
+    }
     const nowMs = this.effects.now();
 
     const preOrderSnap = await this.db.collection("orders").doc(orderId).get();
@@ -778,14 +816,17 @@ export class OrderServerService {
     }
 
     const offeredUid = readString(preOrder, "offeredCaptainId");
-    if (offeredUid && offeredUid !== uid) {
+    if (!offeredUid || offeredUid !== uid) {
       return {status: "ignored_stale", orderId};
     }
 
     const offerExpiresAtMs = parseTimestampMs(
       preOrder.offerExpiresAt ?? preOrder.offer_expires_at
     );
-    if (reason !== "declined" && offerExpiresAtMs > 0 && nowMs < offerExpiresAtMs) {
+    if (offerExpiresAtMs <= 0) {
+      return {status: "ignored_stale", orderId};
+    }
+    if (reason !== "declined" && nowMs < offerExpiresAtMs) {
       throw new DomainHttpsError(
         "failed-precondition",
         "لم تنتهِ مهلة قبول الطلب على الخادم بعد."
@@ -808,7 +849,10 @@ export class OrderServerService {
    * @param {string} orderId Order document ID.
    * @return {Promise<DispatchOutcome>} Dispatch outcome.
    */
-  async dispatchNewOrSearchingOrder(orderId: string): Promise<DispatchOutcome> {
+  async dispatchNewOrSearchingOrder(
+    orderId: string,
+    requestedCaptainId?: string
+  ): Promise<DispatchOutcome> {
     const orderRef = this.db.collection("orders").doc(orderId);
     const preSnap = await orderRef.get();
     if (!preSnap.exists) {
@@ -844,36 +888,51 @@ export class OrderServerService {
       "vendorId",
       "ownerId"
     );
-    if (merchantId) {
-      const [mSnap, rSnap, sSnap] = await Promise.all([
-        this.db.collection("merchants").doc(merchantId).get(),
-        this.db.collection("restaurants").doc(merchantId).get(),
-        this.db.collection("subscriptions").doc(merchantId).get(),
-      ]);
-      const mData = mSnap.exists
-        ? mSnap.data()
-        : rSnap.exists
-          ? rSnap.data()
-          : undefined;
-      assertMerchantAndSubscriptionValid(
-        merchantId,
-        mData,
-        sSnap.exists ? sSnap.data() : undefined,
-        nowMs
+    if (!merchantId) {
+      throw new DomainHttpsError(
+        "failed-precondition",
+        "لا يمكن توزيع الطلب دون معرف تاجر صالح."
       );
     }
+    const [mSnap, rSnap, sSnap] = await Promise.all([
+      this.db.collection("merchants").doc(merchantId).get(),
+      this.db.collection("restaurants").doc(merchantId).get(),
+      this.db.collection("subscriptions").doc(merchantId).get(),
+    ]);
+    const mData = mSnap.exists
+      ? mSnap.data()
+      : rSnap.exists
+        ? rSnap.data()
+        : undefined;
+    if (!mData || !sSnap.exists) {
+      throw new DomainHttpsError(
+        "failed-precondition",
+        "ملف التاجر أو سجل الاشتراك غير موجود؛ لا يمكن توزيع الطلب."
+      );
+    }
+    assertMerchantAndSubscriptionValid(
+      merchantId,
+      mData,
+      sSnap.data(),
+      nowMs
+    );
 
     const excludedSet = new Set([
       ...readStringList(preOrder.excludedCaptainIds),
       ...readStringList(preOrder.timedOutCaptainIds),
     ]);
-    const candidates = await this.findNearestEligibleCaptains(
+    const allCandidates = await this.findNearestEligibleCaptains(
       preOrder,
       excludedSet,
       nowMs
     );
-    const topCandidate = candidates[0] ?? null;
-    const eligibleIds = candidates.map((c) => c.uid);
+    const requestedUid = typeof requestedCaptainId === "string" && requestedCaptainId.trim()
+      ? requestedCaptainId.trim()
+      : readString(preOrder, "requestedCaptainId");
+    const candidates = requestedUid
+      ? allCandidates.filter((candidate) => candidate.uid === requestedUid)
+      : allCandidates;
+    const eligibleIds = candidates.map((candidate) => candidate.uid);
     const s = this.effects.sentinels;
 
     let selectedOfferPayload: OfferFcmPayload | null = null;
@@ -895,7 +954,54 @@ export class OrderServerService {
         return {status: "ignored_already_active", orderId} as DispatchOutcome;
       }
 
-      if (!topCandidate) {
+      let selectedCandidate: CaptainCandidate | null = null;
+      for (const candidate of candidates) {
+        const candidateRef = this.db.collection("captains").doc(candidate.uid);
+        const candidateSnap = await tx.get(candidateRef);
+        if (!candidateSnap.exists) continue;
+        const captainData = candidateSnap.data() ?? {};
+        if (!isCaptainCandidateBaseEligible(captainData, nowMs)) continue;
+
+        const currentOrderId = readString(captainData, "currentOrderId");
+        if (currentOrderId && currentOrderId !== orderId) continue;
+
+        const activeOfferOrderId = readString(captainData, "activeOfferOrderId");
+        const activeOfferExpiry = parseTimestampMs(captainData.activeOfferExpiresAt);
+        if (
+          activeOfferOrderId &&
+          activeOfferOrderId !== orderId &&
+          activeOfferExpiry > nowMs
+        ) {
+          continue;
+        }
+
+        selectedCandidate = candidate;
+        break;
+      }
+
+      const previousOfferedUid = curOffered;
+      const previousGeneration = Number(latest.offerGeneration ?? 0) || 0;
+      let previousCaptainData: Record<string, unknown> | undefined;
+      if (previousOfferedUid && previousOfferedUid !== selectedCandidate?.uid) {
+        const previousCaptainSnap = await tx.get(
+          this.db.collection("captains").doc(previousOfferedUid)
+        );
+        if (previousCaptainSnap.exists) previousCaptainData = previousCaptainSnap.data();
+      }
+
+      if (!selectedCandidate) {
+        if (
+          previousCaptainData &&
+          readString(previousCaptainData, "activeOfferOrderId") === orderId &&
+          Number(previousCaptainData.activeOfferGeneration ?? 0) === previousGeneration
+        ) {
+          tx.update(this.db.collection("captains").doc(previousOfferedUid), {
+            activeOfferOrderId: null,
+            activeOfferGeneration: null,
+            activeOfferExpiresAt: null,
+            updatedAt: s.serverTimestamp(),
+          });
+        }
         tx.update(orderRef, {
           status: "searching",
           dispatchStatus: "no_captains_available",
@@ -911,35 +1017,55 @@ export class OrderServerService {
       const nextGen = (Number(latest.offerGeneration ?? 0) || 0) + 1;
       const offerExpiresAtMs = nowMs + OFFER_WINDOW_MS;
 
+      if (
+        previousCaptainData &&
+        readString(previousCaptainData, "activeOfferOrderId") === orderId &&
+        Number(previousCaptainData.activeOfferGeneration ?? 0) === previousGeneration
+      ) {
+        tx.update(this.db.collection("captains").doc(previousOfferedUid), {
+          activeOfferOrderId: null,
+          activeOfferGeneration: null,
+          activeOfferExpiresAt: null,
+          updatedAt: s.serverTimestamp(),
+        });
+      }
+
+      tx.update(this.db.collection("captains").doc(selectedCandidate.uid), {
+        activeOfferOrderId: orderId,
+        activeOfferGeneration: nextGen,
+        activeOfferExpiresAt: offerExpiresAtMs,
+        updatedAt: s.serverTimestamp(),
+      });
       tx.update(orderRef, {
         status: "pending",
         dispatchStatus: "offered",
-        offeredCaptainId: topCandidate.uid,
-        offeredCaptainName: topCandidate.name,
+        offeredCaptainId: selectedCandidate.uid,
+        offeredCaptainName: selectedCandidate.name,
         offerSentAt: s.serverTimestamp(),
         offerExpiresAt: offerExpiresAtMs,
         offerGeneration: nextGen,
         eligibleCaptainIds: eligibleIds,
+        requestedCaptainId: s.deleteField(),
         updatedAt: s.serverTimestamp(),
       });
 
       selectedOfferPayload = this.buildOfferFcmPayload(
         orderId,
         latest,
-        topCandidate,
+        selectedCandidate,
         offerExpiresAtMs,
         nextGen
       );
       taskPayload = {
         orderId,
-        expectedCaptainId: topCandidate.uid,
+        expectedCaptainId: selectedCandidate.uid,
         expectedOfferGeneration: nextGen,
       };
 
       return {
         status: "offered",
         orderId,
-        offeredCaptainId: topCandidate.uid,
+        offeredCaptainId: selectedCandidate.uid,
         offerGeneration: nextGen,
         offerExpiresAtMs,
       } as DispatchOutcome;
@@ -986,6 +1112,48 @@ export class OrderServerService {
       "expired",
       true
     );
+  }
+
+  /**
+   * Periodic recovery sweep for expired offers if Cloud Tasks enqueueing or execution fails.
+   * All reassignments still pass through the same expected-captain/generation transaction.
+   * @param {number} limit Maximum number of open orders to scan.
+   * @return {Promise<number>} Number of expired offers submitted for idempotent rotation.
+   */
+  async sweepExpiredOffers(limit = 100): Promise<number> {
+    const nowMs = this.effects.now();
+    const snap = await this.db
+      .collection("orders")
+      .where("status", "in", ["pending", "offered"])
+      .limit(Math.max(1, Math.min(limit, 200)))
+      .get();
+
+    let processed = 0;
+    for (const doc of snap.docs) {
+      const order = doc.data() ?? {};
+      if (extractOrderCaptainUid(order)) continue;
+      const expectedCaptainId = readString(order, "offeredCaptainId");
+      const offerExpiresAtMs = parseTimestampMs(
+        order.offerExpiresAt ?? order.offer_expires_at
+      );
+      const expectedOfferGeneration = Number(order.offerGeneration ?? 0) || 0;
+      if (
+        !expectedCaptainId ||
+        offerExpiresAtMs <= 0 ||
+        offerExpiresAtMs > nowMs ||
+        expectedOfferGeneration <= 0
+      ) {
+        continue;
+      }
+
+      await this.handleReassignOfferTask({
+        orderId: doc.id,
+        expectedCaptainId,
+        expectedOfferGeneration,
+      });
+      processed += 1;
+    }
+    return processed;
   }
 
   /**
@@ -1093,7 +1261,6 @@ export class OrderServerService {
       excludedSet,
       nowMs
     );
-    const nextCandidate = candidates[0] ?? null;
     const eligibleIds = candidates.map((c) => c.uid);
     const s = this.effects.sentinels;
 
@@ -1128,9 +1295,12 @@ export class OrderServerService {
       const currentExpiryMs = parseTimestampMs(
         latest.offerExpiresAt ?? latest.offer_expires_at
       );
+      if (rotationReason === "expired" && currentExpiryMs <= 0) {
+        return {status: "ignored_stale", orderId} as DispatchOutcome;
+      }
       if (
         rotationReason === "expired" &&
-        currentExpiryMs > nowMs + 1000
+        currentExpiryMs > nowMs
       ) {
         rescheduleRemainingSec = Math.max(
           2,
@@ -1139,7 +1309,47 @@ export class OrderServerService {
         return {status: "rescheduled_early", orderId} as DispatchOutcome;
       }
 
-      if (!nextCandidate) {
+      const oldCaptainRef = this.db.collection("captains").doc(timedOutCaptainId);
+      const oldCaptainSnap = await tx.get(oldCaptainRef);
+      const oldCaptainData = oldCaptainSnap.exists ? oldCaptainSnap.data() ?? {} : {};
+      const oldLockMatches =
+        readString(oldCaptainData, "activeOfferOrderId") === orderId &&
+        Number(oldCaptainData.activeOfferGeneration ?? 0) === currentGen;
+
+      let reservedNextCandidate: CaptainCandidate | null = null;
+      for (const candidate of candidates) {
+        const candidateRef = this.db.collection("captains").doc(candidate.uid);
+        const candidateSnap = await tx.get(candidateRef);
+        if (!candidateSnap.exists) continue;
+        const captainData = candidateSnap.data() ?? {};
+        if (!isCaptainCandidateBaseEligible(captainData, nowMs)) continue;
+
+        const currentOrderId = readString(captainData, "currentOrderId");
+        if (currentOrderId && currentOrderId !== orderId) continue;
+
+        const activeOfferOrderId = readString(captainData, "activeOfferOrderId");
+        const activeOfferExpiry = parseTimestampMs(captainData.activeOfferExpiresAt);
+        if (
+          activeOfferOrderId &&
+          activeOfferOrderId !== orderId &&
+          activeOfferExpiry > nowMs
+        ) {
+          continue;
+        }
+
+        reservedNextCandidate = candidate;
+        break;
+      }
+
+      if (!reservedNextCandidate) {
+        if (oldLockMatches) {
+          tx.update(oldCaptainRef, {
+            activeOfferOrderId: null,
+            activeOfferGeneration: null,
+            activeOfferExpiresAt: null,
+            updatedAt: s.serverTimestamp(),
+          });
+        }
         tx.update(orderRef, {
           status: "searching",
           dispatchStatus: "no_captains_available",
@@ -1160,11 +1370,26 @@ export class OrderServerService {
       const nextGen = currentGen + 1;
       const offerExpiresAtMs = nowMs + OFFER_WINDOW_MS;
 
+      if (oldLockMatches) {
+        tx.update(oldCaptainRef, {
+          activeOfferOrderId: null,
+          activeOfferGeneration: null,
+          activeOfferExpiresAt: null,
+          updatedAt: s.serverTimestamp(),
+        });
+      }
+      tx.update(this.db.collection("captains").doc(reservedNextCandidate.uid), {
+        activeOfferOrderId: orderId,
+        activeOfferGeneration: nextGen,
+        activeOfferExpiresAt: offerExpiresAtMs,
+        updatedAt: s.serverTimestamp(),
+      });
+
       const updateFields: Record<string, unknown> = {
         status: "pending",
         dispatchStatus: "offered",
-        offeredCaptainId: nextCandidate.uid,
-        offeredCaptainName: nextCandidate.name,
+        offeredCaptainId: reservedNextCandidate.uid,
+        offeredCaptainName: reservedNextCandidate.name,
         offerSentAt: s.serverTimestamp(),
         offerExpiresAt: offerExpiresAtMs,
         offerGeneration: nextGen,
@@ -1181,20 +1406,20 @@ export class OrderServerService {
       offerFcm = this.buildOfferFcmPayload(
         orderId,
         latest,
-        nextCandidate,
+        reservedNextCandidate,
         offerExpiresAtMs,
         nextGen
       );
       nextTask = {
         orderId,
-        expectedCaptainId: nextCandidate.uid,
+        expectedCaptainId: reservedNextCandidate.uid,
         expectedOfferGeneration: nextGen,
       };
 
       return {
         status: "reassigned",
         orderId,
-        offeredCaptainId: nextCandidate.uid,
+        offeredCaptainId: reservedNextCandidate.uid,
         offerGeneration: nextGen,
         offerExpiresAtMs,
       } as DispatchOutcome;
@@ -1237,7 +1462,8 @@ export class OrderServerService {
       .limit(100)
       .get();
 
-    const origin = extractCoordinates(orderData) ?? {lat: 30.0444, lng: 31.2357};
+    const origin = await this.resolvePickupCoordinates(orderData);
+    if (!origin) return [];
     const eligible: CaptainCandidate[] = [];
 
     for (const doc of onlineSnap.docs) {
@@ -1249,6 +1475,13 @@ export class OrderServerService {
 
       const inShift = await isCaptainInActiveShift(this.db, uid, data, nowMs);
       if (!inShift) continue;
+
+      const activeOrderId = readString(data, "currentOrderId");
+      if (activeOrderId) continue;
+
+      const activeOfferOrderId = readString(data, "activeOfferOrderId");
+      const activeOfferExpiry = parseTimestampMs(data.activeOfferExpiresAt);
+      if (activeOfferOrderId && activeOfferExpiry > nowMs) continue;
 
       const hasConflict = await this.hasActiveConflictOutsideTx(uid);
       if (hasConflict) continue;
@@ -1276,6 +1509,32 @@ export class OrderServerService {
 
     eligible.sort((a, b) => a.distanceKm - b.distanceKm);
     return eligible;
+  }
+
+  private async resolvePickupCoordinates(
+    orderData: Record<string, unknown>
+  ): Promise<{lat: number; lng: number} | null> {
+    const direct = extractCoordinates(orderData);
+    if (direct) return direct;
+
+    const merchantId = readString(
+      orderData,
+      "merchantId",
+      "restaurantId",
+      "storeId",
+      "vendorId",
+      "ownerId"
+    );
+    if (!merchantId) return null;
+
+    for (const collectionName of ["merchants", "restaurants"]) {
+      const snap = await this.db.collection(collectionName).doc(merchantId).get();
+      if (!snap.exists) continue;
+      const merchantData = snap.data() ?? {};
+      const coords = extractCoordinates(merchantData);
+      if (coords) return coords;
+    }
+    return null;
   }
 
   private async hasActiveConflictOutsideTx(captainUid: string): Promise<boolean> {
@@ -1327,22 +1586,35 @@ export class OrderServerService {
     const itemsArr = Array.isArray(order.items) ? order.items : [];
     const itemsSummary =
       readString(order, "itemsSummary", "description") || "طلب توصيل جديد";
+    const merchantId = readString(order, "merchantId", "restaurantId", "storeId");
+    const storeName = readString(order, "storeName", "restaurantName", "merchantName", "vendorName");
+    const storePhone = readString(order, "storePhone", "merchantPhone");
+    const storeImage = readString(order, "storeImage", "merchantLogo", "storeLogo");
+    const storeImagePath = readString(order, "storeImagePath", "merchantStoragePath");
+    const deliveryFee = readNumber(order, "deliveryFee", "delivery_fee", "shippingFee");
+    if (!merchantId || !storeName || !storePhone || (!storeImage && !storeImagePath)) {
+      throw new DomainHttpsError(
+        "failed-precondition",
+        "بيانات اسم التاجر أو هاتفه أو صورته غير مكتملة؛ تم إيقاف إرسال العرض."
+      );
+    }
+    if (deliveryFee === null || deliveryFee < 0) {
+      throw new DomainHttpsError(
+        "failed-precondition",
+        "لم يتم تسجيل أجرة التوصيل من تطبيق التاجر؛ لن يتم إرسال عرض بقيمة افتراضية."
+      );
+    }
     return {
       captainUid: candidate.uid,
       fcmToken: candidate.fcmToken,
       orderId,
       orderNumber: readString(order, "orderNumber", "order_number") || orderId,
       orderCode: readString(order, "orderCode", "order_code"),
-      storeName:
-        readString(
-          order,
-          "storeName",
-          "restaurantName",
-          "merchantName",
-          "vendorName"
-        ) || "مطعم مسجل",
-      storePhone: readString(order, "storePhone", "merchantPhone"),
-      storeImage: readString(order, "storeImage", "merchantLogo", "storeLogo"),
+      merchantId,
+      storeName,
+      storePhone,
+      storeImage,
+      storeImagePath,
       storeLocationUrl: readString(order, "storeLocationUrl", "locationUrl"),
       pickupAddress:
         readString(order, "pickupAddress", "storeAddress", "merchantAddress") ||
@@ -1354,8 +1626,7 @@ export class OrderServerService {
           "customerAddress",
           "dropoffAddress"
         ) || "عنوان العميل",
-      deliveryFee:
-        readNumber(order, "deliveryFee", "delivery_fee", "shippingFee") ?? 25.0,
+      deliveryFee,
       distanceKm: candidate.distanceKm,
       offerExpiresAtMs,
       itemsSummary,
