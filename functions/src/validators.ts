@@ -479,9 +479,17 @@ export function resolveMerchantCaptainLimit(
   subscription: Record<string, unknown> | undefined,
   merchant: Record<string, unknown> | undefined
 ): number {
-  const explicit = readNumber(subscription, "captainLimit", "maxCaptains") ??
-    readNumber(merchant, "captainLimit", "maxCaptains");
-  if (explicit !== null && [2, 4, 6, 8].includes(explicit)) return explicit;
+  const supportedLimits = [2, 4, 6, 8];
+  const explicitCandidates = [
+    readNumber(subscription, "captainLimit"),
+    readNumber(subscription, "maxCaptains"),
+    readNumber(merchant, "captainLimit"),
+    readNumber(merchant, "maxCaptains"),
+  ];
+  const explicit = explicitCandidates.find(
+    (value): value is number => value !== null && supportedLimits.includes(value)
+  );
+  if (explicit !== undefined) return explicit;
   const planId = readNumber(subscription, "planId") ?? readNumber(merchant, "planId");
   const legacyLimits: Record<number, number> = {1: 2, 2: 4, 3: 6, 4: 8};
   return planId === null ? 0 : (legacyLimits[planId] ?? 0);
