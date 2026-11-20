@@ -27,6 +27,7 @@ import {
   readString,
   isTerminalMerchantOrderStatus,
   resolveMerchantCaptainLimit,
+  canAcceptMerchantOrderCount,
 } from "./validators.js";
 
 initializeApp();
@@ -341,7 +342,7 @@ async function buildMerchantSubscriptionResponse(merchantId: string, requestedCa
   const isActive = validationError === "";
   const remainingCaptains = Math.max(0, captainLimit - activeCaptainsCount);
   const requested = Math.max(1, Math.min(8, Number(requestedCaptains) || 1));
-  const capacityAllowed = activeCaptainsCount + requested <= captainLimit;
+  const capacityAllowed = canAcceptMerchantOrderCount(captainLimit, activeCaptainsCount, requested);
   const remainingMillis = expiryEffectiveMs !== null ? Math.max(0, expiryEffectiveMs - nowMs) : 0;
   const errorMessage = validationError || (capacityAllowed ? undefined :
     activeCaptainsCount >= captainLimit
@@ -561,10 +562,7 @@ export const merchantCreateOrder = onCall(
             }
             assertMerchantAndSubscriptionValid(uid, merchant, subscription, nowMs);
 
-            const maxCaptains =
-              readNumber(subscription, "maxCaptains") ??
-              readNumber(merchant, "maxCaptains") ??
-              0;
+            const maxCaptains = resolveMerchantCaptainLimit(subscription, merchant);
             if (maxCaptains <= 0) {
               throw new HttpsError("failed-precondition", "لا توجد باقة نشطة تسمح بطلب الكباتن.");
             }
@@ -586,7 +584,7 @@ export const merchantCreateOrder = onCall(
             const capacityData = capacitySnap.data() ?? {};
             const capacityVersion = readNumber(capacityData, "capacityVersion") ?? 0;
             const activeOrderCount = activeOrderIds.size;
-            if (activeOrderCount >= maxCaptains) {
+            if (!canAcceptMerchantOrderCount(maxCaptains, activeOrderCount, 1)) {
               throw new HttpsError(
                 "resource-exhausted",
                 `وصلت إلى الحد المتزامن للباقة: ${activeOrderCount} من ${maxCaptains} طلبات نشطة.`
