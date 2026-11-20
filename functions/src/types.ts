@@ -100,6 +100,7 @@ export interface OfferFcmPayload {
   storeName: string;
   storePhone: string;
   storeImage: string;
+  storeImagePath: string;
   storeLocationUrl: string;
   pickupAddress: string;
   deliveryAddress: string;
