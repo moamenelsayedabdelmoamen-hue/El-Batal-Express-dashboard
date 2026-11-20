@@ -390,8 +390,8 @@ describe('El-Batal Express Real Firebase Emulator Security Audit (Firestore + St
   });
 
   test('4. Merchant permissions: reads ONLY own order receipt, ZERO access to Captain ID cards, scoped Captain profile photo', async () => {
-    const merch1Storage = testEnv.authenticatedContext('merchant_1').storage(BUCKET_URL);
-    const merch2Storage = testEnv.authenticatedContext('merchant_2').storage(BUCKET_URL);
+    const merch1Storage = testEnv.authenticatedContext('merchant_1', { email_verified: true }).storage(BUCKET_URL);
+    const merch2Storage = testEnv.authenticatedContext('merchant_2', { email_verified: true }).storage(BUCKET_URL);
     const merch1Db = testEnv.authenticatedContext('merchant_1', { email_verified: true }).firestore();
     const merch2Db = testEnv.authenticatedContext('merchant_2', { email_verified: true }).firestore();
 
@@ -490,8 +490,16 @@ describe('El-Batal Express Real Firebase Emulator Security Audit (Firestore + St
     await assertFails(setDoc(doc(cap1Db, 'merchants', 'captain_1'), { name: 'Spoof Merchant' }));
     await assertFails(setDoc(doc(cap1Db, 'drivers', 'captain_1'), { uid: 'captain_1', accountType: 'captain' }));
 
-    // Merchant CANNOT read captain PII docs or register themselves in captains
-    await assertFails(getDoc(doc(merch1Db, 'captains', 'captain_1')));
+    // A verified merchant may read only the captain currently assigned to its own active order.
+    await assertSucceeds(getDoc(doc(merch1Db, 'captains', 'captain_1')));
+    await assertFails(getDoc(doc(merch1Db, 'captains', 'captain_2')));
+
+    // An unverified merchant cannot read captain private profile data or register as a captain.
+    const unverifiedMerchantDb = testEnv.authenticatedContext(
+      'merchant_1',
+      { email_verified: false }
+    ).firestore();
+    await assertFails(getDoc(doc(unverifiedMerchantDb, 'captains', 'captain_1')));
     await assertFails(setDoc(doc(merch1Db, 'captains', 'merchant_1'), { uid: 'merchant_1', accountType: 'captain', status: 'pending' }));
 
     // Captain CANNOT mutate accountType or claim emailVerified=true without verified token
@@ -509,7 +517,12 @@ describe('El-Batal Express Real Firebase Emulator Security Audit (Firestore + St
 
   test('6. Admin account has verified management access across Storage and Firestore', async () => {
     // Exercise the server-issued custom-claim path used by the production admin session.
-    const adminCtx = testEnv.authenticatedContext('admin_1', { role: 'admin', admin: true });
+    const adminCtx = testEnv.authenticatedContext('admin_1', {
+      role: 'admin',
+      admin: true,
+      email: 'moamen.elsayed.abdelmoamen@gmail.com',
+      email_verified: true,
+    });
     const adminDb = adminCtx.firestore();
     const adminStorage = adminCtx.storage(BUCKET_URL);
 
