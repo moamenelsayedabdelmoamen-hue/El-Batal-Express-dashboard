@@ -26,6 +26,7 @@ import {
   readNumber,
   readString,
   isTerminalMerchantOrderStatus,
+  resolveMerchantCaptainLimit,
 } from "./validators.js";
 
 initializeApp();
@@ -285,8 +286,7 @@ async function buildMerchantSubscriptionResponse(merchantId: string, requestedCa
   const activeCaptainsCount = activeOrderIds.size;
   const planId = readNumber(subscription, "planId") ?? readNumber(merchant, "planId") ?? 0;
   const planName = readString(subscription, "planName") || readString(merchant, "planName");
-  const captainLimit = readNumber(subscription, "captainLimit", "maxCaptains") ??
-    readNumber(merchant, "captainLimit", "maxCaptains") ?? 0;
+  const captainLimit = resolveMerchantCaptainLimit(subscription, merchant);
   const price = readNumber(subscription, "price") ?? readNumber(merchant, "price") ?? 0;
   const statusRaw = readString(subscription, "status", "subscriptionStatus") ||
     readString(merchant, "subscriptionStatus");
