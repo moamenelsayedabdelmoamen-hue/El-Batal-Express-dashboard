@@ -1135,4 +1135,30 @@ describe("Manual Vodafone Cash Subscriptions Server Service (Full 14-Scenario Su
     assert.equal(db.listCollection("payments").length, 0);
   });
 
+  it("16. active merchant account flags alone do not masquerade as an active subscription", async () => {
+    const now = Date.UTC(2026, 10, 20, 10, 0, 0);
+    const {db, service, storageFiles} = createHarness(now);
+    seedMerchant(db, {
+      merchantId: "merchant_1",
+      merchantOverrides: {
+        status: "active",
+        isActive: true,
+        subscriptionStatus: "inactive",
+        isSubscribed: false,
+      },
+    });
+    const receiptPath = "subscription_receipts/merchant_1/account_active_only.jpg";
+    storageFiles.add(receiptPath);
+
+    const result = await service.submitManualSubscriptionRequest(MERCHANT_AUTH, {
+      requestId: "req_account_active_only",
+      planId: "plan_2_captains",
+      senderPhone: "01055556666",
+      transactionReference: "VF-ACCOUNT-ACTIVE",
+      receiptImagePath: receiptPath,
+    });
+    assert.equal(result.status, "pending_review");
+    assert.equal(db.getDocData("subscriptions/merchant_1").pendingRequestId, "req_account_active_only");
+  });
+
 });
