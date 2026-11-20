@@ -192,6 +192,7 @@ export function createAdminServerEffects(): ServerEffectsPort {
             storeName: payload.storeName,
             storePhone: payload.storePhone,
             storeImage: payload.storeImage,
+            storeImagePath: payload.storeImagePath,
             storeLocationUrl: payload.storeLocationUrl,
             pickupAddress: payload.pickupAddress,
             deliveryAddress: payload.deliveryAddress,
