@@ -534,8 +534,15 @@ describe('El-Batal Express Real Firebase Emulator Security Audit (Firestore + St
       })
     );
     await assertSucceeds(
-      setDoc(doc(adminDb, 'restaurants', 'merchant_3'), {
+      setDoc(doc(adminDb, 'merchants', 'merchant_3'), {
+        uid: 'merchant_3',
+        accountType: 'merchant',
+        role: 'merchant',
         name: 'مطعم جديد معتمد',
+        email: 'merchant3@elbatal.com',
+        phone: '01000000003',
+        address: 'القاهرة',
+        status: 'active',
         isOpen: true,
       })
     );
