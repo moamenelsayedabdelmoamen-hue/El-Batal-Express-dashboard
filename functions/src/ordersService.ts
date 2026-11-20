@@ -30,6 +30,39 @@ import {
 
 export const OFFER_WINDOW_MS = 60_000;
 export const OFFER_WINDOW_SECONDS = 60;
+
+function normalizeFeeDigits(raw: string): string {
+  const arabic = "٠١٢٣٤٥٦٧٨٩";
+  const persian = "۰۱۲۳۴۵۶۷۸۹";
+  return raw.replace(/[٠-٩۰-۹]/g, (digit) => {
+    const arabicIndex = arabic.indexOf(digit);
+    if (arabicIndex >= 0) return String(arabicIndex);
+    const persianIndex = persian.indexOf(digit);
+    return persianIndex >= 0 ? String(persianIndex) : digit;
+  });
+}
+
+/**
+ * Read the merchant-entered delivery fee. New orders use a numeric deliveryFee;
+ * legacy orders may have only serviceFee/price text such as "30 جنيه".
+ * Never substitute a guessed amount when both representations are missing/invalid.
+ */
+function readMerchantEnteredDeliveryFee(order: Record<string, unknown>): number | null {
+  const numeric = readNumber(order, "deliveryFee", "delivery_fee", "shippingFee");
+  if (numeric !== null && Number.isFinite(numeric)) return numeric;
+
+  const raw = readString(order, "serviceFee", "price");
+  if (!raw) return null;
+  const normalized = normalizeFeeDigits(raw)
+    .replace(/[,٬]/g, "")
+    .trim()
+    .replace(/\\s*جنيه$/u, "")
+    .trim();
+  if (!/^\\d+(?:\\.\\d{1,2})?$/.test(normalized)) return null;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 const ACTIVE_CAPTAIN_FIELDS = [
   "captainId",
   "driverId",
@@ -646,9 +679,7 @@ export class OrderServerService {
         );
       }
 
-      const grossFee =
-        readNumber(order, "deliveryFee", "delivery_fee", "shippingFee", "fee") ??
-        0;
+      const grossFee = readMerchantEnteredDeliveryFee(order) ?? 0;
       const effectiveStatus = resolveEffectiveOrderStatus(order);
 
       // Idempotency guard: if transaction ledger or delivered status already exists,
@@ -1591,14 +1622,14 @@ export class OrderServerService {
     const storePhone = readString(order, "storePhone", "merchantPhone");
     const storeImage = readString(order, "storeImage", "merchantLogo", "storeLogo");
     const storeImagePath = readString(order, "storeImagePath", "merchantStoragePath");
-    const deliveryFee = readNumber(order, "deliveryFee", "delivery_fee", "shippingFee");
+    const deliveryFee = readMerchantEnteredDeliveryFee(order);
     if (!merchantId || !storeName || !storePhone || (!storeImage && !storeImagePath)) {
       throw new DomainHttpsError(
         "failed-precondition",
         "بيانات اسم التاجر أو هاتفه أو صورته غير مكتملة؛ تم إيقاف إرسال العرض."
       );
     }
-    if (deliveryFee === null || deliveryFee < 0) {
+    if (deliveryFee === null || deliveryFee <= 0) {
       throw new DomainHttpsError(
         "failed-precondition",
         "لم يتم تسجيل أجرة التوصيل من تطبيق التاجر؛ لن يتم إرسال عرض بقيمة افتراضية."
