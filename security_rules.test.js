@@ -48,6 +48,8 @@ async function seedBaseEcosystem() {
     await setDoc(doc(adminDb, 'admins', 'admin_1'), {
       role: 'admin',
       email: 'admin@elbatal.com',
+      emailVerified: true,
+      status: 'active',
     });
 
   // Provision two canonical Merchant accounts
@@ -511,7 +513,7 @@ describe('El-Batal Express Real Firebase Emulator Security Audit (Firestore + St
   });
 
   test('6. Admin account has verified management access across Storage and Firestore', async () => {
-    const adminCtx = testEnv.authenticatedContext('admin_1', { role: 'admin' });
+    const adminCtx = testEnv.authenticatedContext('admin_1', { role: 'admin', email_verified: true });
     const adminDb = adminCtx.firestore();
     const adminStorage = adminCtx.storage(BUCKET_URL);
 
@@ -552,10 +554,10 @@ describe('El-Batal Express Real Firebase Emulator Security Audit (Firestore + St
     const anonDb = testEnv.unauthenticatedContext().firestore();
     const merch1Db = testEnv.authenticatedContext('merchant_1').firestore();
     const merch2Db = testEnv.authenticatedContext('merchant_2').firestore();
-    const adminDb = testEnv.authenticatedContext('admin_1').firestore();
+    const adminDb = testEnv.authenticatedContext('admin_1', { role: 'admin', email_verified: true }).firestore();
     const merch1Storage = testEnv.authenticatedContext('merchant_1').storage(BUCKET_URL);
     const merch2Storage = testEnv.authenticatedContext('merchant_2').storage(BUCKET_URL);
-    const adminStorage = testEnv.authenticatedContext('admin_1').storage(BUCKET_URL);
+    const adminStorage = testEnv.authenticatedContext('admin_1', { role: 'admin', email_verified: true }).storage(BUCKET_URL);
 
     // Seed official config & an existing request via rules-disabled Admin context
     await testEnv.withSecurityRulesDisabled(async (ctx) => {
