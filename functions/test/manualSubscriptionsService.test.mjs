@@ -1161,4 +1161,34 @@ describe("Manual Vodafone Cash Subscriptions Server Service (Full 14-Scenario Su
     assert.equal(db.getDocData("subscriptions/merchant_1").pendingRequestId, "req_account_active_only");
   });
 
+  it("17. Duplicate Firestore create-event delivery does not reset admin read state or resend push", async () => {
+    const {db, service, adminPushes} = createHarness();
+    const requestId = "req_retry_idempotent";
+    const requestData = {
+      merchantId: "merchant_1",
+      merchantName: "مطعم الأمل",
+      planName: "باقة 4 كابتن",
+      amount: 800,
+      status: "pending_review",
+    };
+
+    await service.handleNewManualSubscriptionRequest(requestId, requestData);
+    const notificationPath = `notifications/manual_sub_req_${requestId}`;
+    const first = db.getDocData(notificationPath);
+    assert.ok(first);
+    assert.equal(first.isRead, false);
+    assert.equal(adminPushes.length, 1);
+
+    await db.collection("notifications").doc(`manual_sub_req_${requestId}`)
+      .update({isRead: true});
+    await service.handleNewManualSubscriptionRequest(requestId, requestData);
+
+    const afterRetry = db.getDocData(notificationPath);
+    assert.equal(afterRetry.isRead, true);
+    assert.deepEqual(afterRetry.createdAt, first.createdAt);
+    assert.equal(adminPushes.length, 1, "Duplicate event delivery must not resend the admin push");
+    assert.equal(db.listCollection("notifications").filter((item) =>
+      item.id === `manual_sub_req_${requestId}`).length, 1);
+  });
+
 });
