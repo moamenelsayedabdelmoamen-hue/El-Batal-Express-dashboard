@@ -24,12 +24,32 @@ service cloud.firestore {
       return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
+    // Resolve the server-provisioned admin registry directly. The /admins match
+    // below is owner-read-only, so the authorization helper cannot recurse through
+    // that match when a captain or merchant rule asks whether a caller is an admin.
+    function isRegisteredAdmin() {
+      let adminRecord = get(/databases/$(database)/documents/admins/$(request.auth.uid));
+      return adminRecord.data != null &&
+        (
+          adminRecord.data.get('role', '') == 'admin' ||
+          adminRecord.data.get('isAdmin', false) == true ||
+          adminRecord.data.get('isSuperAdmin', false) == true
+        ) &&
+        adminRecord.data.get('status', 'active') in ['active', 'approved'];
+    }
+
     function isAdmin() {
       return isSignedIn() && (
         request.auth.token.get('role', '') == 'admin' ||
         request.auth.token.get('admin', false) == true ||
-        (request.auth.token.get('email_verified', false) == true && request.auth.token.get('email', '') in ['moamen.elsayed.abdelmoamen@gmail.com', 'admin@elbatalexpress.com']) ||
-        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+        (
+          request.auth.token.get('email_verified', false) == true &&
+          request.auth.token.get('email', '') in [
+            'moamen.elsayed.abdelmoamen@gmail.com',
+            'admin@elbatalexpress.com'
+          ]
+        ) ||
+        isRegisteredAdmin()
       );
     }
 
@@ -345,7 +365,9 @@ service cloud.firestore {
 
     // --- 4. Admins Collection ---
     match /admins/{adminId} {
-      allow get: if isSignedIn() && isValidId(adminId) && (request.auth.uid == adminId || isAdmin());
+      // Users can inspect only their own server-provisioned admin record.
+      // isAdmin() resolves registry data with get() above, avoiding recursive checks.
+      allow get: if isSignedIn() && isValidId(adminId) && request.auth.uid == adminId;
       allow list: if isAdmin();
       allow write: if false; // Strictly managed via Firebase Admin SDK / Console
     }
