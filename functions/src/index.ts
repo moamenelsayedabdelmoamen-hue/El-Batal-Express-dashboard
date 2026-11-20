@@ -224,6 +224,91 @@ function isClosedMerchantOrderStatus(status: string): boolean {
   return isTerminalMerchantOrderStatus(status);
 }
 
+const PERMANENT_DISPATCH_ERROR_CODES = new Set<DomainHttpsError["code"]>([
+  "invalid-argument",
+  "permission-denied",
+  "not-found",
+  "failed-precondition",
+]);
+
+/**
+ * Persist non-retryable order-data failures for admin review. Transient infrastructure
+ * failures are deliberately rethrown so the Firestore event retry policy can recover.
+ */
+async function recordPermanentDispatchFailure(
+  orderId: string,
+  error: DomainHttpsError
+): Promise<void> {
+  const db = getFirestore();
+  const orderRef = db.collection("orders").doc(orderId);
+  const alertRef = db.collection("notifications").doc(`dispatch_failed_${orderId}`);
+
+  await db.runTransaction(async (tx) => {
+    const [orderSnap, alertSnap] = await Promise.all([
+      tx.get(orderRef),
+      tx.get(alertRef),
+    ]);
+    if (!orderSnap.exists) return;
+
+    const order = orderSnap.data() ?? {};
+    if (
+      extractOrderCaptainUid(order) ||
+      isClosedMerchantOrderStatus(readNormalizedOrderStatus(order))
+    ) return;
+
+    const now = FieldValue.serverTimestamp();
+    tx.update(orderRef, {
+      dispatchStatus: "dispatch_failed",
+      dispatchFailureCode: error.code,
+      dispatchFailureMessage: error.message.slice(0, 400),
+      dispatchFailedAt: now,
+      updatedAt: now,
+    });
+
+    if (!alertSnap.exists) {
+      tx.set(alertRef, {
+        type: "order_dispatch_failed",
+        targetRole: "admin",
+        title: "تعذر بدء توزيع طلب",
+        message: `تعذر توزيع الطلب ${readString(order, "orderNumber") || orderId}: ${error.message}`,
+        orderId,
+        orderNumber: readString(order, "orderNumber", "order_number") || orderId,
+        reason: error.message,
+        isRead: false,
+        createdAt: now,
+      });
+    }
+  });
+}
+
+/**
+ * Executes dispatch for a Firestore event. Known invalid business data is recorded
+ * once for admin action; unexpected errors are rethrown to activate event retries.
+ */
+async function dispatchOrderFromEvent(
+  orderId: string,
+  triggerName: string
+): Promise<void> {
+  try {
+    await service.dispatchNewOrSearchingOrder(orderId);
+  } catch (err) {
+    logger.error(`Order dispatch trigger failed: ${triggerName}`, {
+      orderId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+
+    if (
+      err instanceof DomainHttpsError &&
+      PERMANENT_DISPATCH_ERROR_CODES.has(err.code)
+    ) {
+      await recordPermanentDispatchFailure(orderId, err);
+      return;
+    }
+
+    throw err;
+  }
+}
+
 /**
  * Converts Firestore Timestamp, Date, ISO date, or epoch values to milliseconds.
  */
@@ -1429,7 +1514,7 @@ export const merchantConfirmOrder = onCall(
  * deliveries cannot release the same slot twice.
  */
 export const onOrderCapacityReleased = onDocumentUpdated(
-  {document: "orders/{orderId}", region: "us-central1"},
+  {document: "orders/{orderId}", region: "us-central1", retry: true},
   async (event) => {
     const before = event.data?.before.data() as Record<string, unknown> | undefined;
     const after = event.data?.after.data() as Record<string, unknown> | undefined;
@@ -1489,7 +1574,7 @@ export const onOrderCapacityReleased = onDocumentUpdated(
  * with a server-authored 60-second offer deadline + Cloud Task watchdog.
  */
 export const onOrderCreatedDispatch = onDocumentCreated(
-  {document: "orders/{orderId}", region: "us-central1"},
+  {document: "orders/{orderId}", region: "us-central1", retry: true},
   async (event) => {
     const orderId = event.params.orderId;
     const order = event.data?.data() ?? {};
@@ -1501,14 +1586,7 @@ export const onOrderCreatedDispatch = onDocumentCreated(
     ) {
       return;
     }
-    try {
-      await service.dispatchNewOrSearchingOrder(orderId);
-    } catch (err) {
-      logger.error("Failed initial dispatch for created order", {
-        orderId,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
+    await dispatchOrderFromEvent(orderId, "onOrderCreatedDispatch");
   }
 );
 
@@ -1516,7 +1594,7 @@ export const onOrderCreatedDispatch = onDocumentCreated(
  * Trigger 2: Handles admin/merchant manual re-queue to searching state without looping.
  */
 export const onOrderUpdatedDispatch = onDocumentUpdated(
-  {document: "orders/{orderId}", region: "us-central1"},
+  {document: "orders/{orderId}", region: "us-central1", retry: true},
   async (event) => {
     const after = event.data?.after.data() as Record<string, unknown> | undefined;
     const before = event.data?.before.data() as Record<string, unknown> | undefined;
@@ -1535,14 +1613,7 @@ export const onOrderUpdatedDispatch = onDocumentUpdated(
       beforeDispatch !== "searching" &&
       !afterOffered
     ) {
-      try {
-        await service.dispatchNewOrSearchingOrder(event.params.orderId);
-      } catch (err) {
-        logger.error("Failed re-queued dispatch for updated order", {
-          orderId: event.params.orderId,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
+      await dispatchOrderFromEvent(event.params.orderId, "onOrderUpdatedDispatch");
     }
   }
 );
@@ -1732,7 +1803,7 @@ export const updateManualSubscriptionSettings = onCall(
  * Trigger 3: Notifies admins whenever a merchant submits a new manual subscription request.
  */
 export const onManualSubscriptionRequestCreated = onDocumentCreated(
-  {document: "manual_subscription_requests/{requestId}", region: "us-central1"},
+  {document: "manual_subscription_requests/{requestId}", region: "us-central1", retry: true},
   async (event) => {
     const requestId = event.params.requestId;
     const data = event.data?.data() as Record<string, unknown> | undefined;
@@ -1744,6 +1815,7 @@ export const onManualSubscriptionRequestCreated = onDocumentCreated(
         requestId,
         error: err instanceof Error ? err.message : String(err),
       });
+      throw err;
     }
   }
 );
