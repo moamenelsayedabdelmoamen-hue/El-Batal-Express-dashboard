@@ -1,15 +1,14 @@
-const { test, describe, before, after, beforeEach } = require('node:test');
-const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-
-const {
+import {test, describe, before, after, beforeEach} from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import {fileURLToPath} from 'node:url';
+import {
   initializeTestEnvironment,
   assertSucceeds,
   assertFails,
-} = require('@firebase/rules-unit-testing');
-
-const {
+} from '@firebase/rules-unit-testing';
+import {
   doc,
   getDoc,
   setDoc,
@@ -19,14 +18,16 @@ const {
   getDocs,
   query,
   where,
-} = require('@firebase/firestore');
-
-const {
+} from 'firebase/firestore';
+import {
   ref,
   uploadBytes,
   getBytes,
   deleteObject,
-} = require('@firebase/storage');
+} from 'firebase/storage';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const PROJECT_ID = 'el-batal-express-956ae';
 const BUCKET_URL = `gs://${PROJECT_ID}.firebasestorage.app`;
