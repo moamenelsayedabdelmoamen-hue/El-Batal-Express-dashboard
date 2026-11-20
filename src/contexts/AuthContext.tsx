@@ -79,6 +79,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         auth,
         async (firebaseUser: FirebaseUser | null) => {
           if (firebaseUser) {
+            if (!firebaseUser.emailVerified) {
+              setUser(null);
+              setIsAdmin(false);
+              setIsMasterAdmin(false);
+              setClaims(null);
+              await signOut(auth);
+              setLoading(false);
+              return;
+            }
             let hasAdminClaim = isSuperAdminEmail(firebaseUser.email) && firebaseUser.emailVerified;
             let userClaims: Record<string, any> = {};
 
@@ -249,6 +258,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       throw new Error('Firebase Auth غير مهيأ حالياً.');
     }
     const cred = await signInWithPopup(auth, googleProvider);
+    if (!cred.user.emailVerified) {
+      await signOut(auth);
+      throw new Error('يجب تأكيد البريد الإلكتروني قبل الدخول إلى لوحة الإدارة.');
+    }
     sessionStorage.removeItem('elbatal_explicit_logout');
     localStorage.removeItem('elbatal_demo_admin_session');
 
