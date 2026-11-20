@@ -259,9 +259,18 @@ export const merchantCreateOrder = onCall(
       const customerPhone = readString(data, "customerPhone").slice(0, 40);
       const orderDetails = readString(data, "orderDetails", "items").slice(0, 4000);
       const deliveryNotes = readString(data, "deliveryNotes", "notes").slice(0, 1000);
-      const serviceFee = readString(data, "serviceFee", "price") || "30 جنيه";
+      // The merchant app is the only client allowed to enter the delivery fee.
+      // Preserve the merchant-entered text for display and store a numeric EGP value
+      // for dispatch, reporting, and server-side settlement. Never invent a fee.
+      const serviceFee = readString(data, "serviceFee", "price");
+      if (!serviceFee) {
+        throw new HttpsError("invalid-argument", "يرجى إدخال قيمة خدمة التوصيل من تطبيق التاجر.");
+      }
       const feeMatch = serviceFee.replace(/,/g, "").match(/\d+(?:\.\d+)?/);
-      const deliveryFee = feeMatch ? Number(feeMatch[0]) : 30;
+      if (!feeMatch) {
+        throw new HttpsError("invalid-argument", "قيمة خدمة التوصيل يجب أن تحتوي على مبلغ رقمي واضح.");
+      }
+      const deliveryFee = Number(feeMatch[0]);
       if (!Number.isFinite(deliveryFee) || deliveryFee < 0 || deliveryFee > 100000) {
         throw new HttpsError("invalid-argument", "قيمة خدمة التوصيل غير صالحة.");
       }
@@ -296,6 +305,9 @@ export const merchantCreateOrder = onCall(
           orderId: readString(replay, "orderId"),
           orderCode: readString(replay, "orderCode"),
           status: "pending",
+          captainLimit: 0,
+          activeCaptainsCount: 0,
+          remainingCaptains: 0,
           isReplay: true,
         };
       }
@@ -381,7 +393,34 @@ export const merchantCreateOrder = onCall(
               );
             }
 
-            const merchantName = readString(merchant, "name", "merchantName") || "تاجر";
+            const merchantName = readString(merchant, "name", "merchantName").trim();
+            const merchantPhone = readString(merchant, "phone", "phoneNumber", "mobile").trim();
+            const merchantImageCandidates = [
+              readString(merchant, "logo"),
+              readString(merchant, "photoUrl"),
+              readString(merchant, "logoUrl"),
+              readString(merchant, "imageUrl"),
+              readString(merchant, "profileImageUrl"),
+            ];
+            const storeImage = merchantImageCandidates.find((value) => /^https?:\/\//i.test(value)) || "";
+            const imagePathCandidates = [
+              readString(merchant, "storagePath"),
+              readString(merchant, "profileImagePath"),
+              readString(merchant, "logoStoragePath"),
+              ...merchantImageCandidates,
+            ];
+            const storeImagePath = imagePathCandidates.find((value) =>
+              value.startsWith("gs://") || value.startsWith(`merchants/${uid}/`)
+            ) || "";
+            if (!merchantName) {
+              throw new HttpsError("failed-precondition", "اسم التاجر غير مسجل في ملف المتجر.");
+            }
+            if (!merchantPhone) {
+              throw new HttpsError("failed-precondition", "يرجى تسجيل رقم الهاتف الحقيقي في ملف التاجر قبل طلب كابتن.");
+            }
+            if (!storeImage && !storeImagePath) {
+              throw new HttpsError("failed-precondition", "يرجى رفع صورة المتجر إلى ملف التاجر قبل طلب كابتن.");
+            }
             const pickupAddress = readString(merchant, "address", "pickupAddress");
             const merchantPoint = new GeoPoint(pickup.lat, pickup.lng);
             const orderNumber = `#ELB-${orderCode}`;
@@ -414,6 +453,13 @@ export const merchantCreateOrder = onCall(
               merchantName,
               restaurantName: merchantName,
               storeName: merchantName,
+              merchantPhone,
+              storePhone: merchantPhone,
+              merchantLogo: storeImage,
+              merchantImageUrl: storeImage,
+              storeImage,
+              storeImagePath,
+              merchantStoragePath: storeImagePath,
               merchantLocation: merchantPoint,
               pickupLocation: merchantPoint,
               pickupLat: pickup.lat,
@@ -436,6 +482,8 @@ export const merchantCreateOrder = onCall(
               customerDetailsRejected: false,
               merchantConfirmed: false,
               dispatchedBy: "merchant",
+              dispatchAuthority: "dashboard_functions",
+              createdByServerFunction: "merchantCreateOrder",
               createdAt: FieldValue.serverTimestamp(),
               created_at: FieldValue.serverTimestamp(),
               updatedAt: FieldValue.serverTimestamp(),
@@ -467,6 +515,9 @@ export const merchantCreateOrder = onCall(
               replay: false,
               orderId: orderRef.id,
               orderCode,
+              maxCaptains,
+              activeCaptainsCount: activeOrderCount + 1,
+              remainingCaptains: Math.max(0, maxCaptains - activeOrderCount - 1),
             };
           });
 
@@ -477,6 +528,9 @@ export const merchantCreateOrder = onCall(
             orderNumber: `#ELB-${result.orderCode}`,
             status: "pending",
             dispatchStatus: result.replay ? "existing" : "searching",
+            captainLimit: result.maxCaptains,
+            activeCaptainsCount: result.activeCaptainsCount,
+            remainingCaptains: result.remainingCaptains,
             isReplay: result.replay,
           };
         } catch (err) {
