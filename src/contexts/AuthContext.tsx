@@ -46,7 +46,6 @@ interface AuthContextType {
   login: (email: string, pass: string) => Promise<void>;
   loginWithGoogle: () => Promise<void>;
   logout: () => Promise<void>;
-  loginAsDemoAdmin: () => void;
   updateDisplayName: (newName: string) => Promise<void>;
   changePassword: (newPassword: string) => Promise<{ success: boolean; resetEmailSent?: boolean }>;
   resendVerificationEmail: () => Promise<void>;
@@ -63,50 +62,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [claims, setClaims] = useState<Record<string, any> | null>(null);
 
   useEffect(() => {
-    // 1. Check for persisted demo session
-    const savedDemo = localStorage.getItem('elbatal_demo_admin_session');
-    if (savedDemo === 'true') {
-      const demoEmail = 'admin@elbatalexpress.com';
-      const isMaster = isMasterAdminEmail(demoEmail);
-      setUser({
-        uid: 'admin_preview_master',
-        email: demoEmail,
-        displayName: 'مدير النظام (Admin)',
-        role: 'admin',
-        isAdmin: true,
-        isMasterAdmin: isMaster,
-      });
-      setIsAdmin(true);
-      setIsMasterAdmin(isMaster);
-      setClaims({ role: 'admin' });
-      setLoading(false);
-      return;
-    }
-
-    // 2. If Firebase Auth is not configured (e.g. preview environment without VITE_FIREBASE_API_KEY)
+    // A missing Firebase configuration must never produce a privileged local session.
+    localStorage.removeItem('elbatal_demo_admin_session');
     if (!isFirebaseConfigured || !auth) {
-      const explicitLogout = sessionStorage.getItem('elbatal_explicit_logout') === 'true';
-      if (!explicitLogout) {
-        // Auto-enable demo session so reviewer immediately sees the full working application
-        const demoEmail = 'admin@elbatalexpress.com';
-        const isMaster = isMasterAdminEmail(demoEmail);
-        setUser({
-          uid: 'admin_preview_master',
-          email: demoEmail,
-          displayName: 'مدير النظام (Admin)',
-          role: 'admin',
-          isAdmin: true,
-          isMasterAdmin: isMaster,
-        });
-        setIsAdmin(true);
-        setIsMasterAdmin(isMaster);
-        setClaims({ role: 'admin' });
-      } else {
-        setUser(null);
-        setIsAdmin(false);
-        setIsMasterAdmin(false);
-        setClaims(null);
-      }
+      setUser(null);
+      setIsAdmin(false);
+      setIsMasterAdmin(false);
+      setClaims(null);
       setLoading(false);
       return;
     }
@@ -117,7 +79,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         auth,
         async (firebaseUser: FirebaseUser | null) => {
           if (firebaseUser) {
-            let hasAdminClaim = isSuperAdminEmail(firebaseUser.email);
+            let hasAdminClaim = isSuperAdminEmail(firebaseUser.email) && firebaseUser.emailVerified;
             let userClaims: Record<string, any> = {};
 
             try {
@@ -160,7 +122,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               }
             }
 
-            const isMaster = isMasterAdminEmail(firebaseUser.email);
+            const isMaster = isMasterAdminEmail(firebaseUser.email) && firebaseUser.emailVerified;
             let isVerified = Boolean(firebaseUser.emailVerified);
 
             if (!isVerified && db) {
@@ -173,10 +135,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 // ignore
               }
             }
-            if (isMaster) {
-              isVerified = true;
-            }
-
             setIsAdmin(hasAdminClaim);
             setIsMasterAdmin(isMaster);
             setUser({
@@ -232,29 +190,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const login = async (email: string, pass: string) => {
     if (!auth || !isFirebaseConfigured) {
-      // In environment without real Firebase Auth API key, allow logging in with the entered credentials
-      // and grant admin session smoothly so the user can test with their own email
-      localStorage.setItem('elbatal_demo_admin_session', 'true');
-      sessionStorage.removeItem('elbatal_explicit_logout');
-      const cleanEmail = email.trim() || 'admin@elbatalexpress.com';
-      const namePart = cleanEmail.split('@')[0] || 'مسؤول النظام';
-      const isMaster = isMasterAdminEmail(cleanEmail);
-      setUser({
-        uid: 'admin_preview_' + Math.random().toString(36).substring(2, 9),
-        email: cleanEmail,
-        displayName: `${namePart} (Admin)`,
-        role: 'admin',
-        isAdmin: true,
-        isMasterAdmin: isMaster,
-      });
-      setIsAdmin(true);
-      setIsMasterAdmin(isMaster);
-      setClaims({ role: 'admin' });
-      return;
+      throw new Error('خدمة تسجيل الدخول غير مهيأة. لا يمكن فتح لوحة الإدارة دون Firebase Authentication حقيقي.');
     }
 
     const cred = await signInWithEmailAndPassword(auth, email, pass);
-    let hasAdminClaim = isSuperAdminEmail(cred.user.email);
+    if (!cred.user.emailVerified) {
+      await signOut(auth);
+      throw new Error('يجب تأكيد البريد الإلكتروني قبل الدخول إلى لوحة الإدارة.');
+    }
+    let hasAdminClaim = isSuperAdminEmail(cred.user.email) && cred.user.emailVerified;
     let userClaims: Record<string, any> = {};
 
     try {
@@ -271,9 +215,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!hasAdminClaim && db) {
       try {
         const adminDoc = await getDoc(doc(db, COLLECTIONS.ADMINS, cred.user.uid));
-        if (adminDoc.exists()) {
-          hasAdminClaim = true;
-        }
+        if (adminDoc.exists()) hasAdminClaim = true;
       } catch (err) {
         console.warn('Admins check error:', err);
       }
@@ -282,26 +224,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!hasAdminClaim) {
       setIsAdmin(false);
       setIsMasterAdmin(false);
+      await signOut(auth);
       throw new Error(
         'CUSTOM_CLAIM_MISSING: هذا الحساب ليس لديه صلاحية مسؤول (role = admin). يرجى تعيين Custom Claim من خلال Firebase Admin SDK أو إضافته في قائمة المشرفين.'
       );
     }
 
-    if (db && cred.user.email) {
-      try {
-        await setDoc(doc(db, COLLECTIONS.ADMINS, cred.user.uid), {
-          email: cred.user.email,
-          displayName: cred.user.displayName || 'مسؤول النظام',
-          role: 'admin',
-          isSuperAdmin: isSuperAdminEmail(cred.user.email),
-          updatedAt: new Date().toISOString(),
-        }, { merge: true });
-      } catch (syncErr) {
-        console.warn('Admin doc creation notice:', syncErr);
-      }
-    }
-
-    const isMaster = isMasterAdminEmail(cred.user.email);
+    const isMaster = isMasterAdminEmail(cred.user.email) && cred.user.emailVerified;
     setIsAdmin(true);
     setIsMasterAdmin(isMaster);
     setUser({
@@ -311,8 +240,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       role: 'admin',
       isAdmin: true,
       isMasterAdmin: isMaster,
+      emailVerified: cred.user.emailVerified,
     });
-    sessionStorage.removeItem('elbatal_explicit_logout');
   };
 
   const loginWithGoogle = async () => {
@@ -329,7 +258,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setCachedGoogleToken(credential.accessToken);
     }
 
-    let hasAdminClaim = isSuperAdminEmail(cred.user.email);
+    let hasAdminClaim = isSuperAdminEmail(cred.user.email) && cred.user.emailVerified;
     let userClaims: Record<string, any> = {};
 
     try {
@@ -372,7 +301,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     }
 
-    const isMaster = isMasterAdminEmail(cred.user.email);
+    const isMaster = isMasterAdminEmail(cred.user.email) && cred.user.emailVerified;
     setIsAdmin(hasAdminClaim);
     setIsMasterAdmin(isMaster);
     setUser({
@@ -386,7 +315,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const logout = async () => {
-    sessionStorage.setItem('elbatal_explicit_logout', 'true');
     localStorage.removeItem('elbatal_demo_admin_session');
     setCachedGoogleToken(null);
     if (auth && isFirebaseConfigured) {
@@ -400,24 +328,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setIsAdmin(false);
     setIsMasterAdmin(false);
     setClaims(null);
-  };
-
-  const loginAsDemoAdmin = () => {
-    sessionStorage.removeItem('elbatal_explicit_logout');
-    localStorage.setItem('elbatal_demo_admin_session', 'true');
-    const demoEmail = 'admin@elbatalexpress.com';
-    const isMaster = isMasterAdminEmail(demoEmail);
-    setUser({
-      uid: 'admin_preview_master',
-      email: demoEmail,
-      displayName: 'مدير النظام (Admin)',
-      role: 'admin',
-      isAdmin: true,
-      isMasterAdmin: isMaster,
-    });
-    setIsAdmin(true);
-    setIsMasterAdmin(isMaster);
-    setClaims({ role: 'admin' });
   };
 
   const updateDisplayName = async (newName: string) => {
@@ -525,7 +435,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         login,
         loginWithGoogle,
         logout,
-        loginAsDemoAdmin,
         updateDisplayName,
         changePassword,
         resendVerificationEmail,
