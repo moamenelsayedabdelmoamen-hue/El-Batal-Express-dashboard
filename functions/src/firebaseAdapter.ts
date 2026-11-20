@@ -233,6 +233,7 @@ export function createAdminServerEffects(): ServerEffectsPort {
           expectedCaptainId: payload.expectedCaptainId,
           error: err instanceof Error ? err.message : String(err),
         });
+        throw err;
       }
     },
   };
