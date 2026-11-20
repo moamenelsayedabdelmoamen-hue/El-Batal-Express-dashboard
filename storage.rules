@@ -208,8 +208,69 @@ service firebase.storage {
       );
       allow create, update: if isAuthenticated()
         && (request.auth.uid == merchantId || isAdmin())
+        && !allFiles.matches('subscription_receipts/.*')
         && isValidImageUpload();
       allow delete: if isAdmin();
+    }
+
+    // Legacy nested merchant receipt path used by the Android merchant app.
+    // Owners can create a new receipt object; existing objects remain immutable to merchants.
+    match /merchants/{merchantId}/subscription_receipts/{fileName} {
+      allow read: if isAuthenticated() && (
+        request.auth.uid == merchantId || isAdmin()
+      );
+      allow create: if isAuthenticated()
+        && isMerchantAccount()
+        && request.auth.uid == merchantId
+        && fileName.matches('^[A-Za-z0-9_\\-]{6,120}\\.(jpg|jpeg|png|webp)
+      allow read: if isAuthenticated();
+      allow create, update: if isAuthenticated()
+        && (request.auth.uid == merchantId || isAdmin())
+        && isValidImageUpload();
+      allow delete: if isAdmin();
+    }
+
+    match /logos/{allFiles=**} {
+      allow read: if isAuthenticated();
+      allow create, update: if isAdmin() && isValidImageUpload();
+      allow delete: if isAdmin();
+    }
+
+    // 4.5 Manual Vodafone Cash Subscription Receipts:
+    // - Strictly private: ONLY the owning merchant or an admin can read the transfer receipt.
+    // - Upload: ONLY the owning merchant (verified merchant account + valid image MIME & <=10MB).
+    // - Delete: Admin only.
+    match /subscription_receipts/{merchantId}/{allFiles=**} {
+      allow read: if isAuthenticated() && (
+        request.auth.uid == merchantId || isAdmin()
+      );
+      allow create, update: if isAuthenticated()
+        && isMerchantAccount()
+        && request.auth.uid == merchantId
+        && isValidImageUpload();
+      allow delete: if isAdmin();
+    }
+
+    match /manual_subscription_receipts/{merchantId}/{allFiles=**} {
+      allow read: if isAuthenticated() && (
+        request.auth.uid == merchantId || isAdmin()
+      );
+      allow create, update: if isAuthenticated()
+        && isMerchantAccount()
+        && request.auth.uid == merchantId
+        && isValidImageUpload();
+      allow delete: if isAdmin();
+    }
+
+    // 5. Default zero-trust deny for all other paths
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
+)
+        && isValidImageUpload();
+      allow update, delete: if isAdmin();
     }
 
     match /restaurants/{merchantId}/{allFiles=**} {
