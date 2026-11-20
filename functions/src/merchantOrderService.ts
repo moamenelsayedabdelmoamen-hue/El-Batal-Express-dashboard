@@ -149,8 +149,12 @@ function selectSubscription(
   const candidates = [canonical, ...fallbackDocs].filter(
     (item): item is Record<string, unknown> => Boolean(item)
   );
-  let best = candidates[0];
+  let best: Record<string, unknown> | undefined = candidates[0];
   for (const candidate of candidates.slice(1)) {
+    if (!best) {
+      best = candidate;
+      continue;
+    }
     const bestVersion = Number(best.subscriptionVersion ?? 0);
     const candidateVersion = Number(candidate.subscriptionVersion ?? 0);
     const bestTime = timestampMs(best.subscriptionUpdatedAt ?? best.updatedAt ?? best.activatedAt) ?? 0;
@@ -367,7 +371,7 @@ function readMerchantCoordinates(
     lat = numberValue(loc, "latitude", "_latitude", "lat");
     lng = numberValue(loc, "longitude", "_longitude", "lng");
   }
-  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+  if (lat === null || lng === null) {
     lat = numberValue(payload, "merchantLatitude");
     lng = numberValue(payload, "merchantLongitude");
   }
@@ -376,7 +380,7 @@ function readMerchantCoordinates(
 }
 
 function collectOrders(
-  snapshots: Array<{docs: Array<{id: string; data(): FirebaseFirestore.DocumentData}>}>
+  snapshots: Array<{docs: Array<{id: string; data(): Record<string, unknown>}>}>
 ): {allIds: Set<string>; activeIds: Set<string>; finishedIds: Set<string>} {
   const allIds = new Set<string>();
   const activeIds = new Set<string>();
@@ -738,7 +742,7 @@ export class MerchantOrderService {
       if (!orderSnap.exists) return;
       const order = orderSnap.data() ?? {};
       const status = stringValue(order, "status", "order_status", "orderStatus").toLowerCase();
-      if (!isActiveOrder(order) || order.capacityReleased === true) return;
+      if (isActiveOrder(order) || order.capacityReleased === true) return;
       const capacity = capacitySnap.data() ?? {};
       const reserved = Array.isArray(capacity.reservedOrderIds)
         ? capacity.reservedOrderIds.map((id: unknown) => String(id)).filter((id) => id && id !== orderId)
