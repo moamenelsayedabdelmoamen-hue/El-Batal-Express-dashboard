@@ -28,7 +28,8 @@ service cloud.firestore {
       return isSignedIn() && (
         request.auth.token.role == 'admin' ||
         request.auth.token.admin == true ||
-        request.auth.token.email in ['moamen.elsayed.abdelmoamen@gmail.com', 'admin@elbatalexpress.com'] ||
+        (request.auth.token.email in ['moamen.elsayed.abdelmoamen@gmail.com', 'admin@elbatalexpress.com'] &&
+          'email_verified' in request.auth.token && request.auth.token.email_verified == true) ||
         exists(/databases/$(database)/documents/admins/$(request.auth.uid))
       );
     }
@@ -36,7 +37,8 @@ service cloud.firestore {
     function isMasterAdmin() {
       return isSignedIn() && (
         request.auth.token.isMasterAdmin == true ||
-        request.auth.token.email == 'moamen.elsayed.abdelmoamen@gmail.com' ||
+        (request.auth.token.email == 'moamen.elsayed.abdelmoamen@gmail.com' &&
+          'email_verified' in request.auth.token && request.auth.token.email_verified == true) ||
         (
           exists(/databases/$(database)/documents/admins/$(request.auth.uid)) &&
           get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.isMasterAdmin == true
@@ -464,19 +466,19 @@ service cloud.firestore {
     }
 
     match /order_codes/{code} {
-      allow get, list: if isSignedIn();
-      allow create: if isAdmin() || (isMerchantAccount() && incoming().merchantId == request.auth.uid);
-      allow update, delete: if isAdmin();
+      // Order codes are private to the owning merchant and trusted administrators.
+      allow get, list: if isAdmin() ||
+        (isMerchantAccount() && existing().merchantId == request.auth.uid);
+      // Cloud Functions use Admin SDK; clients cannot reserve or mutate codes.
+      allow create, update, delete: if isAdmin();
     }
 
     match /idempotency_keys/{keyId} {
-      allow get: if isAdmin() || (isMerchantAccount() && (
-        !exists(/databases/$(database)/documents/idempotency_keys/$(keyId)) ||
-        existing().merchantId == request.auth.uid
-      ));
+      allow get: if isAdmin() ||
+        (isMerchantAccount() && existing().merchantId == request.auth.uid);
       allow list: if isAdmin();
-      allow create: if isAdmin() || (isMerchantAccount() && incoming().merchantId == request.auth.uid);
-      allow update, delete: if isAdmin();
+      // Idempotency keys are reserved only by trusted Cloud Functions (Admin SDK).
+      allow create, update, delete: if isAdmin();
     }
 
     // Manual Vodafone Cash subscription requests:
