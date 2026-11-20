@@ -354,27 +354,6 @@ export const merchantCreateOrder = onCall(
       const ordersRef = db.collection("orders");
       const merchantOrdersQuery = ordersRef.where("merchantId", "==", uid);
 
-      const replaySnap = await idempotencyRef.get();
-      if (replaySnap.exists) {
-        const replay = replaySnap.data() ?? {};
-        if (readString(replay, "merchantId") !== uid) {
-          throw new HttpsError("permission-denied", "مفتاح الطلب مستخدم لحساب آخر.");
-        }
-        return {
-          success: true,
-          orderId: readString(replay, "orderId"),
-          orderCode: readString(replay, "orderCode"),
-          status: "pending",
-          captainLimit: 0,
-          activeCaptainsCount: 0,
-          remainingCaptains: 0,
-          planId: 0,
-          planName: "",
-          subscriptionVersion: 1,
-          isReplay: true,
-        };
-      }
-
       const MAX_CODE_ATTEMPTS = 25;
       for (let attempt = 1; attempt <= MAX_CODE_ATTEMPTS; attempt++) {
         const orderCode = generateDistinctOrderCode();
@@ -403,16 +382,30 @@ export const merchantCreateOrder = onCall(
               if (readString(keyData, "merchantId") !== uid) {
                 throw new HttpsError("permission-denied", "مفتاح الطلب مستخدم لحساب آخر.");
               }
+              const replayMerchant = merchantSnap.data() ?? {};
+              const replaySubscription = subscriptionSnap.data() ?? {};
+              const replayMaxCaptains =
+                readNumber(replaySubscription, "maxCaptains") ??
+                readNumber(replayMerchant, "maxCaptains") ??
+                0;
+              const replayActiveCount = activeOrdersSnap.docs.filter((doc) =>
+                !isClosedMerchantOrderStatus(readNormalizedOrderStatus(doc.data() ?? {}))
+              ).length;
               return {
                 replay: true,
                 orderId: readString(keyData, "orderId"),
                 orderCode: readString(keyData, "orderCode"),
-                maxCaptains: 0,
-                activeCaptainsCount: 0,
-                remainingCaptains: 0,
-                planId: 0,
-                planName: "",
-                subscriptionVersion: 1,
+                maxCaptains: replayMaxCaptains,
+                activeCaptainsCount: replayActiveCount,
+                remainingCaptains: Math.max(0, replayMaxCaptains - replayActiveCount),
+                planId:
+                  readNumber(replaySubscription, "planId") ??
+                  readNumber(replayMerchant, "planId") ??
+                  0,
+                planName:
+                  readString(replaySubscription, "planName", "name") ||
+                  readString(replayMerchant, "planName"),
+                subscriptionVersion: readNumber(replaySubscription, "subscriptionVersion") ?? 1,
               };
             }
 
