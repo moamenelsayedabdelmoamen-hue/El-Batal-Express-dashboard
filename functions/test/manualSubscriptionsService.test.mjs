@@ -599,6 +599,134 @@ describe("Manual Vodafone Cash Subscriptions Server Service (Full 14-Scenario Su
     );
   });
 
+  it("2a. Accepts Android merchant payload aliases and safely replays the same idempotency key", async () => {
+    const {db, service, storageFiles} = createHarness();
+    seedMerchant(db, {merchantId: "merchant_1"});
+    const receiptPath = "merchants/merchant_1/subscription_receipts/req_mobile_1.jpg";
+    storageFiles.add(receiptPath);
+
+    const payload = {
+      requestId: "req_mobile_1",
+      idempotencyKey: "android-manual-sub-req-mobile-1",
+      merchantId: "merchant_1",
+      planId: "plan_4_captains",
+      packageId: "plan_4_captains",
+      maxCaptains: 4,
+      expectedAmount: 800,
+      amount: 800,
+      senderPhone: "01022223333",
+      transactionReference: "VF-MOBILE-ALIAS-001",
+      notes: "اختبار توافق تطبيق التاجر",
+      receiptStoragePath: receiptPath,
+    };
+
+    const first = await service.submitManualSubscriptionRequest(MERCHANT_AUTH, payload);
+    assert.equal(first.success, true);
+    assert.equal(first.status, "pending_review");
+    assert.equal(first.amount, 800);
+
+    const stored = db.getDocData("manual_subscription_requests/req_mobile_1");
+    assert.equal(stored.receiptImagePath, receiptPath);
+    assert.equal(stored.merchantNote, "اختبار توافق تطبيق التاجر");
+    assert.equal(stored.idempotencyKey, payload.idempotencyKey);
+    assert.equal(db.getDocData("merchants/merchant_1").activeManualSubscriptionRequestId, "req_mobile_1");
+
+    // Retry after a client timeout must return the same request and create no duplicate.
+    const replay = await service.submitManualSubscriptionRequest(MERCHANT_AUTH, payload);
+    assert.equal(replay.success, true);
+    assert.equal(replay.requestId, "req_mobile_1");
+    assert.equal(db.listCollection("manual_subscription_requests").length, 1);
+    assert.equal(db.listCollection("manual_subscription_reference_locks").length, 1);
+
+    // A correct amount field must not mask a forged expectedAmount alias.
+    const {db: isolatedDb, service: isolatedService, storageFiles: isolatedStorage} = createHarness();
+    seedMerchant(isolatedDb, {merchantId: "merchant_1"});
+    const forgedReceipt = "subscription_receipts/merchant_1/forged_amount.jpg";
+    isolatedStorage.add(forgedReceipt);
+    await assert.rejects(
+      () => isolatedService.submitManualSubscriptionRequest(MERCHANT_AUTH, {
+        requestId: "req_forged_expected_amount",
+        planId: "plan_4_captains",
+        amount: 800,
+        expectedAmount: 1,
+        senderPhone: "01022223333",
+        receiptStoragePath: forgedReceipt,
+      }),
+      (err) => err instanceof DomainHttpsError && err.code === "invalid-argument"
+    );
+  });
+
+  it("2b. Serializes concurrent merchant requests and globally reserves transaction references", async () => {
+    // Two simultaneous requests from one merchant with different references must not both become pending.
+    {
+      const {db, service, storageFiles} = createHarness();
+      seedMerchant(db, {merchantId: "merchant_1"});
+      db.YieldOnRead = true;
+      const p1 = "subscription_receipts/merchant_1/concurrent_1.jpg";
+      const p2 = "subscription_receipts/merchant_1/concurrent_2.jpg";
+      storageFiles.add(p1);
+      storageFiles.add(p2);
+
+      const results = await Promise.allSettled([
+        service.submitManualSubscriptionRequest(MERCHANT_AUTH, {
+          requestId: "req_concurrent_1",
+          planId: "plan_4_captains",
+          senderPhone: "01022223333",
+          transactionReference: "VF-CONCURRENT-MERCHANT-1",
+          receiptImagePath: p1,
+        }),
+        service.submitManualSubscriptionRequest(MERCHANT_AUTH, {
+          requestId: "req_concurrent_2",
+          planId: "plan_4_captains",
+          senderPhone: "01022223333",
+          transactionReference: "VF-CONCURRENT-MERCHANT-2",
+          receiptImagePath: p2,
+        }),
+      ]);
+
+      assert.equal(results.filter((r) => r.status === "fulfilled").length, 1);
+      assert.equal(results.filter((r) => r.status === "rejected").length, 1);
+      assert.equal(db.listCollection("manual_subscription_requests").length, 1);
+    }
+
+    // Two different merchants cannot reserve the same transfer reference concurrently.
+    {
+      const {db, service, storageFiles} = createHarness();
+      seedMerchant(db, {merchantId: "merchant_1"});
+      seedMerchant(db, {merchantId: "merchant_2"});
+      db.YieldOnRead = true;
+      const p1 = "subscription_receipts/merchant_1/shared_reference_1.jpg";
+      const p2 = "subscription_receipts/merchant_2/shared_reference_2.jpg";
+      storageFiles.add(p1);
+      storageFiles.add(p2);
+
+      const results = await Promise.allSettled([
+        service.submitManualSubscriptionRequest(MERCHANT_AUTH, {
+          requestId: "req_reference_1",
+          planId: "plan_4_captains",
+          senderPhone: "01022223333",
+          transactionReference: "VF-GLOBAL-REFERENCE-RACE",
+          receiptImagePath: p1,
+        }),
+        service.submitManualSubscriptionRequest(
+          {uid: "merchant_2", token: {email: "m2@store.com", role: "merchant"}},
+          {
+            requestId: "req_reference_2",
+            planId: "plan_4_captains",
+            senderPhone: "01033334444",
+            transactionReference: "VF-GLOBAL-REFERENCE-RACE",
+            receiptImagePath: p2,
+          }
+        ),
+      ]);
+
+      assert.equal(results.filter((r) => r.status === "fulfilled").length, 1);
+      assert.equal(results.filter((r) => r.status === "rejected").length, 1);
+      assert.equal(db.listCollection("manual_subscription_requests").length, 1);
+      assert.equal(db.listCollection("manual_subscription_reference_locks").length, 1);
+    }
+  });
+
   it("3. New subscription request trigger creates admin notification & dispatches admin alert", async () => {
     const {db, service, adminPushes} = createHarness();
     const reqData = {
