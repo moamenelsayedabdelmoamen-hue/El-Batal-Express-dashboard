@@ -56,9 +56,9 @@ function readMerchantEnteredDeliveryFee(order: Record<string, unknown>): number 
   const normalized = normalizeFeeDigits(raw)
     .replace(/[,٬]/g, "")
     .trim()
-    .replace(/\\s*جنيه$/u, "")
+    .replace(/\s*جنيه$/u, "")
     .trim();
-  if (!/^\\d+(?:\\.\\d{1,2})?$/.test(normalized)) return null;
+  if (!/^\d+(?:\.\d{1,2})?$/.test(normalized)) return null;
   const parsed = Number(normalized);
   return Number.isFinite(parsed) ? parsed : null;
 }
