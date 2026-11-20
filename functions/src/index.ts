@@ -16,7 +16,10 @@ import {
 import {ManualSubscriptionsServerService} from "./manualSubscriptionsService.js";
 import {OrderServerService} from "./ordersService.js";
 import {DomainHttpsError, ReassignTaskPayload} from "./types.js";
-import {readNormalizedOrderStatus} from "./validators.js";
+import {
+  isCaptainCandidateBaseEligible,
+  readNormalizedOrderStatus,
+} from "./validators.js";
 
 initializeApp();
 setGlobalOptions({region: "us-central1", maxInstances: 10});
@@ -175,6 +178,51 @@ export const onOrderCreatedDispatch = onDocumentCreated(
 /**
  * Trigger 2: Handles admin/merchant manual re-queue to searching state without looping.
  */
+/**
+ * When a captain transitions from unavailable to eligible, retry a bounded batch
+ * of queued orders. This is the single authoritative replacement for the retired
+ * merchant/captain-app auto-dispatch triggers.
+ */
+export const onCaptainAvailabilityChanged = onDocumentUpdated(
+  {document: "captains/{captainId}", region: "us-central1"},
+  async (event) => {
+    const before = event.data?.before.data() as Record<string, unknown> | undefined;
+    const after = event.data?.after.data() as Record<string, unknown> | undefined;
+    if (!before || !after) return;
+
+    const nowMs = Date.now();
+    const wasEligible = isCaptainCandidateBaseEligible(before, nowMs);
+    const isEligible = isCaptainCandidateBaseEligible(after, nowMs);
+    if (wasEligible || !isEligible) return;
+
+    try {
+      const waiting = await getFirestore()
+        .collection("orders")
+        .where("status", "in", ["pending", "searching"])
+        .limit(30)
+        .get();
+
+      for (const orderDoc of waiting.docs) {
+        try {
+          await service.dispatchNewOrSearchingOrder(orderDoc.id);
+        } catch (err) {
+          logger.error("Failed to retry queued order after captain became eligible", {
+            captainId: event.params.captainId,
+            orderId: orderDoc.id,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+    } catch (err) {
+      logger.error("Failed to load queued orders after captain availability changed", {
+        captainId: event.params.captainId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      throw err;
+    }
+  }
+);
+
 export const onOrderUpdatedDispatch = onDocumentUpdated(
   {document: "orders/{orderId}", region: "us-central1"},
   async (event) => {
