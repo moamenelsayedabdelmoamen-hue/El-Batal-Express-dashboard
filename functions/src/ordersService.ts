@@ -1586,24 +1586,35 @@ export class OrderServerService {
     const itemsArr = Array.isArray(order.items) ? order.items : [];
     const itemsSummary =
       readString(order, "itemsSummary", "description") || "طلب توصيل جديد";
+    const merchantId = readString(order, "merchantId", "restaurantId", "storeId");
+    const storeName = readString(order, "storeName", "restaurantName", "merchantName", "vendorName");
+    const storePhone = readString(order, "storePhone", "merchantPhone");
+    const storeImage = readString(order, "storeImage", "merchantLogo", "storeLogo");
+    const storeImagePath = readString(order, "storeImagePath", "merchantStoragePath");
+    const deliveryFee = readNumber(order, "deliveryFee", "delivery_fee", "shippingFee");
+    if (!merchantId || !storeName || !storePhone || (!storeImage && !storeImagePath)) {
+      throw new DomainHttpsError(
+        "failed-precondition",
+        "بيانات اسم التاجر أو هاتفه أو صورته غير مكتملة؛ تم إيقاف إرسال العرض."
+      );
+    }
+    if (deliveryFee === null || deliveryFee < 0) {
+      throw new DomainHttpsError(
+        "failed-precondition",
+        "لم يتم تسجيل أجرة التوصيل من تطبيق التاجر؛ لن يتم إرسال عرض بقيمة افتراضية."
+      );
+    }
     return {
       captainUid: candidate.uid,
       fcmToken: candidate.fcmToken,
       orderId,
       orderNumber: readString(order, "orderNumber", "order_number") || orderId,
       orderCode: readString(order, "orderCode", "order_code"),
-      merchantId: readString(order, "merchantId", "restaurantId", "storeId"),
-      storeName:
-        readString(
-          order,
-          "storeName",
-          "restaurantName",
-          "merchantName",
-          "vendorName"
-        ) || "مطعم مسجل",
-      storePhone: readString(order, "storePhone", "merchantPhone"),
-      storeImage: readString(order, "storeImage", "merchantLogo", "storeLogo"),
-      storeImagePath: readString(order, "storeImagePath", "merchantStoragePath"),
+      merchantId,
+      storeName,
+      storePhone,
+      storeImage,
+      storeImagePath,
       storeLocationUrl: readString(order, "storeLocationUrl", "locationUrl"),
       pickupAddress:
         readString(order, "pickupAddress", "storeAddress", "merchantAddress") ||
@@ -1615,8 +1626,7 @@ export class OrderServerService {
           "customerAddress",
           "dropoffAddress"
         ) || "عنوان العميل",
-      deliveryFee:
-        readNumber(order, "deliveryFee", "delivery_fee", "shippingFee") ?? 25.0,
+      deliveryFee,
       distanceKm: candidate.distanceKm,
       offerExpiresAtMs,
       itemsSummary,
