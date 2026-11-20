@@ -826,14 +826,14 @@ export const merchantCancelOrder = onCall(
           throw new HttpsError("permission-denied", "هذا الطلب لا يخص متجرك.");
         }
         const status = readNormalizedOrderStatus(order);
+        if (["cancelled", "canceled"].includes(status)) {
+          return {alreadyCancelled: true};
+        }
         if (!isMerchantCancelableOrderStatus(status)) {
           throw new HttpsError(
             "failed-precondition",
             "لا يمكن إلغاء الطلب بعد استلامه من المتجر أو بدء توصيله."
           );
-        }
-        if (["cancelled", "canceled"].includes(status)) {
-          return {alreadyCancelled: true};
         }
 
         const offeredUid = readString(order, "offeredCaptainId");
