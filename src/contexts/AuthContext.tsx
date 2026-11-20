@@ -296,6 +296,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     }
 
+    if (!hasAdminClaim) {
+      setIsAdmin(false);
+      setIsMasterAdmin(false);
+      await signOut(auth);
+      throw new Error('هذا الحساب غير مخوّل لدخول لوحة الإدارة.');
+    }
+
     if (db && cred.user.email) {
       try {
         await setDoc(
