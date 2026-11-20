@@ -37,11 +37,22 @@ function readMoney(data: Record<string, unknown>, ...keys: string[]): number | n
     const raw = data[key];
     if (typeof raw === "number" && Number.isFinite(raw)) return raw;
     if (typeof raw !== "string" || !raw.trim()) continue;
-    const normalized = raw.trim()
+
+    let normalized = raw.trim()
       .replace(/[٠-٩]/g, (digit) => String("٠١٢٣٤٥٦٧٨٩".indexOf(digit)))
       .replace(/[۰-۹]/g, (digit) => String("۰۱۲۳۴۵۶۷۸۹".indexOf(digit)))
-      .replace(/[^0-9.,-]/g, "")
-      .replace(/,/g, ".");
+      .replace(/٫/g, ".")
+      .replace(/٬/g, ",")
+      .replace(/[^0-9.,-]/g, "");
+
+    if (normalized.includes(".") && normalized.includes(",")) {
+      normalized = normalized.replace(/,/g, "");
+    } else if (/^\d{1,3}(,\d{3})+$/.test(normalized)) {
+      normalized = normalized.replace(/,/g, "");
+    } else {
+      normalized = normalized.replace(/,/g, ".");
+    }
+
     const match = normalized.match(/-?\d+(?:\.\d{1,2})?/);
     if (match) {
       const amount = Number(match[0]);
@@ -1419,7 +1430,7 @@ export class OrderServerService {
           "dropoffAddress"
         ) || "عنوان العميل",
       deliveryFee:
-        readNumber(order, "deliveryFee", "delivery_fee", "shippingFee") ?? 25.0,
+        readMoney(order, "deliveryFee", "delivery_fee", "shippingFee", "serviceFee", "price") ?? 0.0,
       distanceKm: candidate.distanceKm,
       offerExpiresAtMs,
       itemsSummary,
