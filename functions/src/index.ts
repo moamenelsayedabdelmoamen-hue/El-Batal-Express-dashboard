@@ -213,6 +213,17 @@ function generateDistinctOrderCode(): string {
   return digits.join("");
 }
 
+function normalizeArabicDigits(value: string): string {
+  const arabic = "٠١٢٣٤٥٦٧٨٩";
+  const persian = "۰۱۲۳۴۵۶۷۸۹";
+  return value.replace(/[٠-٩۰-۹]/g, (digit) => {
+    const arabicIndex = arabic.indexOf(digit);
+    if (arabicIndex >= 0) return String(arabicIndex);
+    const persianIndex = persian.indexOf(digit);
+    return persianIndex >= 0 ? String(persianIndex) : digit;
+  });
+}
+
 function isClosedMerchantOrderStatus(status: string): boolean {
   const value = status.trim().toLowerCase();
   return [
@@ -266,7 +277,7 @@ export const merchantCreateOrder = onCall(
       if (!serviceFee) {
         throw new HttpsError("invalid-argument", "يرجى إدخال قيمة خدمة التوصيل من تطبيق التاجر.");
       }
-      const feeMatch = serviceFee.replace(/,/g, "").match(/\d+(?:\.\d+)?/);
+      const feeMatch = normalizeArabicDigits(serviceFee).replace(/,/g, "").match(/\d+(?:\.\d+)?/);
       if (!feeMatch) {
         throw new HttpsError("invalid-argument", "قيمة خدمة التوصيل يجب أن تحتوي على مبلغ رقمي واضح.");
       }
@@ -702,7 +713,7 @@ export const merchantUpdateOrderDetails = onCall(
       if (!serviceFee) {
         throw new HttpsError("invalid-argument", "يرجى إدخال قيمة خدمة التوصيل من تطبيق التاجر.");
       }
-      const feeMatch = serviceFee.replace(/,/g, "").match(/\d+(?:\.\d+)?/);
+      const feeMatch = normalizeArabicDigits(serviceFee).replace(/,/g, "").match(/\d+(?:\.\d+)?/);
       if (!feeMatch) {
         throw new HttpsError("invalid-argument", "قيمة خدمة التوصيل يجب أن تحتوي على مبلغ رقمي واضح.");
       }
