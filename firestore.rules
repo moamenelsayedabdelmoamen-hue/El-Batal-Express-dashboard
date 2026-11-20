@@ -25,7 +25,10 @@ service cloud.firestore {
     }
 
     function isAdmin() {
-      return isSignedIn() && (
+      return isSignedIn()
+        && 'email_verified' in request.auth.token
+        && request.auth.token.email_verified == true
+        && (
         request.auth.token.role == 'admin' ||
         request.auth.token.admin == true ||
         (request.auth.token.email in ['moamen.elsayed.abdelmoamen@gmail.com', 'admin@elbatalexpress.com'] &&
@@ -35,7 +38,10 @@ service cloud.firestore {
     }
 
     function isMasterAdmin() {
-      return isSignedIn() && (
+      return isSignedIn()
+        && 'email_verified' in request.auth.token
+        && request.auth.token.email_verified == true
+        && (
         request.auth.token.isMasterAdmin == true ||
         (request.auth.token.email == 'moamen.elsayed.abdelmoamen@gmail.com' &&
           'email_verified' in request.auth.token && request.auth.token.email_verified == true) ||
