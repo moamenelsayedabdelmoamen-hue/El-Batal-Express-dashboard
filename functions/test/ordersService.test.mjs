@@ -326,6 +326,9 @@ function seedPendingOrder(db, orderId, overrides = {}) {
     captainId: null,
     merchantId: "merch_1",
     storeName: "مطعم البطل",
+    storePhone: "01012345678",
+    storeImage: "https://storage.example.test/merchants/merch_1/logo.jpg",
+    storeImagePath: "merchants/merch_1/logo.jpg",
     pickupLat: 30.0444,
     pickupLng: 31.2357,
     pickupAddress: "وسط البلد",
@@ -427,40 +430,53 @@ describe("El-Batal Cloud Functions Order Server Service", () => {
     // Clear active trip, test expired subscription order
     db.seed("orders/ord_already_c1", {status: "delivered", captainId: "cap_1"});
     await assert.rejects(
-      () => service.acceptOrder("cap_1", {orderId: "ord_exp_sub"}),
+      () => service.dispatchNewOrSearchingOrder("ord_exp_sub"),
       (e) => e instanceof DomainHttpsError && e.code === "failed-precondition"
     );
   });
 
-  it("4. Enforces true concurrency race protection (only 1 captain wins) + idempotency for winner", async () => {
+  it("4. Atomically reserves one active offer per captain across concurrent orders", async () => {
     const now = Date.UTC(2026, 10, 18, 12, 0, 0);
     const {db, service} = createHarness(now);
-    db.YieldOnRead = true; // force concurrent interleaving inside runTransaction
+    db.YieldOnRead = true;
     seedMerchantAndSub(db, "merch_1");
     seedCaptain(db, "cap_1", {latitude: 30.0445, longitude: 31.2358}, now);
     seedCaptain(db, "cap_2", {latitude: 30.0446, longitude: 31.2359}, now);
-    seedPendingOrder(db, "ord_race");
+    seedPendingOrder(db, "ord_race_a");
+    seedPendingOrder(db, "ord_race_b");
 
-    const results = await Promise.allSettled([
-      service.acceptOrder("cap_1", {orderId: "#ord_race"}),
-      service.acceptOrder("cap_2", {orderId: "ord_race"}),
+    const dispatches = await Promise.all([
+      service.dispatchNewOrSearchingOrder("ord_race_a"),
+      service.dispatchNewOrSearchingOrder("ord_race_b"),
     ]);
 
-    const fulfilled = results.filter((r) => r.status === "fulfilled");
-    const rejected = results.filter((r) => r.status === "rejected");
+    assert.equal(dispatches.every((result) => result.status === "offered"), true);
+    const offeredIds = dispatches.map((result) => result.offeredCaptainId);
+    assert.equal(new Set(offeredIds).size, 2, "Two concurrent orders must reserve two different captains");
 
-    assert.equal(fulfilled.length, 1, "Exactly one captain must win the race");
-    assert.equal(rejected.length, 1, "Loser captain must be rejected");
-    assert.equal(rejected[0].reason.code, "already-exists");
+    const captainA = db.getDocData("orders/ord_race_a").offeredCaptainId;
+    const captainB = db.getDocData("orders/ord_race_b").offeredCaptainId;
+    const accepted = await Promise.all([
+      service.acceptOrder(captainA, {orderId: "ord_race_a"}),
+      service.acceptOrder(captainB, {orderId: "ord_race_b"}),
+    ]);
 
-    const winnerUid = fulfilled[0].value.captainId;
-    assert.equal(db.getDocData("orders/ord_race").captainId, winnerUid);
-    assert.equal(db.getDocData("orders/ord_race").status, "accepted");
+    assert.equal(accepted.length, 2);
+    assert.equal(db.getDocData("orders/ord_race_a").captainId, captainA);
+    assert.equal(db.getDocData("orders/ord_race_b").captainId, captainB);
+    assert.equal(db.getDocData(`captains/${captainA}`).currentOrderId, "ord_race_a");
+    assert.equal(db.getDocData(`captains/${captainB}`).currentOrderId, "ord_race_b");
 
-    // Winner retrying acceptOrder must return idempotently without error
-    const retryRes = await service.acceptOrder(winnerUid, {orderId: "ord_race"});
+    // Another captain cannot accept an offer addressed to someone else.
+    await assert.rejects(
+      () => service.acceptOrder(captainA === "cap_1" ? "cap_2" : "cap_1", {orderId: "ord_race_a"}),
+      (err) => err instanceof DomainHttpsError && err.code === "failed-precondition"
+    );
+
+    // The winning captain's retry is idempotent.
+    const retryRes = await service.acceptOrder(captainA, {orderId: "ord_race_a"});
     assert.equal(retryRes.alreadyAccepted, true);
-    assert.equal(retryRes.captainId, winnerUid);
+    assert.equal(retryRes.captainId, captainA);
   });
 
   it("5. Auto-dispatch selects nearest captain, enforces 60s server timeout, reassigns & ignores stale tasks", async () => {
@@ -536,6 +552,7 @@ describe("El-Batal Cloud Functions Order Server Service", () => {
     seedCaptain(db, "cap_1", {walletBalance: 100.0, totalOrdersCount: 5, commissionRate: 0.1}, now);
     seedPendingOrder(db, "ord_life", {deliveryFee: 50.0});
 
+    await service.dispatchNewOrSearchingOrder("ord_life");
     await service.acceptOrder("cap_1", {orderId: "ord_life"});
     await service.captainArrivedAtMerchant("cap_1", {orderId: "ord_life"});
     await service.confirmPickup("cap_1", {orderId: "ord_life"});
