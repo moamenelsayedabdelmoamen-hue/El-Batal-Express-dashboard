@@ -899,8 +899,7 @@ export class OrderServerService {
         "photoUrl",
         "logoUrl",
         "imageUrl",
-        "profileImageUrl",
-        "storagePath"
+        "profileImageUrl"
       );
       if (merchantName) {
         Object.assign(merchantIdentity, {
