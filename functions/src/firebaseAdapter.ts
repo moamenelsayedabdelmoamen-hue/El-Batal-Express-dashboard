@@ -189,6 +189,7 @@ export function createAdminServerEffects(): ServerEffectsPort {
             orderId: payload.orderId,
             orderNumber: payload.orderNumber,
             orderCode: payload.orderCode,
+            merchantId: payload.merchantId,
             storeName: payload.storeName,
             storePhone: payload.storePhone,
             storeImage: payload.storeImage,
