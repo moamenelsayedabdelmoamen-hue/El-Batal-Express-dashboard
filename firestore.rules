@@ -426,24 +426,15 @@ service cloud.firestore {
       // Merchants may edit only non-financial details before assignment.
       // They cannot change status or confirm/reject a captain's submitted delivery data here;
       // those transitions must call merchantConfirmOrder / merchantCancelOrder.
+      // Server-only for lifecycle and merchant data edits. The sole direct
+      // merchant update retained here is bounded feedback rating.
       allow update: if isAdmin() || (
         isOrderOwnedByMerchant(existing())
         && incoming().merchantId == existing().merchantId
-        && incoming().userId == existing().userId
-        && incoming().orderCode == existing().orderCode
-        && incoming().captainId == existing().captainId
-        && !incoming().diff(existing()).affectedKeys().hasAny([
-          'captainId', 'captainUid', 'driverId', 'assignedCaptainId',
-          'offeredCaptainId', 'eligibleCaptainIds', 'excludedCaptainIds',
-          'timedOutCaptainIds', 'dispatchStatus', 'assignedAt', 'acceptedAt',
-          'deliveredAt', 'completedAt', 'captainEarning', 'captainEarnings',
-          'platformCommission', 'walletCredited', 'settlementStatus', 'paymentStatus',
-          'status', 'orderStatus', 'status_ar', 'customerDetailsConfirmed',
-          'customerDetailsRejected', 'merchantConfirmed', 'confirmedAt',
-          'merchantConfirmedAt', 'merchantRejectedAt', 'rejectionReason',
-          'cancelledAt', 'cancelReason', 'deliveryFee', 'delivery_fee',
-          'serviceFee', 'price', 'totalAmount'
-        ])
+        && incoming().diff(existing()).affectedKeys().hasOnly(['rating', 'ratedAt'])
+        && incoming().rating is int
+        && incoming().rating >= 1
+        && incoming().rating <= 5
       );
       allow delete: if isAdmin();
     }
