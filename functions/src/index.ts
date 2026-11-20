@@ -1,3 +1,4 @@
+import {createHash} from "node:crypto";
 import {initializeApp} from "firebase-admin/app";
 import {getFirestore} from "firebase-admin/firestore";
 import {setGlobalOptions} from "firebase-functions";
@@ -33,6 +34,64 @@ const manualSubService = new ManualSubscriptionsServerService(
   dbAdapter,
   createAdminManualSubscriptionEffects()
 );
+
+/**
+ * Limits unauthenticated pre-login phone-to-email lookups without storing raw phone
+ * numbers or source IP addresses. This endpoint is needed by the captain phone-login flow.
+ */
+async function enforceCaptainPhoneLookupRateLimit(
+  sourceIp: string,
+  rawPhone: string
+): Promise<void> {
+  const phoneDigits = rawPhone.replace(/\\D/g, "").slice(-12);
+  if (phoneDigits.length < 8) {
+    throw new HttpsError("invalid-argument", "رقم الهاتف غير صالح.");
+  }
+
+  const nowMs = Date.now();
+  const windowMs = 15 * 60 * 1000;
+  const ipHash = createHash("sha256").update(sourceIp || "unknown").digest("hex");
+  const phoneHash = createHash("sha256").update(phoneDigits).digest("hex");
+  const database = getFirestore();
+  const ipRef = database.collection("phone_lookup_rate_limits").doc(`ip_${ipHash}`);
+  const phoneRef = database.collection("phone_lookup_rate_limits").doc(`phone_${phoneHash}`);
+
+  const allowed = await database.runTransaction(async (tx) => {
+    const [ipSnap, phoneSnap] = await Promise.all([tx.get(ipRef), tx.get(phoneRef)]);
+    const ipData = ipSnap.data() ?? {};
+    const phoneData = phoneSnap.data() ?? {};
+    const ipStart = Number(ipData.windowStartedAt ?? 0);
+    const phoneStart = Number(phoneData.windowStartedAt ?? 0);
+    const ipWindowActive = ipStart > 0 && nowMs - ipStart < windowMs;
+    const phoneWindowActive = phoneStart > 0 && nowMs - phoneStart < windowMs;
+    const ipCount = ipWindowActive ? Number(ipData.count ?? 0) : 0;
+    const phoneCount = phoneWindowActive ? Number(phoneData.count ?? 0) : 0;
+
+    // 30 attempts per source IP and 10 attempts per phone number in each 15-minute window.
+    if (ipCount >= 30 || phoneCount >= 10) return false;
+
+    tx.set(ipRef, {
+      windowStartedAt: ipWindowActive ? ipStart : nowMs,
+      count: ipCount + 1,
+      expiresAt: new Date(nowMs + 2 * windowMs),
+      updatedAt: new Date(nowMs),
+    });
+    tx.set(phoneRef, {
+      windowStartedAt: phoneWindowActive ? phoneStart : nowMs,
+      count: phoneCount + 1,
+      expiresAt: new Date(nowMs + 2 * windowMs),
+      updatedAt: new Date(nowMs),
+    });
+    return true;
+  });
+
+  if (!allowed) {
+    throw new HttpsError(
+      "resource-exhausted",
+      "تم تجاوز عدد محاولات البحث عن الحساب. يرجى الانتظار 15 دقيقة ثم المحاولة مرة أخرى."
+    );
+  }
+}
 
 function mapError(err: unknown): HttpsError {
   if (err instanceof HttpsError) return err;
@@ -149,6 +208,11 @@ export const resolveCaptainEmailByPhone = onCall(
   async (request) => {
     try {
       const payload = (request.data ?? {}) as Record<string, unknown>;
+      const phone = String(payload.phone ?? payload.phoneNumber ?? "").trim();
+      await enforceCaptainPhoneLookupRateLimit(
+        request.rawRequest.ip || "unknown",
+        phone
+      );
       return await service.resolveCaptainEmailByPhone(payload);
     } catch (err) {
       throw mapError(err);
