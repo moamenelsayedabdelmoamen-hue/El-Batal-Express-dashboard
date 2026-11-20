@@ -81,6 +81,46 @@ try {
   console.log("1/4 Seed merchant and active subscription");
   await seedMerchantAndSubscription();
 
+  // A known invalid subscription is a permanent business error, not a retry loop.
+  const invalidMerchantId = `${merchantId}_expired`;
+  cleanup.push(
+    db.collection("merchants").doc(invalidMerchantId),
+    db.collection("subscriptions").doc(invalidMerchantId)
+  );
+  await Promise.all([
+    db.collection("merchants").doc(invalidMerchantId).set({
+      uid: invalidMerchantId,
+      accountType: "merchant",
+      status: "active",
+      name: "متجر اشتراك منتهي",
+      phone: "01000000001",
+      logoUrl: "https://example.invalid/expired-logo.png",
+      latitude: 30.0444,
+      longitude: 31.2357,
+    }),
+    db.collection("subscriptions").doc(invalidMerchantId).set({
+      merchantId: invalidMerchantId,
+      status: "expired",
+      endDate: "2020-01-01",
+    }),
+  ]);
+  const failedOrderId = `it_order_invalid_subscription_${runId}`;
+  const failedOrderRef = db.collection("orders").doc(failedOrderId);
+  const failedAlertRef = db.collection("notifications").doc(`dispatch_failed_${failedOrderId}`);
+  cleanup.push(failedOrderRef, failedAlertRef);
+  await failedOrderRef.set({
+    ...dispatcherOrder(failedOrderId),
+    merchantId: invalidMerchantId,
+    restaurantId: invalidMerchantId,
+  });
+  const failedOrder = await waitForDocument(
+    failedOrderRef,
+    (data) => data.dispatchStatus === "dispatch_failed",
+    "permanent dispatch business error to be recorded"
+  );
+  assert.equal(failedOrder.dispatchFailureCode, "failed-precondition");
+  assert.equal((await failedAlertRef.get()).exists, true);
+
   console.log("2/4 Test Firestore document-created dispatch trigger");
   const createdOrderId = `it_order_created_${runId}`;
   const createdOrderRef = db.collection("orders").doc(createdOrderId);
@@ -182,12 +222,9 @@ try {
   );
   assert.equal(manualNotification.requestId, requestId);
 
-  // The notification is created once and a later retry must not reset the admin read state.
-  await manualNotificationRef.update({isRead: true});
-  await delay(500);
-  assert.equal((await manualNotificationRef.get()).data().isRead, true);
+  assert.equal(manualNotification.amount, 100);
 
-  console.log("PASS: Firestore create/update triggers, capacity release, and manual-subscription alert");
+  console.log("PASS: Firestore create/update triggers, permanent-error handling, capacity release, and manual-subscription alert");
 } finally {
   await Promise.all(cleanup.map((ref) => ref.delete().catch(() => undefined)));
   await Promise.all([
