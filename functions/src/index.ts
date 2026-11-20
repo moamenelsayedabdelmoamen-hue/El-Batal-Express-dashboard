@@ -628,8 +628,11 @@ export const merchantCreateOrder = onCall(
             if (!merchantPhone) {
               throw new HttpsError("failed-precondition", "يرجى تسجيل رقم الهاتف الحقيقي في ملف التاجر قبل طلب كابتن.");
             }
-            if (!storeImage && !storeImagePath) {
-              throw new HttpsError("failed-precondition", "يرجى رفع صورة المتجر إلى ملف التاجر قبل طلب كابتن.");
+            if (!storeImage) {
+              throw new HttpsError(
+                "failed-precondition",
+                "رابط صورة المتجر غير مكتمل. أعد رفع شعار المتجر واحفظ رابط التنزيل قبل طلب كابتن."
+              );
             }
             const pickupAddress = readString(merchant, "address", "pickupAddress");
             const merchantPoint = new GeoPoint(pickup.lat, pickup.lng);
