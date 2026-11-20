@@ -500,9 +500,10 @@ describe('El-Batal Express Real Firebase Emulator Security Audit (Firestore + St
     await assertFails(updateDoc(doc(cap1Db, 'captains', 'captain_1'), { accountType: 'merchant' }));
     await assertFails(updateDoc(doc(cap1Db, 'captains', 'captain_1'), { emailVerified: true }));
 
-    // Merchant 1 CAN update allowed store info on their own restaurant, CANNOT update Merchant 2's restaurant
-    await assertSucceeds(updateDoc(doc(merch1Db, 'restaurants', 'merchant_1'), { isOpen: false }));
+    // restaurants is retired; merchants update only their canonical merchant profile.
+    await assertFails(updateDoc(doc(merch1Db, 'restaurants', 'merchant_1'), { isOpen: false }));
     await assertFails(updateDoc(doc(merch1Db, 'restaurants', 'merchant_2'), { isOpen: false }));
+    await assertSucceeds(updateDoc(doc(merch1Db, 'merchants', 'merchant_1'), { description: 'Actualizado por su propietario' }));
 
     // Nobody can self-grant Admin privileges
     await assertFails(setDoc(doc(cap1Db, 'admins', 'captain_1'), { role: 'admin' }));
@@ -510,7 +511,7 @@ describe('El-Batal Express Real Firebase Emulator Security Audit (Firestore + St
   });
 
   test('6. Admin account has verified management access across Storage and Firestore', async () => {
-    const adminCtx = testEnv.authenticatedContext('admin_1');
+    const adminCtx = testEnv.authenticatedContext('admin_1', { role: 'admin' });
     const adminDb = adminCtx.firestore();
     const adminStorage = adminCtx.storage(BUCKET_URL);
 
@@ -568,6 +569,16 @@ describe('El-Batal Express Real Firebase Emulator Security Audit (Firestore + St
         paymentStatus: 'resubmission_required',
         receiptImagePath: 'subscription_receipts/merchant_1/old.jpg',
       });
+      await setDoc(doc(db, 'manual_subscription_requests', 'req_m1_valid'), {
+        merchantId: 'merchant_1',
+        planId: 'plan_4_captains',
+        maxCaptains: 4,
+        amount: 800,
+        durationDays: 30,
+        status: 'pending_review',
+        paymentStatus: 'pending_verification',
+        receiptImagePath: 'subscription_receipts/merchant_1/r1.jpg',
+      });
       await setDoc(doc(db, 'merchants', 'merchant_1', 'notifications', 'n1'), {
         type: 'subscription_approved',
         title: 'تم التفعيل',
@@ -589,9 +600,9 @@ describe('El-Batal Express Real Firebase Emulator Security Audit (Firestore + St
       })
     );
 
-    // 2. Merchant 1 CAN create a pending_review request for self with pending_verification
-    await assertSucceeds(
-      setDoc(doc(merch1Db, 'manual_subscription_requests', 'req_m1_valid'), {
+    // 2. Request creation is server-authoritative; direct client writes are denied.
+    await assertFails(
+      setDoc(doc(merch1Db, 'manual_subscription_requests', 'req_m1_client_write'), {
         merchantId: 'merchant_1',
         planId: 'plan_4_captains',
         maxCaptains: 4,
@@ -628,7 +639,7 @@ describe('El-Batal Express Real Firebase Emulator Security Audit (Firestore + St
     await assertSucceeds(getDoc(doc(adminDb, 'manual_subscription_requests', 'req_m1_valid')));
     await assertFails(getDoc(doc(merch2Db, 'manual_subscription_requests', 'req_m1_valid')));
 
-    // 5. Merchant 1 can re-upload receipt ONLY when status == resubmission_required (never tamper price or self-approve)
+    // 5. Receipt resubmission also uses the callable; direct client updates are denied.
     await assertFails(
       updateDoc(doc(merch1Db, 'manual_subscription_requests', 'req_resub'), {
         receiptImagePath: 'subscription_receipts/merchant_1/new.jpg',
@@ -637,7 +648,7 @@ describe('El-Batal Express Real Firebase Emulator Security Audit (Firestore + St
         paymentStatus: 'pending_verification',
       })
     );
-    await assertSucceeds(
+    await assertFails(
       updateDoc(doc(merch1Db, 'manual_subscription_requests', 'req_resub'), {
         receiptImagePath: 'subscription_receipts/merchant_1/new.jpg',
         status: 'pending_review',
