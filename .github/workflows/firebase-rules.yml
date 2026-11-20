@@ -34,5 +34,5 @@ jobs:
       - run: npm ci
       - run: npm install --no-save @firebase/rules-unit-testing
       - run: npm install --global firebase-tools
-      - run: firebase emulators:exec --only firestore,storage --project demo-elbatal "node --test security_rules.test.js"
+      - run: firebase emulators:exec --only firestore,storage --project el-batal-express-956ae "node --test security_rules.test.js"
       - run: node --test functions/test/rulesVerification.test.mjs
