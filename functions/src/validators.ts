@@ -488,6 +488,20 @@ export function resolveMerchantCaptainLimit(
 }
 
 /**
+ * Returns whether a requested number of simultaneous orders fits a supported package.
+ */
+export function canAcceptMerchantOrderCount(
+  captainLimit: number,
+  activeOrderCount: number,
+  requestedCount = 1
+): boolean {
+  return [2, 4, 6, 8].includes(captainLimit) &&
+    Number.isInteger(activeOrderCount) && activeOrderCount >= 0 &&
+    Number.isInteger(requestedCount) && requestedCount > 0 &&
+    activeOrderCount + requestedCount <= captainLimit;
+}
+
+/**
  * Validates merchant account status and active non-expired subscription.
  * @param {string} merchantId Merchant document ID.
  * @param {Record<string, unknown> | undefined} merchantData Merchant document data.
