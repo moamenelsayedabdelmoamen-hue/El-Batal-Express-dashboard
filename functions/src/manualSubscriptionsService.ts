@@ -348,8 +348,12 @@ export class ManualSubscriptionsServerService {
 
     const requestedPlanId = readString(data, "planId", "packageId");
     const requestedNumericPlanId = readNumber(data, "planId", "packageId");
-    const requestedMaxCaptains =
-      readNumber(data, "maxCaptains", "captainLimit", "captainsCount") ?? 0;
+    const claimedCaptainLimits = [
+      readNumber(data, "maxCaptains"),
+      readNumber(data, "captainLimit"),
+      readNumber(data, "captainsCount"),
+    ].filter((value): value is number => value !== null);
+    const requestedMaxCaptains = claimedCaptainLimits[0] ?? 0;
     const claimedAmounts = [
       readNumber(data, "amount"),
       readNumber(data, "expectedAmount"),
@@ -655,8 +659,8 @@ export class ManualSubscriptionsServerService {
         );
       }
 
-      // Reject client captainLimit tampering if caller supplied a forged captain limit
-      if (requestedMaxCaptains > 0 && requestedMaxCaptains !== officialMaxCaptains) {
+      // Validate every supplied captain-limit alias independently.
+      if (claimedCaptainLimits.some((claimedLimit) => Math.round(claimedLimit) !== officialMaxCaptains)) {
         throw new DomainHttpsError(
           "invalid-argument",
           "عدد الكباتن المرسل لا يطابق الحد الرسمي للباقة على السيرفر."
