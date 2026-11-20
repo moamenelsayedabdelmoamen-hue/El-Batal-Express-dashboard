@@ -40,4 +40,4 @@ jobs:
         run: npm run build
 
       - name: Run order lifecycle and dispatch tests
-        run: node --test test/ordersService.test.mjs
+        run: npm test
