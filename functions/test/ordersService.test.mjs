@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {OrderServerService} from "../lib/ordersService.js";
 import {DomainHttpsError} from "../lib/types.js";
 import {getCairoTimeContext} from "../lib/shifts.js";
-import {isTerminalMerchantOrderStatus} from "../lib/validators.js";
+import {isTerminalMerchantOrderStatus, resolveMerchantCaptainLimit, canAcceptMerchantOrderCount, isMerchantCancelableOrderStatus, resolveMerchantConfirmationTransition} from "../lib/validators.js";
 
 /**
  * Stateful in-memory transactional Firestore engine with optimistic version checks,
@@ -708,5 +708,68 @@ describe("Merchant package capacity terminal-state classification", () => {
     ]) {
       assert.equal(isTerminalMerchantOrderStatus(status), true, status);
     }
+  });
+});
+
+describe("Merchant package captain limits (2/4/6/8)", () => {
+  it("resolves each supported package from canonical limits and legacy plan IDs", () => {
+    for (const [limit, planId] of [[2, 1], [4, 2], [6, 3], [8, 4]]) {
+      assert.equal(resolveMerchantCaptainLimit({captainLimit: limit}, {}), limit);
+      assert.equal(resolveMerchantCaptainLimit({planId}, {}), limit);
+    }
+  });
+
+  it("enforces the exact simultaneous-order boundary for every package", () => {
+    for (const limit of [2, 4, 6, 8]) {
+      assert.equal(canAcceptMerchantOrderCount(limit, 0, limit), true, `package ${limit} accepts its full capacity`);
+      assert.equal(canAcceptMerchantOrderCount(limit, limit - 1, 1), true, `package ${limit} accepts its final slot`);
+      assert.equal(canAcceptMerchantOrderCount(limit, limit, 1), false, `package ${limit} rejects one over capacity`);
+    }
+  });
+
+  it("does not silently grant capacity for unsupported or missing plans", () => {
+    assert.equal(resolveMerchantCaptainLimit({planId: 99}, {}), 0);
+    assert.equal(resolveMerchantCaptainLimit({}, {}), 0);
+    assert.equal(resolveMerchantCaptainLimit({captainLimit: 3}, {}), 0);
+    assert.equal(resolveMerchantCaptainLimit({captainLimit: 3, maxCaptains: 4}, {}), 4);
+    assert.equal(canAcceptMerchantOrderCount(3, 0, 1), false);
+    assert.equal(canAcceptMerchantOrderCount(4, -1, 1), false);
+    assert.equal(canAcceptMerchantOrderCount(4, 0, 0), false);
+  });
+});
+
+describe("Merchant cancellation and confirmation lifecycle transitions", () => {
+  it("allows cancellation only before pickup and fails closed for unknown or progressed states", () => {
+    for (const status of ["pending", "searching", "offered", "accepted", "assigned"]) {
+      assert.equal(isMerchantCancelableOrderStatus(status), true, status);
+    }
+    for (const status of [
+      "picked_up", "order_data_entered", "awaiting_merchant_confirmation",
+      "merchant_rejected", "en_route", "delivering", "delivered", "completed",
+      "cancelled", "unknown_state",
+    ]) {
+      assert.equal(isMerchantCancelableOrderStatus(status), false, status);
+    }
+  });
+
+  it("approves a submitted receipt exactly once and rejects invalid confirmation states", () => {
+    const approved = resolveMerchantConfirmationTransition(
+      "awaiting_merchant_confirmation", false, true
+    );
+    assert.deepEqual(approved, {
+      allowed: true, alreadyUpdated: false, nextStatus: "en_route",
+    });
+    const retry = resolveMerchantConfirmationTransition("en_route", true, true);
+    assert.deepEqual(retry, {
+      allowed: true, alreadyUpdated: true, nextStatus: "en_route",
+    });
+    const rejected = resolveMerchantConfirmationTransition(
+      "awaiting_confirmation", false, false
+    );
+    assert.deepEqual(rejected, {
+      allowed: true, alreadyUpdated: false, nextStatus: "merchant_rejected",
+    });
+    const invalid = resolveMerchantConfirmationTransition("delivered", false, true);
+    assert.equal(invalid.allowed, false);
   });
 });

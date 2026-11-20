@@ -395,6 +395,36 @@ export function readNormalizedOrderStatus(order: Record<string, unknown>): strin
 }
 
 /**
+ * Merchant may cancel only before pickup / customer receipt review / delivery.
+ */
+export function isMerchantCancelableOrderStatus(status: string): boolean {
+  return ["pending", "searching", "offered", "accepted", "assigned"]
+    .includes(status.trim().toLowerCase());
+}
+
+/**
+ * Canonical merchant approval/rejection transition for captain-submitted details.
+ */
+export function resolveMerchantConfirmationTransition(
+  status: string,
+  merchantConfirmed: boolean,
+  confirmed: boolean
+): {allowed: boolean; alreadyUpdated: boolean; nextStatus: string} {
+  const current = status.trim().toLowerCase();
+  if (merchantConfirmed && confirmed && current === "en_route") {
+    return {allowed: true, alreadyUpdated: true, nextStatus: "en_route"};
+  }
+  if (!["awaiting_merchant_confirmation", "awaiting_confirmation", "merchant_rejected"].includes(current)) {
+    return {allowed: false, alreadyUpdated: false, nextStatus: current};
+  }
+  return {
+    allowed: true,
+    alreadyUpdated: false,
+    nextStatus: confirmed ? "en_route" : "merchant_rejected",
+  };
+}
+
+/**
  * Returns true only for terminal order states that release merchant package capacity.
  * In particular, "out_for_delivery" and "delivering" are active states, not terminal.
  */
@@ -469,6 +499,44 @@ export function requireValidOrderId(raw: unknown): string {
     throw new DomainHttpsError("invalid-argument", "معرّف الطلب غير صالح.");
   }
   return clean;
+}
+
+/**
+ * Resolve the merchant package captain capacity from canonical fields.
+ * Explicit captainLimit/maxCaptains always wins; legacy plan IDs map to 2/4/6/8.
+ */
+export function resolveMerchantCaptainLimit(
+  subscription: Record<string, unknown> | undefined,
+  merchant: Record<string, unknown> | undefined
+): number {
+  const supportedLimits = [2, 4, 6, 8];
+  const explicitCandidates = [
+    readNumber(subscription, "captainLimit"),
+    readNumber(subscription, "maxCaptains"),
+    readNumber(merchant, "captainLimit"),
+    readNumber(merchant, "maxCaptains"),
+  ];
+  const explicit = explicitCandidates.find(
+    (value): value is number => value !== null && supportedLimits.includes(value)
+  );
+  if (explicit !== undefined) return explicit;
+  const planId = readNumber(subscription, "planId") ?? readNumber(merchant, "planId");
+  const legacyLimits: Record<number, number> = {1: 2, 2: 4, 3: 6, 4: 8};
+  return planId === null ? 0 : (legacyLimits[planId] ?? 0);
+}
+
+/**
+ * Returns whether a requested number of simultaneous orders fits a supported package.
+ */
+export function canAcceptMerchantOrderCount(
+  captainLimit: number,
+  activeOrderCount: number,
+  requestedCount = 1
+): boolean {
+  return [2, 4, 6, 8].includes(captainLimit) &&
+    Number.isInteger(activeOrderCount) && activeOrderCount >= 0 &&
+    Number.isInteger(requestedCount) && requestedCount > 0 &&
+    activeOrderCount + requestedCount <= captainLimit;
 }
 
 /**

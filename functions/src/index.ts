@@ -26,6 +26,10 @@ import {
   readNumber,
   readString,
   isTerminalMerchantOrderStatus,
+  resolveMerchantCaptainLimit,
+  canAcceptMerchantOrderCount,
+  isMerchantCancelableOrderStatus,
+  resolveMerchantConfirmationTransition,
 } from "./validators.js";
 
 initializeApp();
@@ -180,18 +184,27 @@ async function requireAdminUid(
   }
 
   const adminDoc = await getFirestore().collection("admins").doc(cleanUid).get();
+  const adminData = adminDoc.data() ?? {};
   const email = typeof claims.email === "string"
     ? claims.email.trim().toLowerCase()
     : "";
   const verifiedAllowlistedEmail =
     claims.email_verified === true && ADMIN_EMAIL_ALLOWLIST.has(email);
   const trustedClaims =
-    claims.role === "admin" || claims.admin === true;
+    claims.email_verified === true &&
+    (claims.role === "admin" || claims.admin === true);
+  const activeAdminDocument =
+    adminDoc.exists &&
+    adminData.role === "admin" &&
+    adminData.emailVerified === true &&
+    ["active", "approved"].includes(
+      typeof adminData.status === "string" ? adminData.status.toLowerCase() : ""
+    );
 
-  if (!adminDoc.exists && !verifiedAllowlistedEmail && !trustedClaims) {
+  if (!activeAdminDocument && !verifiedAllowlistedEmail && !trustedClaims) {
     throw new HttpsError(
       "permission-denied",
-      "هذا الحساب لا يمتلك صلاحية تنفيذ عمليات إدارة الطلبات."
+      "هذا الحساب لا يمتلك صلاحية مدير نشطة ومعتمدة لتنفيذ عمليات الإدارة."
     );
   }
   return cleanUid;
@@ -361,8 +374,7 @@ async function buildMerchantSubscriptionResponse(merchantId: string, requestedCa
   const activeCaptainsCount = activeOrderIds.size;
   const planId = readNumber(subscription, "planId") ?? readNumber(merchant, "planId") ?? 0;
   const planName = readString(subscription, "planName") || readString(merchant, "planName");
-  const captainLimit = readNumber(subscription, "captainLimit", "maxCaptains") ??
-    readNumber(merchant, "captainLimit", "maxCaptains") ?? 0;
+  const captainLimit = resolveMerchantCaptainLimit(subscription, merchant);
   const price = readNumber(subscription, "price") ?? readNumber(merchant, "price") ?? 0;
   const statusRaw = readString(subscription, "status", "subscriptionStatus") ||
     readString(merchant, "subscriptionStatus");
@@ -417,7 +429,7 @@ async function buildMerchantSubscriptionResponse(merchantId: string, requestedCa
   const isActive = validationError === "";
   const remainingCaptains = Math.max(0, captainLimit - activeCaptainsCount);
   const requested = Math.max(1, Math.min(8, Number(requestedCaptains) || 1));
-  const capacityAllowed = activeCaptainsCount + requested <= captainLimit;
+  const capacityAllowed = canAcceptMerchantOrderCount(captainLimit, activeCaptainsCount, requested);
   const remainingMillis = expiryEffectiveMs !== null ? Math.max(0, expiryEffectiveMs - nowMs) : 0;
   const errorMessage = validationError || (capacityAllowed ? undefined :
     activeCaptainsCount >= captainLimit
@@ -637,10 +649,7 @@ export const merchantCreateOrder = onCall(
             }
             assertMerchantAndSubscriptionValid(uid, merchant, subscription, nowMs);
 
-            const maxCaptains =
-              readNumber(subscription, "maxCaptains") ??
-              readNumber(merchant, "maxCaptains") ??
-              0;
+            const maxCaptains = resolveMerchantCaptainLimit(subscription, merchant);
             if (maxCaptains <= 0) {
               throw new HttpsError("failed-precondition", "لا توجد باقة نشطة تسمح بطلب الكباتن.");
             }
@@ -662,7 +671,7 @@ export const merchantCreateOrder = onCall(
             const capacityData = capacitySnap.data() ?? {};
             const capacityVersion = readNumber(capacityData, "capacityVersion") ?? 0;
             const activeOrderCount = activeOrderIds.size;
-            if (activeOrderCount >= maxCaptains) {
+            if (!canAcceptMerchantOrderCount(maxCaptains, activeOrderCount, 1)) {
               throw new HttpsError(
                 "resource-exhausted",
                 `وصلت إلى الحد المتزامن للباقة: ${activeOrderCount} من ${maxCaptains} طلبات نشطة.`
@@ -706,8 +715,11 @@ export const merchantCreateOrder = onCall(
             if (!merchantPhone) {
               throw new HttpsError("failed-precondition", "يرجى تسجيل رقم الهاتف الحقيقي في ملف التاجر قبل طلب كابتن.");
             }
-            if (!storeImage && !storeImagePath) {
-              throw new HttpsError("failed-precondition", "يرجى رفع صورة المتجر إلى ملف التاجر قبل طلب كابتن.");
+            if (!storeImage) {
+              throw new HttpsError(
+                "failed-precondition",
+                "رابط صورة المتجر غير مكتمل. أعد رفع شعار المتجر واحفظ رابط التنزيل قبل طلب كابتن."
+              );
             }
             const pickupAddress = readString(merchant, "address", "pickupAddress");
             const merchantPoint = new GeoPoint(pickup.lat, pickup.lng);
@@ -899,17 +911,14 @@ export const merchantCancelOrder = onCall(
           throw new HttpsError("permission-denied", "هذا الطلب لا يخص متجرك.");
         }
         const status = readNormalizedOrderStatus(order);
-        if (["picked_up", "order_data_entered", "awaiting_merchant_confirmation",
-          "awaiting_confirmation", "merchant_rejected", "en_route", "confirmed",
-          "merchant_confirmed", "out_for_delivery", "delivering", "delivered",
-          "completed", "done"].includes(status)) {
+        if (["cancelled", "canceled"].includes(status)) {
+          return {alreadyCancelled: true};
+        }
+        if (!isMerchantCancelableOrderStatus(status)) {
           throw new HttpsError(
             "failed-precondition",
             "لا يمكن إلغاء الطلب بعد استلامه من المتجر أو بدء توصيله."
           );
-        }
-        if (["cancelled", "canceled"].includes(status)) {
-          return {alreadyCancelled: true};
         }
 
         const offeredUid = readString(order, "offeredCaptainId");
@@ -1465,14 +1474,15 @@ export const merchantConfirmOrder = onCall(
           throw new HttpsError("permission-denied", "هذا الطلب لا يخص متجرك.");
         }
         const status = readNormalizedOrderStatus(order);
-        if (order.merchantConfirmed === true && confirmed && status === "en_route") {
-          return {alreadyUpdated: true, status: "en_route"};
+        const transition = resolveMerchantConfirmationTransition(
+          status,
+          order.merchantConfirmed === true,
+          confirmed
+        );
+        if (transition.alreadyUpdated) {
+          return {alreadyUpdated: true, status: transition.nextStatus};
         }
-        if (
-          status !== "awaiting_merchant_confirmation" &&
-          status !== "awaiting_confirmation" &&
-          status !== "merchant_rejected"
-        ) {
+        if (!transition.allowed) {
           throw new HttpsError(
             "failed-precondition",
             "الطلب ليس في انتظار مراجعة بيانات العميل والإيصال."
