@@ -5,7 +5,7 @@ import {
   DomainHttpsError,
   ManualSubscriptionEffectsPort,
 } from "./types.js";
-import {readNumber, readString} from "./validators.js";
+import {parseTimestampMs, readNumber, readString} from "./validators.js";
 
 const MASTER_ADMIN_EMAILS = new Set([
   "moamen.elsayed.abdelmoamen@gmail.com",
@@ -137,6 +137,41 @@ function formatYmdUtc(ms: number): string {
 
 function normalizeStatus(raw: unknown): string {
   return typeof raw === "string" ? raw.trim().toLowerCase() : "";
+}
+
+function isSubscriptionCurrentlyActive(
+  merchantData: Record<string, unknown>,
+  subscriptionData: Record<string, unknown>,
+  nowMs: number
+): boolean {
+  const statuses = [
+    normalizeStatus(subscriptionData.status),
+    normalizeStatus(subscriptionData.subscriptionStatus),
+    normalizeStatus(merchantData.subscriptionStatus),
+    normalizeStatus(merchantData.status),
+  ];
+  const activeFlag = subscriptionData.isActive === true ||
+    subscriptionData.isSubscribed === true ||
+    merchantData.isSubscribed === true ||
+    merchantData.isActive === true;
+  const activeStatus = statuses.some((status) =>
+    ["active", "approved", "trial", "enabled", "valid", "subscribed"].includes(status)
+  );
+  if (!activeFlag && !activeStatus) return false;
+
+  const expiryMs = Math.max(
+    parseTimestampMs(subscriptionData.expiresAt),
+    parseTimestampMs(subscriptionData.endDate),
+    parseTimestampMs(subscriptionData.subscriptionEndDate),
+    parseTimestampMs(merchantData.subscriptionExpiresAt),
+    parseTimestampMs(merchantData.subscriptionEndDate),
+    parseTimestampMs(merchantData.endDate)
+  );
+  return expiryMs === 0 || nowMs <= expiryMs;
+}
+
+function legacyPlanIdForCaptainLimit(maxCaptains: number): number {
+  return ({2: 1, 4: 2, 6: 3, 8: 4} as Record<number, number>)[maxCaptains] ?? 0;
 }
 
 function normalizePhoneDigits(raw: string): string {
@@ -484,6 +519,7 @@ export class ManualSubscriptionsServerService {
       .collection("manual_subscription_requests")
       .doc(requestId);
     const merchantRef = this.db.collection("merchants").doc(uid);
+    const subscriptionRef = this.db.collection("subscriptions").doc(uid);
     const settingsRef = this.db
       .collection("settings")
       .doc("manual_subscription_config");
@@ -497,8 +533,9 @@ export class ManualSubscriptionsServerService {
       : null;
 
     return this.db.runTransaction(async (tx) => {
-      const [merchantSnap, settingsSnap, existingReqSnap, referenceLockSnap] = await Promise.all([
+      const [merchantSnap, subscriptionSnap, settingsSnap, existingReqSnap, referenceLockSnap] = await Promise.all([
         tx.get(merchantRef),
+        tx.get(subscriptionRef),
         tx.get(settingsRef),
         tx.get(requestRef),
         referenceLockRef ? tx.get(referenceLockRef) : Promise.resolve(null),
@@ -511,6 +548,13 @@ export class ManualSubscriptionsServerService {
         );
       }
       const merchantData = merchantSnap.data() ?? {};
+      const subscriptionData = subscriptionSnap.exists ? subscriptionSnap.data() ?? {} : {};
+      if (isSubscriptionCurrentlyActive(merchantData, subscriptionData, nowMs)) {
+        throw new DomainHttpsError(
+          "failed-precondition",
+          "لديك باقة اشتراك نشطة حالياً. لا يمكن إرسال طلب تجديد جديد قبل انتهاء صلاحيتها."
+        );
+      }
       const accountType = readString(merchantData, "accountType").toLowerCase();
       const role = readString(merchantData, "role").toLowerCase();
       if (
@@ -676,6 +720,39 @@ export class ManualSubscriptionsServerService {
         (typeof authContext?.token?.email === "string"
           ? authContext.token.email.trim()
           : "");
+      const nextSubscriptionVersion = Math.max(
+        readNumber(subscriptionData, "subscriptionVersion") ?? 0,
+        readNumber(merchantData, "subscriptionVersion") ?? 0
+      ) + 1;
+      const localPlanId = legacyPlanIdForCaptainLimit(officialMaxCaptains);
+      const pendingSubscriptionState = {
+        merchantId: uid,
+        restaurantId: uid,
+        status: "pending_review",
+        subscriptionStatus: "pending_review",
+        isActive: false,
+        isSubscribed: false,
+        planId: localPlanId,
+        planName: officialPlanName,
+        maxCaptains: officialMaxCaptains,
+        captainLimit: officialMaxCaptains,
+        captainsCount: officialMaxCaptains,
+        price: officialPrice,
+        amount: officialPrice,
+        durationDays: officialDurationDays,
+        paymentStatus: "pending_verification",
+        paymentMethod: "vodafone_cash_manual",
+        pendingRequestId: requestId,
+        senderPhone,
+        transactionReference,
+        receiptStoragePath: receiptImagePath,
+        resubmissionReason: null,
+        rejectionReason: null,
+        subscriptionVersion: nextSubscriptionVersion,
+        subscriptionUpdatedAt: s.serverTimestamp(),
+        updatedAt: s.serverTimestamp(),
+        updatedBy: uid,
+      };
 
       // Idempotent retry: a repeated request with the same requestId/key returns the existing
       // pending result instead of producing a second write or a misleading error.
@@ -775,9 +852,11 @@ export class ManualSubscriptionsServerService {
         }
 
         tx.update(requestRef, resubmissionUpdate);
+        tx.set(subscriptionRef, pendingSubscriptionState, {merge: true});
         tx.set(
           merchantRef,
           {
+            ...pendingSubscriptionState,
             activeManualSubscriptionRequestId: requestId,
             manualSubscriptionRequestUpdatedAt: s.serverTimestamp(),
           },
@@ -861,9 +940,11 @@ export class ManualSubscriptionsServerService {
         createdAt: s.serverTimestamp(),
         updatedAt: s.serverTimestamp(),
       });
+      tx.set(subscriptionRef, pendingSubscriptionState, {merge: true});
       tx.set(
         merchantRef,
         {
+          ...pendingSubscriptionState,
           activeManualSubscriptionRequestId: requestId,
           manualSubscriptionRequestUpdatedAt: s.serverTimestamp(),
         },
