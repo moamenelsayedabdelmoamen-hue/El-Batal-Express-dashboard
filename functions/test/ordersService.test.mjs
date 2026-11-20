@@ -466,7 +466,11 @@ describe("El-Batal Cloud Functions Order Server Service", () => {
   it("5. Auto-dispatch selects nearest captain, enforces 60s server timeout, reassigns & ignores stale tasks", async () => {
     const now = Date.UTC(2026, 10, 18, 12, 0, 0);
     const {db, service, fcmNotifications, scheduledTasks, advanceMs} = createHarness(now);
-    seedMerchantAndSub(db, "merch_1");
+    seedMerchantAndSub(db, "merch_1", {}, {
+      name: "مطعم النخبة",
+      phone: "01098765432",
+      logo: "https://firebasestorage.googleapis.com/v0/b/el-batal-express-956ae.firebasestorage.app/o/merchants%2Fmerch_1%2Fprofile.jpg?alt=media",
+    });
 
     // cap_near (~0.1km from pickup), cap_far (~5km), cap_offline (closer but offline)
     seedCaptain(db, "cap_offline", {isOnline: false, latitude: 30.0444, longitude: 31.2357}, now);
@@ -480,6 +484,16 @@ describe("El-Batal Cloud Functions Order Server Service", () => {
     assert.equal(dispatchRes.offerGeneration, 1);
     assert.equal(fcmNotifications.length, 1);
     assert.equal(fcmNotifications[0].captainUid, "cap_near");
+    assert.equal(fcmNotifications[0].storeName, "مطعم النخبة");
+    assert.equal(fcmNotifications[0].storePhone, "01098765432");
+    assert.equal(
+      fcmNotifications[0].storeImage,
+      "https://firebasestorage.googleapis.com/v0/b/el-batal-express-956ae.firebasestorage.app/o/merchants%2Fmerch_1%2Fprofile.jpg?alt=media"
+    );
+    const persistedOrder = db.getDocData("orders/ord_dispatch");
+    assert.equal(persistedOrder.storeName, "مطعم النخبة");
+    assert.equal(persistedOrder.storePhone, "01098765432");
+    assert.equal(persistedOrder.storeImage, fcmNotifications[0].storeImage);
     assert.equal(scheduledTasks.length, 1);
     assert.equal(scheduledTasks[0].delaySeconds, 60);
 
@@ -534,7 +548,12 @@ describe("El-Batal Cloud Functions Order Server Service", () => {
     const {db, service} = createHarness(now);
     seedMerchantAndSub(db, "merch_1");
     seedCaptain(db, "cap_1", {walletBalance: 100.0, totalOrdersCount: 5, commissionRate: 0.1}, now);
-    seedPendingOrder(db, "ord_life", {deliveryFee: 50.0});
+    // Legacy orders can store the merchant-entered fee as a formatted string.
+    seedPendingOrder(db, "ord_life", {
+      deliveryFee: undefined,
+      serviceFee: "50 جنيه",
+      price: "50 جنيه",
+    });
 
     await service.acceptOrder("cap_1", {orderId: "ord_life"});
     await service.captainArrivedAtMerchant("cap_1", {orderId: "ord_life"});
