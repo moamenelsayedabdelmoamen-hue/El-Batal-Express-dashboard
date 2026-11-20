@@ -490,8 +490,10 @@ describe('El-Batal Express Real Firebase Emulator Security Audit (Firestore + St
     await assertFails(setDoc(doc(cap1Db, 'merchants', 'captain_1'), { name: 'Spoof Merchant' }));
     await assertFails(setDoc(doc(cap1Db, 'drivers', 'captain_1'), { uid: 'captain_1', accountType: 'captain' }));
 
-    // Merchant CANNOT read captain PII docs or register themselves in captains
-    await assertFails(getDoc(doc(merch1Db, 'captains', 'captain_1')));
+    // A merchant can read ONLY the captain currently linked to its own order/trip.
+    // It cannot read an unrelated captain or register itself as a captain.
+    await assertSucceeds(getDoc(doc(merch1Db, 'captains', 'captain_1')));
+    await assertFails(getDoc(doc(merch1Db, 'captains', 'captain_2')));
     await assertFails(setDoc(doc(merch1Db, 'captains', 'merchant_1'), { uid: 'merchant_1', accountType: 'captain', status: 'pending' }));
 
     // Captain CANNOT mutate accountType or claim emailVerified=true without verified token
