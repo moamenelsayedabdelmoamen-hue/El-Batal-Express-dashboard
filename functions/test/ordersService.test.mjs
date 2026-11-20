@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {OrderServerService} from "../lib/ordersService.js";
 import {DomainHttpsError} from "../lib/types.js";
 import {getCairoTimeContext} from "../lib/shifts.js";
-import {isTerminalMerchantOrderStatus, resolveMerchantCaptainLimit} from "../lib/validators.js";
+import {isTerminalMerchantOrderStatus, resolveMerchantCaptainLimit, canAcceptMerchantOrderCount} from "../lib/validators.js";
 
 /**
  * Stateful in-memory transactional Firestore engine with optimistic version checks,
@@ -690,9 +690,9 @@ describe("Merchant package captain limits (2/4/6/8)", () => {
 
   it("enforces the exact simultaneous-order boundary for every package", () => {
     for (const limit of [2, 4, 6, 8]) {
-      assert.equal(0 + limit <= limit, true, `package ${limit} accepts its full capacity`);
-      assert.equal((limit - 1) + 1 <= limit, true, `package ${limit} accepts its final slot`);
-      assert.equal(limit + 1 <= limit, false, `package ${limit} rejects one over capacity`);
+      assert.equal(canAcceptMerchantOrderCount(limit, 0, limit), true, `package ${limit} accepts its full capacity`);
+      assert.equal(canAcceptMerchantOrderCount(limit, limit - 1, 1), true, `package ${limit} accepts its final slot`);
+      assert.equal(canAcceptMerchantOrderCount(limit, limit, 1), false, `package ${limit} rejects one over capacity`);
     }
   });
 
@@ -700,5 +700,8 @@ describe("Merchant package captain limits (2/4/6/8)", () => {
     assert.equal(resolveMerchantCaptainLimit({planId: 99}, {}), 0);
     assert.equal(resolveMerchantCaptainLimit({}, {}), 0);
     assert.equal(resolveMerchantCaptainLimit({captainLimit: 3}, {}), 0);
+    assert.equal(canAcceptMerchantOrderCount(3, 0, 1), false);
+    assert.equal(canAcceptMerchantOrderCount(4, -1, 1), false);
+    assert.equal(canAcceptMerchantOrderCount(4, 0, 0), false);
   });
 });
