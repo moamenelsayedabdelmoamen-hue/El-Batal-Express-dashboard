@@ -28,19 +28,8 @@ service cloud.firestore {
       return isSignedIn() && (
         request.auth.token.role == 'admin' ||
         request.auth.token.admin == true ||
-        request.auth.token.email in ['moamen.elsayed.abdelmoamen@gmail.com', 'admin@elbatalexpress.com'] ||
+        (request.auth.token.email_verified == true && request.auth.token.email in ['moamen.elsayed.abdelmoamen@gmail.com', 'admin@elbatalexpress.com']) ||
         exists(/databases/$(database)/documents/admins/$(request.auth.uid))
-      );
-    }
-
-    function isMasterAdmin() {
-      return isSignedIn() && (
-        request.auth.token.isMasterAdmin == true ||
-        request.auth.token.email == 'moamen.elsayed.abdelmoamen@gmail.com' ||
-        (
-          exists(/databases/$(database)/documents/admins/$(request.auth.uid)) &&
-          get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.isMasterAdmin == true
-        )
       );
     }
 
@@ -352,18 +341,6 @@ service cloud.firestore {
         );
 
       allow delete: if isAdmin();
-
-      // Merchant-scoped notifications (subscription approvals, rejections, resubmission requests)
-      match /notifications/{notifId} {
-        allow get, list: if isSignedIn() && (
-          isAdmin() ||
-          (isMerchantAccount() && request.auth.uid == merchantId)
-        );
-        allow update: if isMerchantAccount()
-          && request.auth.uid == merchantId
-          && incoming().diff(existing()).affectedKeys().hasOnly(['isRead', 'readAt']);
-        allow create, delete: if false; // Strictly written by Cloud Functions (Admin SDK)
-      }
     }
 
     // --- 4. Admins Collection ---
@@ -420,19 +397,13 @@ service cloud.firestore {
       allow get: if isSignedIn() && isValidId(orderId) && canReadOrder(existing());
       allow list: if isSignedIn() && canReadOrder(existing());
 
-      // Merchant clients may create only a pending order for their own approved, verified account.
-      allow create: if isAdmin() || (
-        isMerchantAccount()
-        && request.auth.token.email_verified == true
-        && incoming().merchantId == request.auth.uid
-        && incoming().captainId == null
-        && incoming().dispatchStatus == 'searching'
-        && incoming().status == 'pending'
-        && get(/databases/$(database)/documents/merchants/$(request.auth.uid)).data.status in ['approved', 'active']
-      );
+      // Order creation, assignment, status changes, and financial transitions are server-only.
+      // Admin SDK Cloud Functions bypass these client rules.
+      allow create: if isAdmin();
 
-      // All captain order lifecycle mutations must execute via Cloud Functions (Admin SDK).
-      // Merchants may only update non-dispatch/non-captain fields on their own orders.
+      // Merchants may edit only non-financial details before assignment.
+      // They cannot change status or confirm/reject a captain's submitted delivery data here;
+      // those transitions must call merchantConfirmOrder / merchantCancelOrder.
       allow update: if isAdmin() || (
         isOrderOwnedByMerchant(existing())
         && incoming().merchantId == existing().merchantId
@@ -443,7 +414,13 @@ service cloud.firestore {
           'captainId', 'captainUid', 'driverId', 'assignedCaptainId',
           'offeredCaptainId', 'eligibleCaptainIds', 'excludedCaptainIds',
           'timedOutCaptainIds', 'dispatchStatus', 'assignedAt', 'acceptedAt',
-          'deliveredAt', 'completedAt', 'captainEarning', 'platformCommission'
+          'deliveredAt', 'completedAt', 'captainEarning', 'captainEarnings',
+          'platformCommission', 'walletCredited', 'settlementStatus', 'paymentStatus',
+          'status', 'orderStatus', 'status_ar', 'customerDetailsConfirmed',
+          'customerDetailsRejected', 'merchantConfirmed', 'confirmedAt',
+          'merchantConfirmedAt', 'merchantRejectedAt', 'rejectionReason',
+          'cancelledAt', 'cancelReason', 'deliveryFee', 'delivery_fee',
+          'serviceFee', 'price', 'totalAmount'
         ])
       );
       allow delete: if isAdmin();
@@ -464,9 +441,13 @@ service cloud.firestore {
     }
 
     match /order_codes/{code} {
-      allow get, list: if isSignedIn();
-      allow create: if isAdmin() || (isMerchantAccount() && incoming().merchantId == request.auth.uid);
-      allow update, delete: if isAdmin();
+      allow get: if isAdmin() || (
+        isMerchantAccount() && existing().merchantId == request.auth.uid
+      );
+      allow list: if isAdmin() || (
+        isMerchantAccount() && existing().merchantId == request.auth.uid
+      );
+      allow create, update, delete: if isAdmin();
     }
 
     match /idempotency_keys/{keyId} {
@@ -475,74 +456,20 @@ service cloud.firestore {
         existing().merchantId == request.auth.uid
       ));
       allow list: if isAdmin();
-      allow create: if isAdmin() || (isMerchantAccount() && incoming().merchantId == request.auth.uid);
-      allow update, delete: if isAdmin();
-    }
-
-    // Manual Vodafone Cash subscription requests:
-    // - Merchants may read ONLY their own requests, create new 'pending' requests with 'pending_verification',
-    //   and re-upload receipts ONLY when status == 'resubmission_requested'.
-    // - Merchants can NEVER self-approve, set paymentStatus == 'paid', or touch another merchant's request.
-    // - All admin approval / rejection / resubmission decisions execute strictly through Cloud Functions (Admin SDK).
-    function isValidManualSubscriptionCreate(data, uid) {
-      return data.merchantId == uid
-        && (data.status == 'pending_review' || data.status == 'pending')
-        && data.paymentStatus == 'pending_verification'
-        && ('planId' in data) && data.planId is string && data.planId.size() >= 1 && data.planId.size() <= 80
-        && ('planName' in data) && data.planName is string && data.planName.size() >= 1 && data.planName.size() <= 120
-        && ('maxCaptains' in data) && data.maxCaptains is int && data.maxCaptains >= 1 && data.maxCaptains <= 100
-        && ('amount' in data) && data.amount is number && data.amount > 0 && data.amount <= 100000
-        && ('senderPhone' in data) && data.senderPhone is string && data.senderPhone.size() >= 8 && data.senderPhone.size() <= 32
-        && (!('transactionReference' in data) || (data.transactionReference is string && data.transactionReference.size() <= 120))
-        && ('receiptImagePath' in data) && data.receiptImagePath is string
-        && (
-          data.receiptImagePath.matches('^subscription_receipts/' + uid + '/.+') ||
-          data.receiptImagePath.matches('^manual_subscription_receipts/' + uid + '/.+') ||
-          data.receiptImagePath.matches('^merchants/' + uid + '/.+')
-        )
-        && !('approvedBy' in data)
-        && !('approvedAt' in data)
-        && !('rejectedBy' in data)
-        && !('rejectedAt' in data)
-        && !('paymentDocId' in data);
-    }
-
-    match /manual_subscription_requests/{requestId} {
-      allow get, list: if isAdmin() || (
-        isMerchantAccount() &&
-        ('merchantId' in existing() && existing().merchantId == request.auth.uid)
-      );
-
-      // All writes must pass through trusted Cloud Functions (Admin SDK bypasses client rules).
-      allow create, update, delete: if false;
-    }
-
-    // Vodafone Cash & official package pricing config:
-    // - Readable by authenticated users (merchants & admins) so wallet numbers are never hardcoded.
-    // - Strictly written ONLY via Cloud Function updateManualSubscriptionSettings (Master Admin verified).
-    match /settings/manual_subscription_config {
-      allow read: if isSignedIn();
-      allow write: if false;
+      allow create, update, delete: if isAdmin();
     }
 
     match /settings/{settingId} {
       allow read: if isAdmin() || isSignedIn();
-      allow write: if isMasterAdmin();
-    }
-
-    match /notifications/{notificationId} {
-      allow get, list, create, update, delete: if isAdmin();
+      allow write: if isAdmin();
     }
 
     match /operation_logs/{logId} {
-      allow read: if isAdmin();
-      allow write: if false; // Strictly written by Cloud Functions (Admin SDK)
+      allow read, write: if isAdmin();
     }
 
-    // Retired legacy Paymob webhook events: preserved read-only for historical admin audit only
     match /webhook_events/{eventId} {
-      allow read: if isAdmin();
-      allow write: if false;
+      allow read, write: if isAdmin();
     }
 
     // --- 6. Captain Schedules & Shifts (Read-Only for Owning Captain, Admin-Managed) ---
