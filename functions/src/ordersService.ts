@@ -30,6 +30,26 @@ import {
 
 export const OFFER_WINDOW_MS = 60_000;
 export const OFFER_WINDOW_SECONDS = 60;
+
+/** Reads numeric EGP values and legacy strings such as "30 جنيه" safely. */
+function readMoney(data: Record<string, unknown>, ...keys: string[]): number | null {
+  for (const key of keys) {
+    const raw = data[key];
+    if (typeof raw === "number" && Number.isFinite(raw)) return raw;
+    if (typeof raw !== "string" || !raw.trim()) continue;
+    const normalized = raw.trim()
+      .replace(/[٠-٩]/g, (digit) => String("٠١٢٣٤٥٦٧٨٩".indexOf(digit)))
+      .replace(/[۰-۹]/g, (digit) => String("۰۱۲۳۴۵۶۷۸۹".indexOf(digit)))
+      .replace(/[^0-9.,-]/g, "")
+      .replace(/,/g, ".");
+    const match = normalized.match(/-?\d+(?:\.\d{1,2})?/);
+    if (match) {
+      const amount = Number(match[0]);
+      if (Number.isFinite(amount)) return amount;
+    }
+  }
+  return null;
+}
 const ACTIVE_CAPTAIN_FIELDS = [
   "captainId",
   "driverId",
@@ -614,9 +634,15 @@ export class OrderServerService {
         );
       }
 
-      const grossFee =
-        readNumber(order, "deliveryFee", "delivery_fee", "shippingFee", "fee") ??
-        0;
+      const grossFee = readMoney(
+        order,
+        "deliveryFee",
+        "delivery_fee",
+        "shippingFee",
+        "fee",
+        "serviceFee",
+        "price"
+      ) ?? 0;
       const effectiveStatus = resolveEffectiveOrderStatus(order);
 
       // Idempotency guard: if transaction ledger or delivered status already exists,
@@ -844,6 +870,7 @@ export class OrderServerService {
       "vendorId",
       "ownerId"
     );
+    const merchantIdentity: Record<string, unknown> = {};
     if (merchantId) {
       const [mSnap, rSnap, sSnap] = await Promise.all([
         this.db.collection("merchants").doc(merchantId).get(),
@@ -861,14 +888,50 @@ export class OrderServerService {
         sSnap.exists ? sSnap.data() : undefined,
         nowMs
       );
+
+      // Never trust name/phone/logo values submitted in an order payload.
+      // Copy the registered merchant account identity onto the order for captain read-only display.
+      const merchantName = readString(mData ?? {}, "name", "restaurantName", "merchantName", "storeName");
+      const merchantPhone = readString(mData ?? {}, "phone", "phoneNumber", "mobile");
+      const merchantImage = readString(
+        mData ?? {},
+        "logo",
+        "photoUrl",
+        "logoUrl",
+        "imageUrl",
+        "profileImageUrl",
+        "storagePath"
+      );
+      if (merchantName) {
+        Object.assign(merchantIdentity, {
+          merchantName,
+          storeName: merchantName,
+          restaurantName: merchantName,
+        });
+      }
+      if (merchantPhone) {
+        Object.assign(merchantIdentity, {
+          merchantPhone,
+          storePhone: merchantPhone,
+          restaurantPhone: merchantPhone,
+        });
+      }
+      if (merchantImage) {
+        Object.assign(merchantIdentity, {
+          merchantLogo: merchantImage,
+          merchantLogoUrl: merchantImage,
+          storeImage: merchantImage,
+        });
+      }
     }
+    const orderForDispatch = {...preOrder, ...merchantIdentity};
 
     const excludedSet = new Set([
       ...readStringList(preOrder.excludedCaptainIds),
       ...readStringList(preOrder.timedOutCaptainIds),
     ]);
     const candidates = await this.findNearestEligibleCaptains(
-      preOrder,
+      orderForDispatch,
       excludedSet,
       nowMs
     );
@@ -897,6 +960,7 @@ export class OrderServerService {
 
       if (!topCandidate) {
         tx.update(orderRef, {
+          ...merchantIdentity,
           status: "searching",
           dispatchStatus: "no_captains_available",
           offeredCaptainId: null,
@@ -912,6 +976,7 @@ export class OrderServerService {
       const offerExpiresAtMs = nowMs + OFFER_WINDOW_MS;
 
       tx.update(orderRef, {
+        ...merchantIdentity,
         status: "pending",
         dispatchStatus: "offered",
         offeredCaptainId: topCandidate.uid,
@@ -925,7 +990,7 @@ export class OrderServerService {
 
       selectedOfferPayload = this.buildOfferFcmPayload(
         orderId,
-        latest,
+        {...latest, ...merchantIdentity},
         topCandidate,
         offerExpiresAtMs,
         nextGen
@@ -948,7 +1013,7 @@ export class OrderServerService {
     if (outcome.status === "no_captains_available") {
       await this.createAdminNoCaptainNotification(
         orderId,
-        preOrder,
+        orderForDispatch,
         "لا يوجد كباتن متاحون حالياً (متصلين وداخل الشفت وبموقع حديث)"
       );
     } else if (selectedOfferPayload && taskPayload) {
@@ -1342,7 +1407,7 @@ export class OrderServerService {
           "vendorName"
         ) || "مطعم مسجل",
       storePhone: readString(order, "storePhone", "merchantPhone"),
-      storeImage: readString(order, "storeImage", "merchantLogo", "storeLogo"),
+      storeImage: readString(order, "storeImage", "merchantLogoUrl", "merchantLogo", "storeLogo"),
       storeLocationUrl: readString(order, "storeLocationUrl", "locationUrl"),
       pickupAddress:
         readString(order, "pickupAddress", "storeAddress", "merchantAddress") ||
