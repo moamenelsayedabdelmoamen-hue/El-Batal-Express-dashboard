@@ -528,6 +528,33 @@ describe("El-Batal Cloud Functions Order Server Service", () => {
     assert.equal(db.getDocData("orders/ord_dispatch").status, "accepted");
   });
 
+  it("5a. Replayed dispatch event repairs a missing watchdog without rotating an active offer", async () => {
+    const now = Date.UTC(2026, 10, 18, 12, 0, 0);
+    const {db, service, scheduledTasks, advanceMs} = createHarness(now);
+    seedMerchantAndSub(db, "merch_1");
+    seedCaptain(db, "cap_near", {latitude: 30.045, longitude: 31.236}, now);
+    seedCaptain(db, "cap_far", {latitude: 30.09, longitude: 31.25}, now);
+    seedPendingOrder(db, "ord_retry_watchdog");
+
+    const first = await service.dispatchNewOrSearchingOrder("ord_retry_watchdog");
+    assert.equal(first.status, "offered");
+    assert.equal(scheduledTasks.length, 1);
+
+    // Simulate a retried Firestore event after the first offer was committed.
+    const replay = await service.dispatchNewOrSearchingOrder("ord_retry_watchdog");
+    assert.equal(replay.status, "ignored_already_active");
+    assert.equal(replay.offerGeneration, 1);
+    assert.equal(scheduledTasks.length, 2, "Retry must enqueue the same offer generation's watchdog");
+
+    advanceMs(61_000);
+    const rotated = await service.handleReassignOfferTask(scheduledTasks[0].payload);
+    const duplicate = await service.handleReassignOfferTask(scheduledTasks[1].payload);
+    assert.equal(rotated.status, "reassigned");
+    assert.equal(duplicate.status, "ignored_stale");
+    assert.equal(db.getDocData("orders/ord_retry_watchdog").offerGeneration, 2);
+    assert.equal(db.getDocData("orders/ord_retry_watchdog").offeredCaptainId, "cap_far");
+  });
+
   it("6. Creates admin notification when all captains time out", async () => {
     const now = Date.UTC(2026, 10, 18, 12, 0, 0);
     const {db, service, scheduledTasks, advanceMs} = createHarness(now);
@@ -535,6 +562,8 @@ describe("El-Batal Cloud Functions Order Server Service", () => {
     seedCaptain(db, "cap_only", {latitude: 30.045, longitude: 31.236}, now);
     seedPendingOrder(db, "ord_no_one");
 
+    await service.dispatchNewOrSearchingOrder("ord_no_one");
+    // A duplicate event delivery must not create another admin alert.
     await service.dispatchNewOrSearchingOrder("ord_no_one");
     advanceMs(65_000);
     const res = await service.handleReassignOfferTask(scheduledTasks[0].payload);
