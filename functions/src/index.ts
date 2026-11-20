@@ -1,5 +1,5 @@
 import {initializeApp} from "firebase-admin/app";
-import {randomInt} from "node:crypto";
+import {createHash, randomInt} from "node:crypto";
 import {getFirestore, FieldValue, GeoPoint} from "firebase-admin/firestore";
 import {setGlobalOptions} from "firebase-functions";
 import * as logger from "firebase-functions/logger";
@@ -147,6 +147,13 @@ export const resolveCaptainEmailByPhone = onCall(
   {region: "us-central1"},
   async (request) => {
     try {
+      // This pre-login endpoint intentionally has no Firebase Auth identity.
+      // Rate-limit by a one-way hash of the platform-observed client IP.
+      const clientIp = request.rawRequest.ip?.trim();
+      if (!clientIp) {
+        throw new HttpsError("unavailable", "تعذر التحقق من مصدر الطلب. حاول مرة أخرى.");
+      }
+      await enforceCaptainPhoneLookupRateLimit(clientIp);
       const payload = (request.data ?? {}) as Record<string, unknown>;
       return await service.resolveCaptainEmailByPhone(payload);
     } catch (err) {
@@ -220,6 +227,37 @@ function normalizeArabicDigits(value: string): string {
     if (arabicIndex >= 0) return String(arabicIndex);
     const persianIndex = persian.indexOf(digit);
     return persianIndex >= 0 ? String(persianIndex) : digit;
+  });
+}
+
+async function enforceCaptainPhoneLookupRateLimit(clientIp: string): Promise<void> {
+  const ipHash = createHash("sha256").update(clientIp).digest("hex");
+  const ref = getFirestore()
+    .collection("callable_rate_limits")
+    .doc(`captain_phone_lookup_${ipHash}`);
+  const now = Date.now();
+  const windowMs = 15 * 60 * 1000;
+  const maxAttempts = 6;
+
+  await getFirestore().runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const current = snap.data() ?? {};
+    const oldWindowStart = Number(current.windowStartAtMs ?? 0);
+    const oldAttempts = Number(current.attempts ?? 0);
+    const inWindow = oldWindowStart > 0 && now - oldWindowStart < windowMs;
+    if (inWindow && oldAttempts >= maxAttempts) {
+      throw new HttpsError(
+        "resource-exhausted",
+        "تم تجاوز عدد محاولات البحث عن الحساب. انتظر 15 دقيقة ثم حاول مرة أخرى."
+      );
+    }
+
+    tx.set(ref, {
+      windowStartAtMs: inWindow ? oldWindowStart : now,
+      attempts: inWindow ? oldAttempts + 1 : 1,
+      expiresAt: new Date(now + 24 * 60 * 60 * 1000),
+      updatedAt: FieldValue.serverTimestamp(),
+    }, {merge: true});
   });
 }
 
