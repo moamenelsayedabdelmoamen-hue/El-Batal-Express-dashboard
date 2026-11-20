@@ -1,3 +1,4 @@
+import {createHash} from "node:crypto";
 import {
   CallableAuthContext,
   DatabaseLike,
@@ -119,6 +120,17 @@ function isValidDocId(id: string): boolean {
   return id.length >= 1 && id.length <= 128 && /^[a-zA-Z0-9_-]+$/.test(id);
 }
 
+/**
+ * Creates a deterministic, collision-resistant document ID for a Vodafone Cash transaction reference.
+ * @param {string} reference Raw transaction reference.
+ * @return {string} SHA-256 lock document ID.
+ */
+function createTransactionReferenceLockId(reference: string): string {
+  return createHash("sha256")
+    .update(reference.trim().toUpperCase(), "utf8")
+    .digest("hex");
+}
+
 function formatYmdUtc(ms: number): string {
   return new Date(ms).toISOString().split("T")[0];
 }
@@ -155,7 +167,7 @@ export function isSafeMerchantReceipt(
     const allowedPrefixes = [
       `subscription_receipts/${merchantId}/`,
       `manual_subscription_receipts/${merchantId}/`,
-      `merchants/${merchantId}/`,
+      `merchants/${merchantId}/subscription_receipts/`,
     ];
     if (
       !cleanPath.startsWith("https://") &&
@@ -180,7 +192,7 @@ export function isSafeMerchantReceipt(
     const allowedPrefixes = [
       `subscription_receipts/${merchantId}/`,
       `manual_subscription_receipts/${merchantId}/`,
-      `merchants/${merchantId}/`,
+      `merchants/${merchantId}/subscription_receipts/`,
     ];
     if (!allowedPrefixes.some((p) => cleanUrl.startsWith(p))) {
       return false;
@@ -334,11 +346,20 @@ export class ManualSubscriptionsServerService {
       );
     }
 
-    const requestedPlanId = readString(data, "planId");
-    const requestedNumericPlanId = readNumber(data, "planId");
-    const requestedMaxCaptains =
-      readNumber(data, "maxCaptains", "captainLimit", "captainsCount") ?? 0;
-    const claimedAmount = readNumber(data, "amount", "price", "requiredAmount");
+    const requestedPlanId = readString(data, "planId", "packageId");
+    const requestedNumericPlanId = readNumber(data, "planId", "packageId");
+    const claimedCaptainLimits = [
+      readNumber(data, "maxCaptains"),
+      readNumber(data, "captainLimit"),
+      readNumber(data, "captainsCount"),
+    ].filter((value): value is number => value !== null);
+    const requestedMaxCaptains = claimedCaptainLimits[0] ?? 0;
+    const claimedAmounts = [
+      readNumber(data, "amount"),
+      readNumber(data, "expectedAmount"),
+      readNumber(data, "price"),
+      readNumber(data, "requiredAmount"),
+    ].filter((value): value is number => value !== null);
     const senderPhone = normalizePhoneDigits(
       readString(data, "senderPhone", "fromWalletNumber", "transferPhone")
     );
@@ -348,13 +369,24 @@ export class ManualSubscriptionsServerService {
       "referenceNumber",
       "transferReference"
     ).slice(0, 120);
-    const receiptImagePath = readString(data, "receiptImagePath", "receiptPath");
+    const receiptImagePath = readString(
+      data,
+      "receiptImagePath",
+      "receiptStoragePath",
+      "receiptPath"
+    );
     const receiptImageUrl = readString(data, "receiptImageUrl", "receiptUrl");
-    const merchantNote =
-      typeof data?.merchantNote === "string"
-        ? data.merchantNote.trim().slice(0, 400)
-        : "";
-    const providedRequestId = readString(data, "requestId");
+    const merchantNote = readString(data, "merchantNote", "notes").slice(0, 400);
+    const providedIdempotencyKey = readString(data, "idempotencyKey").trim();
+    if (providedIdempotencyKey.length > 160) {
+      throw new DomainHttpsError("invalid-argument", "مفتاح منع التكرار أطول من الحد المسموح.");
+    }
+    const providedRequestId =
+      readString(data, "requestId") ||
+      (providedIdempotencyKey
+        ? `idem_${createHash("sha256").update(providedIdempotencyKey).digest("hex").slice(0, 48)}`
+        : "");
+    const idempotencyKey = providedIdempotencyKey || providedRequestId;
 
     if (providedRequestId && !isValidDocId(providedRequestId)) {
       throw new DomainHttpsError("invalid-argument", "معرّف الطلب غير صالح.");
@@ -407,15 +439,25 @@ export class ManualSubscriptionsServerService {
           resubmissionTargetDocId = docSnap.id;
           continue;
         }
+        // A repeated network submission with the same requestId + idempotency key is handled
+        // inside the transaction as a safe no-op. Different keys remain rejected.
+        if (
+          ACTIVE_PENDING_STATUSES.has(st) &&
+          idempotencyKey &&
+          readString(d, "idempotencyKey") === idempotencyKey
+        ) {
+          resubmissionTargetDocId = docSnap.id;
+          continue;
+        }
         throw new DomainHttpsError(
           "already-exists",
           "هذا الطلب موجود بالفعل ولا يقبل إعادة الإرسال في حالته الحالية."
         );
       }
-      if (ACTIVE_PENDING_STATUSES.has(st)) {
+      if (ACTIVE_PENDING_STATUSES.has(st) || RESUBMISSION_STATUSES.has(st)) {
         throw new DomainHttpsError(
           "already-exists",
-          "لديك طلب اشتراك قيد المراجعة بالفعل. يرجى انتظار مراجعة الإدارة قبل إرسال طلب جديد."
+          "لديك طلب اشتراك قيد المراجعة أو يحتاج إلى إعادة إرسال بالفعل. يرجى متابعة الطلب الحالي."
         );
       }
     }
@@ -424,19 +466,15 @@ export class ManualSubscriptionsServerService {
       const dupRefSnap = await this.db
         .collection("manual_subscription_requests")
         .where("transactionReference", "==", transactionReference)
-        .limit(5)
         .get();
       for (const dSnap of dupRefSnap.docs) {
         if (resubmissionTargetDocId && dSnap.id === resubmissionTargetDocId) {
           continue;
         }
-        const st = normalizeStatus(dSnap.data()?.status);
-        if (st !== "rejected") {
-          throw new DomainHttpsError(
-            "already-exists",
-            "رقم العملية المرجعي مستخدم في طلب اشتراك آخر بالفعل."
-          );
-        }
+        throw new DomainHttpsError(
+          "already-exists",
+          "رقم العملية المرجعي مستخدم في طلب اشتراك آخر بالفعل ولا يمكن إعادة استخدامه."
+        );
       }
     }
 
@@ -452,12 +490,18 @@ export class ManualSubscriptionsServerService {
     const opLogRef = this.db
       .collection("operation_logs")
       .doc(`submit_manual_sub_${requestId}_${nowMs}`);
+    // Admin-SDK-only reservation documents. Client Firestore rules keep this collection closed.
+    const referenceLockRef = transactionReference
+      ? this.db.collection("manual_subscription_reference_locks")
+        .doc(createTransactionReferenceLockId(transactionReference))
+      : null;
 
     return this.db.runTransaction(async (tx) => {
-      const [merchantSnap, settingsSnap, existingReqSnap] = await Promise.all([
+      const [merchantSnap, settingsSnap, existingReqSnap, referenceLockSnap] = await Promise.all([
         tx.get(merchantRef),
         tx.get(settingsRef),
         tx.get(requestRef),
+        referenceLockRef ? tx.get(referenceLockRef) : Promise.resolve(null),
       ]);
 
       if (!merchantSnap.exists) {
@@ -484,6 +528,39 @@ export class ManualSubscriptionsServerService {
           "permission-denied",
           "عدم تطابق ملكية حساب التاجر."
         );
+      }
+
+      // Serialize active requests for the same merchant through merchants/{uid}.
+      // A conflicting transaction retries and then observes the first request's lock.
+      const activeRequestId = readString(merchantData, "activeManualSubscriptionRequestId");
+      if (activeRequestId && activeRequestId !== requestId) {
+        const activeRequestSnap = await tx.get(
+          this.db.collection("manual_subscription_requests").doc(activeRequestId)
+        );
+        const activeStatus = normalizeStatus(activeRequestSnap.data()?.status);
+        if (
+          activeRequestSnap.exists &&
+          (ACTIVE_PENDING_STATUSES.has(activeStatus) || RESUBMISSION_STATUSES.has(activeStatus))
+        ) {
+          throw new DomainHttpsError(
+            "already-exists",
+            "لديك طلب اشتراك آخر قيد المراجعة بالفعل. يرجى انتظار قرار الإدارة."
+          );
+        }
+      }
+
+      // Deterministic transfer-reference reservation prevents the same reference being used
+      // by two merchants in concurrent submissions. This lock is never released for replay.
+      if (referenceLockSnap?.exists) {
+        const referenceLock = referenceLockSnap.data() ?? {};
+        const lockRequestId = readString(referenceLock, "requestId");
+        const lockMerchantId = readString(referenceLock, "merchantId");
+        if (lockRequestId !== requestId || lockMerchantId !== uid) {
+          throw new DomainHttpsError(
+            "already-exists",
+            "رقم العملية المرجعي مرتبط بطلب اشتراك آخر ولا يمكن استخدامه مرة أخرى."
+          );
+        }
       }
 
       if (!settingsSnap.exists) {
@@ -573,16 +650,17 @@ export class ManualSubscriptionsServerService {
         );
       }
 
-      // Reject client price tampering if caller supplied a forged amount
-      if (claimedAmount !== null && Math.abs(claimedAmount - officialPrice) > 0.01) {
+      // Validate every client-supplied amount alias independently; one correct alias must not
+      // hide a second tampered price field.
+      if (claimedAmounts.some((claimedAmount) => Math.abs(claimedAmount - officialPrice) > 0.01)) {
         throw new DomainHttpsError(
           "invalid-argument",
           "قيمة الاشتراك المرسلة لا تطابق السعر الرسمي للباقة على السيرفر."
         );
       }
 
-      // Reject client captainLimit tampering if caller supplied a forged captain limit
-      if (requestedMaxCaptains > 0 && requestedMaxCaptains !== officialMaxCaptains) {
+      // Validate every supplied captain-limit alias independently.
+      if (claimedCaptainLimits.some((claimedLimit) => Math.round(claimedLimit) !== officialMaxCaptains)) {
         throw new DomainHttpsError(
           "invalid-argument",
           "عدد الكباتن المرسل لا يطابق الحد الرسمي للباقة على السيرفر."
@@ -598,6 +676,37 @@ export class ManualSubscriptionsServerService {
         (typeof authContext?.token?.email === "string"
           ? authContext.token.email.trim()
           : "");
+
+      // Idempotent retry: a repeated request with the same requestId/key returns the existing
+      // pending result instead of producing a second write or a misleading error.
+      if (existingReqSnap.exists) {
+        const existingRequest = existingReqSnap.data() ?? {};
+        const existingMerchantId = readString(existingRequest, "merchantId", "restaurantId", "uid");
+        const existingStatus = normalizeStatus(existingRequest.status);
+        if (
+          existingMerchantId === uid &&
+          idempotencyKey &&
+          readString(existingRequest, "idempotencyKey") === idempotencyKey &&
+          ACTIVE_PENDING_STATUSES.has(existingStatus)
+        ) {
+          return {
+            success: true,
+            requestId,
+            requestNumber: readString(existingRequest, "requestNumber") || `SUB-${requestId.slice(0, 8).toUpperCase()}`,
+            merchantId: uid,
+            planId: readString(existingRequest, "planId") || officialPlanId,
+            planName: readString(existingRequest, "planName") || officialPlanName,
+            maxCaptains: readNumber(existingRequest, "maxCaptains") ?? officialMaxCaptains,
+            amount: readNumber(existingRequest, "amount") ?? officialPrice,
+            durationDays: readNumber(existingRequest, "durationDays") ?? officialDurationDays,
+            receiverWalletNumber: readString(existingRequest, "receiverWalletNumber") || receiverWalletNumber,
+            status: "pending_review" as const,
+            paymentStatus: "pending_verification" as const,
+            isResubmission: false,
+            message: "تم تسجيل الطلب مسبقاً؛ لا حاجة لإرساله مرة أخرى.",
+          };
+        }
+      }
 
       // Handle resubmission of an existing resubmission_required request
       if (existingReqSnap.exists) {
@@ -645,6 +754,7 @@ export class ManualSubscriptionsServerService {
           receiptImagePath,
           receiptImageUrl,
           merchantNote,
+          idempotencyKey,
           status: "pending_review",
           paymentStatus: "pending_verification",
           resubmittedAt: s.serverTimestamp(),
@@ -665,6 +775,23 @@ export class ManualSubscriptionsServerService {
         }
 
         tx.update(requestRef, resubmissionUpdate);
+        tx.set(
+          merchantRef,
+          {
+            activeManualSubscriptionRequestId: requestId,
+            manualSubscriptionRequestUpdatedAt: s.serverTimestamp(),
+          },
+          {merge: true}
+        );
+        if (referenceLockRef) {
+          tx.set(referenceLockRef, {
+            requestId,
+            merchantId: uid,
+            transactionReference,
+            createdAt: s.serverTimestamp(),
+            updatedAt: s.serverTimestamp(),
+          }, {merge: true});
+        }
 
         tx.set(opLogRef, {
           action: "resubmit_manual_subscription_request",
@@ -725,6 +852,7 @@ export class ManualSubscriptionsServerService {
         receiptImagePath,
         receiptImageUrl,
         merchantNote,
+        idempotencyKey,
         status: "pending_review",
         paymentStatus: "pending_verification",
         previousReceipts: [],
@@ -733,6 +861,23 @@ export class ManualSubscriptionsServerService {
         createdAt: s.serverTimestamp(),
         updatedAt: s.serverTimestamp(),
       });
+      tx.set(
+        merchantRef,
+        {
+          activeManualSubscriptionRequestId: requestId,
+          manualSubscriptionRequestUpdatedAt: s.serverTimestamp(),
+        },
+        {merge: true}
+      );
+      if (referenceLockRef) {
+        tx.set(referenceLockRef, {
+          requestId,
+          merchantId: uid,
+          transactionReference,
+          createdAt: s.serverTimestamp(),
+          updatedAt: s.serverTimestamp(),
+        }, {merge: true});
+      }
 
       tx.set(opLogRef, {
         action: "submit_manual_subscription_request",
@@ -1139,6 +1284,12 @@ export class ManualSubscriptionsServerService {
           cancellationReason: null,
           lastApprovedRequestId: requestId,
           lastPaymentId: paymentDocId,
+          ...(readString(merchantData, "activeManualSubscriptionRequestId") === requestId
+            ? {
+              activeManualSubscriptionRequestId: null,
+              manualSubscriptionRequestUpdatedAt: s.serverTimestamp(),
+            }
+            : {}),
           updatedBy: admin.uid,
           updatedByAdminUid: admin.uid,
           subscriptionVersion: nextVersion,
@@ -1345,9 +1496,8 @@ export class ManualSubscriptionsServerService {
         );
       }
 
-      const merchantSnap = await tx.get(
-        this.db.collection("merchants").doc(merchantId)
-      );
+      const merchantRef = this.db.collection("merchants").doc(merchantId);
+      const merchantSnap = await tx.get(merchantRef);
       const merchantData = merchantSnap.exists ? merchantSnap.data() ?? {} : {};
       merchantFcmToken = readString(merchantData, "fcmToken");
       planName = readString(reqData, "planName", "plan") || "باقة الاشتراك";
@@ -1375,6 +1525,12 @@ export class ManualSubscriptionsServerService {
         reviewHistory: s.arrayUnion(reviewEntry),
         updatedAt: s.serverTimestamp(),
       });
+      if (readString(merchantData, "activeManualSubscriptionRequestId") === requestId) {
+        tx.set(merchantRef, {
+          activeManualSubscriptionRequestId: null,
+          manualSubscriptionRequestUpdatedAt: s.serverTimestamp(),
+        }, {merge: true});
+      }
 
       tx.set(opLogRef, {
         action: "reject_manual_subscription_request",
@@ -1508,10 +1664,25 @@ export class ManualSubscriptionsServerService {
         );
       }
 
-      const merchantSnap = await tx.get(
-        this.db.collection("merchants").doc(merchantId)
-      );
+      const merchantRef = this.db.collection("merchants").doc(merchantId);
+      const merchantSnap = await tx.get(merchantRef);
       const merchantData = merchantSnap.exists ? merchantSnap.data() ?? {} : {};
+      const activeRequestId = readString(merchantData, "activeManualSubscriptionRequestId");
+      if (activeRequestId && activeRequestId !== requestId) {
+        const activeRequestSnap = await tx.get(
+          this.db.collection("manual_subscription_requests").doc(activeRequestId)
+        );
+        const activeStatus = normalizeStatus(activeRequestSnap.data()?.status);
+        if (
+          activeRequestSnap.exists &&
+          (ACTIVE_PENDING_STATUSES.has(activeStatus) || RESUBMISSION_STATUSES.has(activeStatus))
+        ) {
+          throw new DomainHttpsError(
+            "already-exists",
+            "لدى التاجر طلب اشتراك آخر قيد المراجعة ولا يمكن فتح مراجعة ثانية."
+          );
+        }
+      }
       merchantFcmToken = readString(merchantData, "fcmToken");
       planName = readString(reqData, "planName", "plan") || "باقة الاشتراك";
 
@@ -1555,6 +1726,10 @@ export class ManualSubscriptionsServerService {
       }
 
       tx.update(requestRef, updatePatch);
+      tx.set(merchantRef, {
+        activeManualSubscriptionRequestId: requestId,
+        manualSubscriptionRequestUpdatedAt: s.serverTimestamp(),
+      }, {merge: true});
 
       tx.set(opLogRef, {
         action: "request_subscription_receipt_resubmission",

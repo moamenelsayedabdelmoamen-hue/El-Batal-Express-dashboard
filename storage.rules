@@ -197,11 +197,15 @@ service firebase.storage {
       allow delete: if isAdmin();
     }
 
-    // 4. Merchant & Restaurant Logos: merchants/{merchantId}/**, restaurants/{merchantId}/**, logos/**
-    // - Read: Authenticated users only (never unauthenticated public access)
-    // - Write: Owning merchant or admin with validated image upload
+    // 4. Merchant assets: normal merchant media stays available to authenticated users,
+    // but legacy receipts under merchants/{merchantId}/subscription_receipts/** are private.
+    // Receipt access is granted only by the owner-scoped clause or the dedicated receipt match below.
     match /merchants/{merchantId}/{allFiles=**} {
-      allow read: if isAuthenticated();
+      allow read: if isAuthenticated() && (
+        request.auth.uid == merchantId ||
+        isAdmin() ||
+        !allFiles.matches('subscription_receipts/.*')
+      );
       allow create, update: if isAuthenticated()
         && (request.auth.uid == merchantId || isAdmin())
         && isValidImageUpload();

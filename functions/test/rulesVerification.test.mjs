@@ -85,6 +85,11 @@ describe("Static Security & Architecture Invariants (Rules + Server-Only + Paymo
       storageRules,
       /match\s+\/manual_subscription_receipts\/\{merchantId\}\/\{allFiles=\*\*\}/
     );
+    // Legacy nested receipts must not inherit authenticated-user read access from merchant assets.
+    assert.match(
+      storageRules,
+      /match\s+\/merchants\/\{merchantId\}\/\{allFiles=\*\*\}\s*\{[\s\S]*?allow read:\s*if isAuthenticated\(\)[\s\S]*?!allFiles\.matches\('subscription_receipts\/\.\*'\)/
+    );
   });
 
   it("5. Central Cloud Functions exports all 4 required functions + settings updater + notification trigger", () => {
