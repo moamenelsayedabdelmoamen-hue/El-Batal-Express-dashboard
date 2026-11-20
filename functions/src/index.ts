@@ -39,6 +39,7 @@ const manualSubService = new ManualSubscriptionsServerService(
   dbAdapter,
   createAdminManualSubscriptionEffects()
 );
+const merchantOrderService = new MerchantOrderService(getFirestore());
 
 function mapError(err: unknown): HttpsError {
   if (err instanceof HttpsError) return err;
@@ -53,6 +54,67 @@ function mapError(err: unknown): HttpsError {
     "حدث خطأ غير متوقع في الخادم أثناء تنفيذ العملية."
   );
 }
+
+
+/**
+ * Merchant subscription read/validation callables used by the Android merchant app.
+ * Subscription and order capacity are checked against server-side Firestore documents.
+ */
+export const getMerchantSubscription = onCall(
+  {region: "us-central1"},
+  async (request) => {
+    const uid = request.auth?.uid;
+    if (!uid) throw new HttpsError("unauthenticated", "يجب تسجيل الدخول أولاً.");
+    if (request.auth?.token.email_verified !== true) {
+      throw new HttpsError("failed-precondition", "يجب تأكيد البريد الإلكتروني أولاً.");
+    }
+    return merchantOrderService.getMerchantSubscription(uid);
+  }
+);
+
+export const validateMerchantSubscription = onCall(
+  {region: "us-central1"},
+  async (request) => {
+    const uid = request.auth?.uid;
+    if (!uid) throw new HttpsError("unauthenticated", "يجب تسجيل الدخول أولاً.");
+    if (request.auth?.token.email_verified !== true) {
+      throw new HttpsError("failed-precondition", "يجب تأكيد البريد الإلكتروني أولاً.");
+    }
+    const requested = Number(request.data?.requestedCaptains ?? 1);
+    return merchantOrderService.validateMerchantSubscription(uid, requested);
+  }
+);
+
+/**
+ * Creates one merchant order atomically, reserves the package capacity, and lets
+ * onOrderCreatedDispatch be the only initial captain-distribution trigger.
+ */
+export const requestCaptains = onCall(
+  {region: "us-central1"},
+  async (request) => {
+    const uid = request.auth?.uid;
+    if (!uid) throw new HttpsError("unauthenticated", "يجب تسجيل الدخول أولاً.");
+    if (request.auth?.token.email_verified !== true) {
+      throw new HttpsError("failed-precondition", "يجب تأكيد البريد الإلكتروني أولاً.");
+    }
+    const payload = (request.data ?? {}) as Record<string, unknown>;
+    return merchantOrderService.requestCaptains(uid, payload, "requestCaptains");
+  }
+);
+
+/** Backward-compatible server-only alias for older merchant app builds. */
+export const createOrderWithCode = onCall(
+  {region: "us-central1"},
+  async (request) => {
+    const uid = request.auth?.uid;
+    if (!uid) throw new HttpsError("unauthenticated", "يجب تسجيل الدخول أولاً.");
+    if (request.auth?.token.email_verified !== true) {
+      throw new HttpsError("failed-precondition", "يجب تأكيد البريد الإلكتروني أولاً.");
+    }
+    const payload = (request.data ?? {}) as Record<string, unknown>;
+    return merchantOrderService.requestCaptains(uid, payload, "createOrderWithCode");
+  }
+);
 
 /**
  * Callable 1: Authoritative order acceptance by authenticated captain.
@@ -1426,6 +1488,41 @@ export const merchantConfirmOrder = onCall(
   }
 );
 
+
+
+/**
+ * Releases the merchant's reserved package slot after an order enters a terminal state.
+ * This replaces the capacity-release side effect formerly provided by the legacy merchant
+ * Functions codebase; it does not perform captain assignment.
+ */
+export const onOrderCapacityReleased = onDocumentUpdated(
+  {document: "orders/{orderId}", region: "us-central1"},
+  async (event) => {
+    const before = event.data?.before.data() as Record<string, unknown> | undefined;
+    const after = event.data?.after.data() as Record<string, unknown> | undefined;
+    if (!after) return;
+    const beforeStatus = readNormalizedOrderStatus(before ?? {});
+    const afterStatus = readNormalizedOrderStatus(after);
+    if (isTerminalOrderStatus(beforeStatus) || !isTerminalOrderStatus(afterStatus)) return;
+    const merchantId = readString(after, "merchantId", "restaurantId", "userId");
+    if (!merchantId) {
+      logger.error("Cannot release merchant capacity: order has no merchant ID", {
+        orderId: event.params.orderId,
+      });
+      return;
+    }
+    try {
+      await merchantOrderService.releaseTerminalOrderCapacity(event.params.orderId, merchantId);
+    } catch (err) {
+      logger.error("Failed to release merchant order capacity", {
+        orderId: event.params.orderId,
+        merchantId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      throw err;
+    }
+  }
+);
 
 /**
  * Trigger 1: Auto-dispatches newly created pending orders to nearest eligible captain
