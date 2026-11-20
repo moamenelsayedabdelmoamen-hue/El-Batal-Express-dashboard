@@ -700,6 +700,7 @@ describe("Merchant package captain limits (2/4/6/8)", () => {
     assert.equal(resolveMerchantCaptainLimit({planId: 99}, {}), 0);
     assert.equal(resolveMerchantCaptainLimit({}, {}), 0);
     assert.equal(resolveMerchantCaptainLimit({captainLimit: 3}, {}), 0);
+    assert.equal(resolveMerchantCaptainLimit({captainLimit: 3, maxCaptains: 4}, {}), 4);
     assert.equal(canAcceptMerchantOrderCount(3, 0, 1), false);
     assert.equal(canAcceptMerchantOrderCount(4, -1, 1), false);
     assert.equal(canAcceptMerchantOrderCount(4, 0, 0), false);
