@@ -274,8 +274,8 @@ function parseMerchantDeliveryFee(rawValue: string): number {
     );
   }
   const amount = Number(normalized);
-  if (!Number.isFinite(amount) || amount < 0 || amount > 100000) {
-    throw new HttpsError("invalid-argument", "قيمة خدمة التوصيل غير صالحة.");
+  if (!Number.isFinite(amount) || amount <= 0 || amount > 100000) {
+    throw new HttpsError("invalid-argument", "قيمة خدمة التوصيل يجب أن تكون أكبر من صفر وبحد أقصى 100000 جنيه.");
   }
   return amount;
 }
