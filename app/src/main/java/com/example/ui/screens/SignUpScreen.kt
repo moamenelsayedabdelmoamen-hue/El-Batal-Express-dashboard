@@ -81,6 +81,47 @@ import com.example.ui.theme.ExpressRed
 import com.example.ui.theme.HeroYellow
 import com.example.ui.theme.StatusOnlineGreen
 
+@Composable
+fun SignUpScreen(
+    isLoading: Boolean = false,
+    onSignUpClick: (
+        fullName: String,
+        phone: String,
+        email: String,
+        pass: String,
+        confirmPass: String,
+        avatarUri: String,
+        avatarPresetIndex: Int,
+        vehicleType: String,
+        nationalIdUri: String,
+        idBackUri: String,
+        licenseUri: String,
+        onError: (String) -> Unit
+    ) -> Unit,
+    onNavigateLogin: () -> Unit
+) {
+    SignUpScreen(
+        isLoading = isLoading,
+        onSignUpClick = { fullName, phone, email, pass, confirmPass, _, avatarUri, avatarPresetIndex, vehicleType, nationalIdUri, idBackUri, licenseUri, onError ->
+            onSignUpClick(
+                fullName,
+                phone,
+                email,
+                pass,
+                confirmPass,
+                avatarUri,
+                avatarPresetIndex,
+                vehicleType,
+                nationalIdUri,
+                idBackUri,
+                licenseUri,
+                onError
+            )
+        },
+        onNavigateLogin = onNavigateLogin
+    )
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SignUpScreen(
