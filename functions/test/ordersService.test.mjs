@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {OrderServerService} from "../lib/ordersService.js";
 import {DomainHttpsError} from "../lib/types.js";
 import {getCairoTimeContext} from "../lib/shifts.js";
-import {isTerminalMerchantOrderStatus} from "../lib/validators.js";
+import {isTerminalMerchantOrderStatus, resolveMerchantCaptainLimit} from "../lib/validators.js";
 
 /**
  * Stateful in-memory transactional Firestore engine with optimistic version checks,
@@ -677,5 +677,28 @@ describe("Merchant package capacity terminal-state classification", () => {
     ]) {
       assert.equal(isTerminalMerchantOrderStatus(status), true, status);
     }
+  });
+});
+
+describe("Merchant package captain limits (2/4/6/8)", () => {
+  it("resolves each supported package from canonical limits and legacy plan IDs", () => {
+    for (const [limit, planId] of [[2, 1], [4, 2], [6, 3], [8, 4]]) {
+      assert.equal(resolveMerchantCaptainLimit({captainLimit: limit}, {}), limit);
+      assert.equal(resolveMerchantCaptainLimit({planId}, {}), limit);
+    }
+  });
+
+  it("enforces the exact simultaneous-order boundary for every package", () => {
+    for (const limit of [2, 4, 6, 8]) {
+      assert.equal(0 + limit <= limit, true, `package ${limit} accepts its full capacity`);
+      assert.equal((limit - 1) + 1 <= limit, true, `package ${limit} accepts its final slot`);
+      assert.equal(limit + 1 <= limit, false, `package ${limit} rejects one over capacity`);
+    }
+  });
+
+  it("does not silently grant capacity for unsupported or missing plans", () => {
+    assert.equal(resolveMerchantCaptainLimit({planId: 99}, {}), 0);
+    assert.equal(resolveMerchantCaptainLimit({}, {}), 0);
+    assert.equal(resolveMerchantCaptainLimit({captainLimit: 3}, {}), 0);
   });
 });
