@@ -2162,9 +2162,9 @@ export class ManualSubscriptionsServerService {
     const notificationRef = this.db
       .collection("notifications")
       .doc(`manual_sub_req_${requestId}`);
-    await this.db.runTransaction(async (tx) => {
+    const notificationCreated = await this.db.runTransaction(async (tx) => {
       const existing = await tx.get(notificationRef);
-      if (existing.exists) return;
+      if (existing.exists) return false;
       tx.set(notificationRef, {
         type: "manual_subscription_request",
         targetRole: "admin",
@@ -2179,7 +2179,12 @@ export class ManualSubscriptionsServerService {
         isRead: false,
         createdAt: s.serverTimestamp(),
       });
+      return true;
     });
+
+    // The in-app notification is the durable alert. Send its push only for the
+    // first successful creation so duplicate event deliveries cannot spam admins.
+    if (!notificationCreated) return;
 
     // Collect admin FCM tokens if registered
     const adminTokens = new Set<string>();
