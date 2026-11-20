@@ -1592,7 +1592,7 @@ export class OrderServerService {
     const storeImage = readString(order, "storeImage", "merchantLogo", "storeLogo");
     const storeImagePath = readString(order, "storeImagePath", "merchantStoragePath");
     const deliveryFee = readNumber(order, "deliveryFee", "delivery_fee", "shippingFee");
-    if (!merchantId || !storeName || !storePhone || (!storeImage && !storeImagePath)) {
+    if (!merchantId || !storeName || !storePhone || !storeImage) {
       throw new DomainHttpsError(
         "failed-precondition",
         "بيانات اسم التاجر أو هاتفه أو صورته غير مكتملة؛ تم إيقاف إرسال العرض."
