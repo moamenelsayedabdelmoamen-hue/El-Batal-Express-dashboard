@@ -516,23 +516,30 @@ describe('El-Batal Express Real Firebase Emulator Security Audit (Firestore + St
     const adminStorage = adminCtx.storage(BUCKET_URL);
 
     // Admin can review Captain National IDs, profile photos, and order receipts
+    console.log('ADMIN_DIAG: before captain ID read');
     await assertSucceeds(getBytes(ref(adminStorage, 'captains/captain_1/documents/id_front.jpg')));
+    console.log('ADMIN_DIAG: captain ID read passed');
     await assertSucceeds(getBytes(ref(adminStorage, 'captains/captain_2/documents/id_back.jpg')));
+    console.log('ADMIN_DIAG: second ID read passed');
     await assertSucceeds(getBytes(ref(adminStorage, 'orders/order_picked_up_c1/receipts/receipt_c1.jpg')));
+    console.log('ADMIN_DIAG: order receipt read passed');
 
     // Admin can manage captain approval/wallet, orders, and restaurants
+    console.log('ADMIN_DIAG: before captain admin update');
     await assertSucceeds(
       updateDoc(doc(adminDb, 'captains', 'captain_1'), {
         walletBalance: 250.0,
         status: 'active',
       })
     );
+    console.log('ADMIN_DIAG: captain admin update passed; before order update');
     await assertSucceeds(
       updateDoc(doc(adminDb, 'orders', 'order_picked_up_c1'), {
         status: 'en_route',
         merchantConfirmed: true,
       })
     );
+    console.log('ADMIN_DIAG: order admin update passed; before merchant create');
     await assertSucceeds(
       setDoc(doc(adminDb, 'merchants', 'merchant_3'), {
         uid: 'merchant_3',
