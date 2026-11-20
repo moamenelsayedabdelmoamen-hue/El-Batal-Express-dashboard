@@ -476,6 +476,7 @@ describe("Manual Vodafone Cash Subscriptions Server Service (Full 14-Scenario Su
     assert.equal(merchantDoc.isSubscribed, true);
     assert.equal(merchantDoc.maxCaptains, 6);
     assert.equal(merchantDoc.captainLimit, 6);
+    assert.equal(merchantDoc.activeManualSubscriptionRequestId, null);
 
     const payments = db.listCollection("payments");
     assert.equal(payments.length, 1);
