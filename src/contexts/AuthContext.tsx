@@ -126,7 +126,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               userClaims = tokenResult.claims || {};
               setClaims(userClaims);
 
-              if (userClaims.role === 'admin' || userClaims.admin === true) {
+              if (firebaseUser.emailVerified && (userClaims.role === 'admin' || userClaims.admin === true)) {
                 hasAdminClaim = true;
               }
             } catch (claimsErr: any) {
@@ -137,7 +137,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             if (!hasAdminClaim && db) {
               try {
                 const adminDoc = await getDoc(doc(db, COLLECTIONS.ADMINS, firebaseUser.uid));
-                if (adminDoc.exists()) {
+                if (adminDoc.exists() && adminDoc.data()?.role === 'admin' && adminDoc.data()?.emailVerified === true && ['active', 'approved'].includes(String(adminDoc.data()?.status || '').toLowerCase())) {
                   hasAdminClaim = true;
                 }
               } catch (err) {
@@ -152,6 +152,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                   email: firebaseUser.email,
                   displayName: firebaseUser.displayName || 'مسؤول النظام',
                   role: 'admin',
+                  emailVerified: firebaseUser.emailVerified,
+                  status: firebaseUser.emailVerified ? 'active' : 'pending',
                   isSuperAdmin: isSuperAdminEmail(firebaseUser.email),
                   updatedAt: new Date().toISOString(),
                 }, { merge: true });
@@ -261,7 +263,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const tokenResult = await cred.user.getIdTokenResult(false);
       userClaims = tokenResult.claims || {};
       setClaims(userClaims);
-      if (userClaims.role === 'admin' || userClaims.admin === true) {
+      if (cred.user.emailVerified && (userClaims.role === 'admin' || userClaims.admin === true)) {
         hasAdminClaim = true;
       }
     } catch (claimErr) {
@@ -271,7 +273,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!hasAdminClaim && db) {
       try {
         const adminDoc = await getDoc(doc(db, COLLECTIONS.ADMINS, cred.user.uid));
-        if (adminDoc.exists()) {
+        if (adminDoc.exists() && adminDoc.data()?.role === 'admin' && adminDoc.data()?.emailVerified === true && ['active', 'approved'].includes(String(adminDoc.data()?.status || '').toLowerCase())) {
           hasAdminClaim = true;
         }
       } catch (err) {
@@ -293,6 +295,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           email: cred.user.email,
           displayName: cred.user.displayName || 'مسؤول النظام',
           role: 'admin',
+          emailVerified: cred.user.emailVerified,
+          status: cred.user.emailVerified ? 'active' : 'pending',
           isSuperAdmin: isSuperAdminEmail(cred.user.email),
           updatedAt: new Date().toISOString(),
         }, { merge: true });
@@ -336,7 +340,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const tokenResult = await cred.user.getIdTokenResult(false);
       userClaims = tokenResult.claims || {};
       setClaims(userClaims);
-      if (userClaims.role === 'admin' || userClaims.admin === true) {
+      if (cred.user.emailVerified && (userClaims.role === 'admin' || userClaims.admin === true)) {
         hasAdminClaim = true;
       }
     } catch (claimErr) {
@@ -346,7 +350,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!hasAdminClaim && db) {
       try {
         const adminDoc = await getDoc(doc(db, COLLECTIONS.ADMINS, cred.user.uid));
-        if (adminDoc.exists()) {
+        if (adminDoc.exists() && adminDoc.data()?.role === 'admin' && adminDoc.data()?.emailVerified === true && ['active', 'approved'].includes(String(adminDoc.data()?.status || '').toLowerCase())) {
           hasAdminClaim = true;
         }
       } catch (err) {
@@ -362,6 +366,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             email: cred.user.email,
             displayName: cred.user.displayName || 'مسؤول النظام',
             role: hasAdminClaim ? 'admin' : 'user',
+            emailVerified: cred.user.emailVerified,
+            status: hasAdminClaim && cred.user.emailVerified ? 'active' : 'pending',
             isSuperAdmin: isSuperAdminEmail(cred.user.email),
             updatedAt: new Date().toISOString(),
           },
