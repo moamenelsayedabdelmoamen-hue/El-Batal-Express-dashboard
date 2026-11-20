@@ -40,11 +40,11 @@ function collectSourceFiles(dir) {
 describe("Static Security & Architecture Invariants (Rules + Server-Only + Paymob Removal)", () => {
   it("1. firestore.rules allows merchant-scoped reads but blocks every direct write to manual_subscription_requests", () => {
     const requestRules = firestoreRules.match(
-      /match\\s+\\/manual_subscription_requests\\/\\{requestId\\}\\s*\\{([\\s\\S]*?)\\n    \\}/
+      /match\s+\/manual_subscription_requests\/\{requestId\}\s*\{([\s\S]*?)\n    \}/
     )?.[1] || "";
-    assert.match(requestRules, /allow get, list:\\s*if isAdmin\\(\\) \\|\\|/);
-    assert.match(requestRules, /allow create, update, delete:\\s*if false;/);
-    assert.doesNotMatch(requestRules, /allow\\s+(?:create|update|delete|write):\\s*if\\s+(?!false\\s*;)/);
+    assert.match(requestRules, /allow get, list:\s*if isAdmin\(\) \|\|/);
+    assert.match(requestRules, /allow create, update, delete:\s*if false;/);
+    assert.doesNotMatch(requestRules, /allow\s+(?:create|update|delete|write):\s*if\s+(?!false\s*;)/);
   });
 
   it("2. firestore.rules locks settings/manual_subscription_config, operation_logs, and retired webhook_events to server-only / read-only", () => {
