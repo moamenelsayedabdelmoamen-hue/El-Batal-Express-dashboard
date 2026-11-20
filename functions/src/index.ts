@@ -223,6 +223,25 @@ function normalizeArabicDigits(value: string): string {
   });
 }
 
+function parseMerchantDeliveryFee(rawValue: string): number {
+  const normalized = normalizeArabicDigits(rawValue)
+    .replace(/[,٬]/g, "")
+    .trim()
+    .replace(/\s*جنيه$/u, "")
+    .trim();
+  if (!/^\d+(?:\.\d{1,2})?$/.test(normalized)) {
+    throw new HttpsError(
+      "invalid-argument",
+      "قيمة خدمة التوصيل يجب أن تكون مبلغاً رقمياً صحيحاً بالجنيه المصري."
+    );
+  }
+  const amount = Number(normalized);
+  if (!Number.isFinite(amount) || amount < 0 || amount > 100000) {
+    throw new HttpsError("invalid-argument", "قيمة خدمة التوصيل غير صالحة.");
+  }
+  return amount;
+}
+
 function isClosedMerchantOrderStatus(status: string): boolean {
   const value = status.trim().toLowerCase();
   return [
@@ -276,14 +295,7 @@ export const merchantCreateOrder = onCall(
       if (!serviceFee) {
         throw new HttpsError("invalid-argument", "يرجى إدخال قيمة خدمة التوصيل من تطبيق التاجر.");
       }
-      const feeMatch = normalizeArabicDigits(serviceFee).replace(/,/g, "").match(/\d+(?:\.\d+)?/);
-      if (!feeMatch) {
-        throw new HttpsError("invalid-argument", "قيمة خدمة التوصيل يجب أن تحتوي على مبلغ رقمي واضح.");
-      }
-      const deliveryFee = Number(feeMatch[0]);
-      if (!Number.isFinite(deliveryFee) || deliveryFee < 0 || deliveryFee > 100000) {
-        throw new HttpsError("invalid-argument", "قيمة خدمة التوصيل غير صالحة.");
-      }
+      const deliveryFee = parseMerchantDeliveryFee(serviceFee);
 
       const customerLatitude = readNumber(data, "customerLatitude");
       const customerLongitude = readNumber(data, "customerLongitude");
@@ -712,14 +724,7 @@ export const merchantUpdateOrderDetails = onCall(
       if (!serviceFee) {
         throw new HttpsError("invalid-argument", "يرجى إدخال قيمة خدمة التوصيل من تطبيق التاجر.");
       }
-      const feeMatch = normalizeArabicDigits(serviceFee).replace(/,/g, "").match(/\d+(?:\.\d+)?/);
-      if (!feeMatch) {
-        throw new HttpsError("invalid-argument", "قيمة خدمة التوصيل يجب أن تحتوي على مبلغ رقمي واضح.");
-      }
-      const deliveryFee = Number(feeMatch[0]);
-      if (!Number.isFinite(deliveryFee) || deliveryFee < 0 || deliveryFee > 100000) {
-        throw new HttpsError("invalid-argument", "قيمة خدمة التوصيل غير صالحة.");
-      }
+      const deliveryFee = parseMerchantDeliveryFee(serviceFee);
 
       const db = getFirestore();
       const merchantSnap = await db.collection("merchants").doc(uid).get();
