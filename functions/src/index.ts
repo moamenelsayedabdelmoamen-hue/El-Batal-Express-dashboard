@@ -28,6 +28,8 @@ import {
   isTerminalMerchantOrderStatus,
   resolveMerchantCaptainLimit,
   canAcceptMerchantOrderCount,
+  isMerchantCancelableOrderStatus,
+  resolveMerchantConfirmationTransition,
 } from "./validators.js";
 
 initializeApp();
@@ -824,10 +826,7 @@ export const merchantCancelOrder = onCall(
           throw new HttpsError("permission-denied", "هذا الطلب لا يخص متجرك.");
         }
         const status = readNormalizedOrderStatus(order);
-        if (["picked_up", "order_data_entered", "awaiting_merchant_confirmation",
-          "awaiting_confirmation", "merchant_rejected", "en_route", "confirmed",
-          "merchant_confirmed", "out_for_delivery", "delivering", "delivered",
-          "completed", "done"].includes(status)) {
+        if (!isMerchantCancelableOrderStatus(status)) {
           throw new HttpsError(
             "failed-precondition",
             "لا يمكن إلغاء الطلب بعد استلامه من المتجر أو بدء توصيله."
@@ -1390,14 +1389,15 @@ export const merchantConfirmOrder = onCall(
           throw new HttpsError("permission-denied", "هذا الطلب لا يخص متجرك.");
         }
         const status = readNormalizedOrderStatus(order);
-        if (order.merchantConfirmed === true && confirmed && status === "en_route") {
-          return {alreadyUpdated: true, status: "en_route"};
+        const transition = resolveMerchantConfirmationTransition(
+          status,
+          order.merchantConfirmed === true,
+          confirmed
+        );
+        if (transition.alreadyUpdated) {
+          return {alreadyUpdated: true, status: transition.nextStatus};
         }
-        if (
-          status !== "awaiting_merchant_confirmation" &&
-          status !== "awaiting_confirmation" &&
-          status !== "merchant_rejected"
-        ) {
+        if (!transition.allowed) {
           throw new HttpsError(
             "failed-precondition",
             "الطلب ليس في انتظار مراجعة بيانات العميل والإيصال."
