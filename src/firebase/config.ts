@@ -11,6 +11,7 @@ import {
   memoryLocalCache,
 } from 'firebase/firestore';
 import { getStorage, FirebaseStorage } from 'firebase/storage';
+import { getFunctions, Functions } from 'firebase/functions';
 import firebaseAppletConfig from '../../firebase-applet-config.json';
 
 // Silence internal @firebase/firestore connection retry / offline notices so they do not trigger console error monitors
@@ -41,6 +42,7 @@ let app: FirebaseApp;
 let auth: Auth | null = null;
 let db: Firestore;
 let storage: FirebaseStorage;
+let functions: Functions;
 
 try {
   app = getApps().length ? getApp() : initializeApp(firebaseConfig);
@@ -76,6 +78,7 @@ try {
   }
 
   storage = getStorage(app);
+  functions = getFunctions(app, 'us-central1');
 } catch (error) {
   console.warn('Firebase initialization notice:', error);
   app = getApps().length ? getApp() : initializeApp(firebaseConfig);
@@ -90,6 +93,7 @@ try {
       : getFirestore(app);
   }
   storage = getStorage(app);
+  functions = getFunctions(app, 'us-central1');
 }
 
 // Google Workspace OAuth Scopes
@@ -121,7 +125,7 @@ export async function testConnection(): Promise<boolean> {
   }
 }
 
-export { app, auth, db, storage };
+export { app, auth, db, storage, functions };
 
 // Skill standard: Firestore Error handling conforming to Firebase Integration Skill
 export enum OperationType {

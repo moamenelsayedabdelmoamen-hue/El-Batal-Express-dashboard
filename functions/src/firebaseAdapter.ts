@@ -9,10 +9,13 @@ import {getFunctions} from "firebase-admin/functions";
 import {getMessaging} from "firebase-admin/messaging";
 import * as logger from "firebase-functions/logger";
 import {
+  AdminManualSubFcmPayload,
   CollectionRefLike,
   DatabaseLike,
   DocRefLike,
   DocSnapshotLike,
+  ManualSubscriptionEffectsPort,
+  MerchantSubscriptionFcmPayload,
   OfferFcmPayload,
   QueryLike,
   QuerySnapshotLike,
@@ -233,3 +236,92 @@ export function createAdminServerEffects(): ServerEffectsPort {
     },
   };
 }
+
+/**
+ * Production ManualSubscriptionEffectsPort backed by Admin FieldValue and FCM.
+ * Strictly sends subscription updates to the merchant's own fcmToken (never captains).
+ * @return {ManualSubscriptionEffectsPort} Production effects implementation.
+ */
+export function createAdminManualSubscriptionEffects(): ManualSubscriptionEffectsPort {
+  return {
+    now: () => Date.now(),
+    sentinels: {
+      serverTimestamp: () => FieldValue.serverTimestamp(),
+      deleteField: () => FieldValue.delete(),
+      increment: (value: number) => FieldValue.increment(value),
+      arrayUnion: (...elements: unknown[]) => FieldValue.arrayUnion(...elements),
+    },
+    async sendMerchantSubscriptionNotification(
+      payload: MerchantSubscriptionFcmPayload
+    ): Promise<void> {
+      if (!payload.fcmToken) {
+        logger.info("Skipping merchant subscription FCM: merchant lacks fcmToken", {
+          merchantId: payload.merchantId,
+          requestId: payload.requestId,
+          eventType: payload.eventType,
+        });
+        return;
+      }
+
+      try {
+        await getMessaging().send({
+          token: payload.fcmToken,
+          notification: {
+            title: payload.title,
+            body: payload.body,
+          },
+          android: {
+            priority: "high",
+          },
+          data: {
+            type: payload.eventType,
+            requestId: payload.requestId,
+            merchantId: payload.merchantId,
+            planId: payload.planId ?? "",
+            planName: payload.planName ?? "",
+            maxCaptains:
+              payload.maxCaptains !== undefined ? String(payload.maxCaptains) : "",
+            reason: payload.reason ?? "",
+            dedupeKey: payload.dedupeKey,
+          },
+        });
+      } catch (err) {
+        logger.warn("Failed to send merchant subscription FCM push", {
+          merchantId: payload.merchantId,
+          requestId: payload.requestId,
+          eventType: payload.eventType,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    },
+    async sendAdminNewManualRequestNotification(
+      payload: AdminManualSubFcmPayload
+    ): Promise<void> {
+      if (!payload.tokens || payload.tokens.length === 0) return;
+
+      try {
+        await getMessaging().sendEachForMulticast({
+          tokens: payload.tokens,
+          notification: {
+            title: `طلب اشتراك جديد — ${payload.merchantName}`,
+            body: `تحويل فودافون كاش بمبلغ ${payload.amount} ج.م للباقة "${payload.planName}" بانتظار المراجعة.`,
+          },
+          data: {
+            type: "manual_subscription_request",
+            requestId: payload.requestId,
+            merchantId: payload.merchantId,
+            merchantName: payload.merchantName,
+            planName: payload.planName,
+            amount: String(payload.amount),
+          },
+        });
+      } catch (err) {
+        logger.warn("Failed to send admin FCM multicast for manual subscription request", {
+          requestId: payload.requestId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    },
+  };
+}
+

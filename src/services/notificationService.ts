@@ -262,7 +262,9 @@ export const NotificationService = {
             'وصل تحديث جديد في لوحة التحكم',
           orderId: payload.data?.orderId,
           orderNumber: payload.data?.orderNumber,
-          restaurantName: payload.data?.restaurantName,
+          requestId: payload.data?.requestId,
+          merchantId: payload.data?.merchantId,
+          restaurantName: payload.data?.restaurantName || payload.data?.merchantName,
           reason: payload.data?.reason,
           isRead: false,
           createdAt: new Date().toISOString(),
@@ -307,7 +309,9 @@ export const NotificationService = {
               body: d.body || d.message || '',
               orderId: d.orderId || '',
               orderNumber: d.orderNumber || '',
-              restaurantName: d.restaurantName || '',
+              requestId: d.requestId || '',
+              merchantId: d.merchantId || '',
+              restaurantName: d.restaurantName || d.merchantName || '',
               reason: d.reason || '',
               isRead: Boolean(d.isRead),
               createdAt: parseTimestampIso(d.createdAt),
@@ -340,6 +344,8 @@ export const NotificationService = {
     body: string;
     orderId?: string;
     orderNumber?: string;
+    requestId?: string;
+    merchantId?: string;
     restaurantName?: string;
     reason?: string;
   }): Promise<AdminNotification> {
@@ -354,6 +360,8 @@ export const NotificationService = {
       body: data.body,
       orderId: data.orderId || '',
       orderNumber: data.orderNumber || '',
+      requestId: data.requestId || '',
+      merchantId: data.merchantId || '',
       restaurantName: data.restaurantName || '',
       reason: data.reason || '',
       isRead: false,
@@ -375,6 +383,8 @@ export const NotificationService = {
             body: newNotif.body,
             orderId: newNotif.orderId,
             orderNumber: newNotif.orderNumber,
+            requestId: newNotif.requestId,
+            merchantId: newNotif.merchantId,
             restaurantName: newNotif.restaurantName,
             reason: newNotif.reason,
             isRead: false,

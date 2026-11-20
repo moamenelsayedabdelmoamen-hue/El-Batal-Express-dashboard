@@ -68,7 +68,7 @@ export const DashboardPage: React.FC = () => {
       title: 'إجمالي التجار',
       value: stats?.totalRestaurants ?? 0,
       icon: UtensilsCrossed,
-      link: '/restaurants',
+      link: '/merchants',
       color: 'from-amber-500/20 to-amber-600/5',
       iconColor: 'text-amber-400',
       badge: `${stats?.activeRestaurants ?? 0} نشط`,
@@ -77,7 +77,7 @@ export const DashboardPage: React.FC = () => {
       title: 'التجار النشطون',
       value: stats?.activeRestaurants ?? 0,
       icon: Activity,
-      link: '/restaurants',
+      link: '/merchants',
       color: 'from-emerald-500/20 to-emerald-600/5',
       iconColor: 'text-emerald-400',
       badge: 'متصلون الآن',
@@ -249,7 +249,7 @@ export const DashboardPage: React.FC = () => {
           </Link>
 
           <Link
-            to="/restaurants"
+            to="/merchants"
             className="flex items-center justify-between p-3.5 rounded-2xl bg-zinc-900/80 hover:bg-zinc-800/80 border border-zinc-800 text-xs font-bold text-zinc-200 transition-colors group"
           >
             <div className="flex items-center gap-2.5">

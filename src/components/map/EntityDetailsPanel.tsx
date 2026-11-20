@@ -11,10 +11,12 @@ import {
   ShoppingBag,
   ExternalLink,
   ChevronLeft,
+  Crosshair,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { Restaurant, Captain, Order } from '../../types';
 import { isLocationFresh, formatDistanceArabic, haversineDistanceKm } from '../../utils/geoUtils';
+import { FirebaseImage } from '../common/FirebaseImage';
 
 interface EntityDetailsPanelProps {
   selectedRestaurant: Restaurant | null;
@@ -25,6 +27,7 @@ interface EntityDetailsPanelProps {
   activeOrders: Order[];
   onClose: () => void;
   onFindNearestCaptain: (restaurant: Restaurant) => void;
+  onStartPickingRestaurant?: (restaurant: Restaurant) => void;
 }
 
 export const EntityDetailsPanel: React.FC<EntityDetailsPanelProps> = ({
@@ -36,6 +39,7 @@ export const EntityDetailsPanel: React.FC<EntityDetailsPanelProps> = ({
   activeOrders,
   onClose,
   onFindNearestCaptain,
+  onStartPickingRestaurant,
 }) => {
   const navigate = useNavigate();
 
@@ -53,17 +57,27 @@ export const EntityDetailsPanel: React.FC<EntityDetailsPanelProps> = ({
       <div className="p-5 rounded-2xl bg-[#0d1017] border border-zinc-800 shadow-xl space-y-4 animate-in slide-in-from-top-2 duration-200">
         <div className="flex items-start justify-between gap-3 border-b border-zinc-800/80 pb-3">
           <div className="flex items-center gap-3">
-            <div className="w-12 h-12 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-400 flex items-center justify-center shrink-0">
-              {selectedRestaurant.logo ? (
-                <img
-                  src={selectedRestaurant.logo}
-                  alt={selectedRestaurant.name}
-                  className="w-full h-full object-cover rounded-xl"
-                />
-              ) : (
-                <Store className="w-6 h-6" />
-              )}
-            </div>
+            <FirebaseImage
+              src={selectedRestaurant.logoPath || selectedRestaurant.logo || selectedRestaurant.image}
+              fallbackStoragePaths={[
+                `merchants/${selectedRestaurant.id}/logo/logo.jpg`,
+                `merchants/${selectedRestaurant.id}/logo/logo.png`,
+                `restaurants/${selectedRestaurant.id}/logo/logo.jpg`,
+                `restaurants/${selectedRestaurant.id}/logo/logo.png`,
+                `merchants/${selectedRestaurant.id}/logo`,
+                `restaurants/${selectedRestaurant.id}/logo`,
+                `merchants/${selectedRestaurant.id}`,
+                `restaurants/${selectedRestaurant.id}`,
+                `logos/${selectedRestaurant.id}`,
+              ]}
+              alt={selectedRestaurant.name}
+              className="w-12 h-12 rounded-xl border border-amber-500/30"
+              fallbackContent={
+                <div className="w-full h-full bg-amber-500/10 text-amber-400 flex items-center justify-center">
+                  <Store className="w-6 h-6" />
+                </div>
+              }
+            />
             <div>
               <div className="flex items-center gap-2">
                 <h4 className="font-extrabold text-base text-zinc-100">
@@ -151,6 +165,16 @@ export const EntityDetailsPanel: React.FC<EntityDetailsPanelProps> = ({
 
         {/* Actions */}
         <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-zinc-800/80">
+          {!selectedRestaurant.coords && onStartPickingRestaurant && (
+            <button
+              type="button"
+              onClick={() => onStartPickingRestaurant(selectedRestaurant)}
+              className="py-2.5 px-4 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-extrabold text-xs shadow-lg shadow-emerald-500/20 transition-all flex items-center justify-center gap-2 cursor-pointer"
+            >
+              <Crosshair className="w-4 h-4" />
+              <span>تثبيت الموقع بالنقر على الخريطة</span>
+            </button>
+          )}
           <button
             type="button"
             onClick={() => onFindNearestCaptain(selectedRestaurant)}
@@ -177,7 +201,7 @@ export const EntityDetailsPanel: React.FC<EntityDetailsPanelProps> = ({
 
           <button
             type="button"
-            onClick={() => navigate(`/restaurants/${selectedRestaurant.id}/orders`)}
+            onClick={() => navigate(`/merchants/${selectedRestaurant.id}/orders`)}
             className="py-2.5 px-3 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-zinc-300 text-xs border border-zinc-800 transition-all"
             title="عرض سجل طلبات المطعم"
           >
@@ -201,17 +225,35 @@ export const EntityDetailsPanel: React.FC<EntityDetailsPanelProps> = ({
       <div className="p-5 rounded-2xl bg-[#0d1017] border border-zinc-800 shadow-xl space-y-4 animate-in slide-in-from-top-2 duration-200">
         <div className="flex items-start justify-between gap-3 border-b border-zinc-800/80 pb-3">
           <div className="flex items-center gap-3">
-            <div
-              className={`w-12 h-12 rounded-full flex items-center justify-center shrink-0 border-2 ${
+            <FirebaseImage
+              src={selectedCaptain.profileImage || selectedCaptain.photoURL}
+              fallbackStoragePaths={[
+                `captains/${selectedCaptain.id}/profile/profile.jpg`,
+                ...(selectedCaptain.raw?.uid ? [`captains/${selectedCaptain.raw.uid}/profile/profile.jpg`] : []),
+                ...(selectedCaptain.raw?.userId ? [`captains/${selectedCaptain.raw.userId}/profile/profile.jpg`] : []),
+              ]}
+              alt={selectedCaptain.name}
+              className={`w-12 h-12 rounded-full border-2 ${
                 isBusy
-                  ? 'bg-amber-600/20 text-amber-400 border-amber-500/40'
+                  ? 'border-amber-500/50'
                   : isAvailable
-                  ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40'
-                  : 'bg-zinc-800 text-zinc-400 border-zinc-700'
+                  ? 'border-emerald-500/50'
+                  : 'border-zinc-700'
               }`}
-            >
-              <Bike className="w-6 h-6" />
-            </div>
+              fallbackContent={
+                <div
+                  className={`w-full h-full flex items-center justify-center ${
+                    isBusy
+                      ? 'bg-amber-600/20 text-amber-400'
+                      : isAvailable
+                      ? 'bg-emerald-500/20 text-emerald-400'
+                      : 'bg-zinc-800 text-zinc-400'
+                  }`}
+                >
+                  <Bike className="w-6 h-6" />
+                </div>
+              }
+            />
             <div>
               <div className="flex items-center gap-2">
                 <h4 className="font-extrabold text-base text-zinc-100">

@@ -33,7 +33,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.reassignOrderOffer = exports.onOrderUpdatedDispatch = exports.onOrderCreatedDispatch = exports.resolveCaptainEmailByPhone = exports.expireDeliveryOffer = exports.confirmDelivery = exports.submitCustomerDeliveryDetails = exports.confirmPickup = exports.captainArrivedAtMerchant = exports.acceptOrder = void 0;
+exports.onManualSubscriptionRequestCreated = exports.updateManualSubscriptionSettings = exports.requestManualSubscriptionResubmission = exports.rejectManualSubscriptionRequest = exports.approveManualSubscriptionRequest = exports.reassignOrderOffer = exports.onOrderUpdatedDispatch = exports.onOrderCreatedDispatch = exports.resolveCaptainEmailByPhone = exports.expireDeliveryOffer = exports.confirmDelivery = exports.submitCustomerDeliveryDetails = exports.confirmPickup = exports.captainArrivedAtMerchant = exports.acceptOrder = void 0;
 const app_1 = require("firebase-admin/app");
 const firestore_1 = require("firebase-admin/firestore");
 const firebase_functions_1 = require("firebase-functions");
@@ -42,12 +42,15 @@ const firestore_2 = require("firebase-functions/v2/firestore");
 const https_1 = require("firebase-functions/v2/https");
 const tasks_1 = require("firebase-functions/v2/tasks");
 const firebaseAdapter_js_1 = require("./firebaseAdapter.js");
+const manualSubscriptionsService_js_1 = require("./manualSubscriptionsService.js");
 const ordersService_js_1 = require("./ordersService.js");
 const types_js_1 = require("./types.js");
 const validators_js_1 = require("./validators.js");
 (0, app_1.initializeApp)();
 (0, firebase_functions_1.setGlobalOptions)({ region: "us-central1", maxInstances: 10 });
-const service = new ordersService_js_1.OrderServerService((0, firebaseAdapter_js_1.createAdminDatabaseAdapter)((0, firestore_1.getFirestore)()), (0, firebaseAdapter_js_1.createAdminServerEffects)());
+const dbAdapter = (0, firebaseAdapter_js_1.createAdminDatabaseAdapter)((0, firestore_1.getFirestore)());
+const service = new ordersService_js_1.OrderServerService(dbAdapter, (0, firebaseAdapter_js_1.createAdminServerEffects)());
+const manualSubService = new manualSubscriptionsService_js_1.ManualSubscriptionsServerService(dbAdapter, (0, firebaseAdapter_js_1.createAdminManualSubscriptionEffects)());
 function mapError(err) {
     if (err instanceof https_1.HttpsError)
         return err;
@@ -219,6 +222,100 @@ exports.reassignOrderOffer = (0, tasks_1.onTaskDispatched)({
             error: err instanceof Error ? err.message : String(err),
         });
         throw err;
+    }
+});
+/**
+ * Callable 8: Server-authoritative approval of a manual Vodafone Cash subscription request.
+ * Atomically approves the request, activates subscriptions/{merchantId} & merchants/{merchantId},
+ * creates a single financial record in payments/, writes operation_logs, and notifies the merchant.
+ */
+exports.approveManualSubscriptionRequest = (0, https_1.onCall)({ region: "us-central1" }, async (request) => {
+    var _a;
+    try {
+        const payload = ((_a = request.data) !== null && _a !== void 0 ? _a : {});
+        return await manualSubService.approveManualSubscriptionRequest(request.auth
+            ? {
+                uid: request.auth.uid,
+                token: request.auth.token,
+            }
+            : undefined, payload);
+    }
+    catch (err) {
+        throw mapError(err);
+    }
+});
+/**
+ * Callable 9: Server-authoritative rejection of a manual Vodafone Cash subscription request.
+ * Records rejection reason and notifies the merchant without activating any subscription.
+ */
+exports.rejectManualSubscriptionRequest = (0, https_1.onCall)({ region: "us-central1" }, async (request) => {
+    var _a;
+    try {
+        const payload = ((_a = request.data) !== null && _a !== void 0 ? _a : {});
+        return await manualSubService.rejectManualSubscriptionRequest(request.auth
+            ? {
+                uid: request.auth.uid,
+                token: request.auth.token,
+            }
+            : undefined, payload);
+    }
+    catch (err) {
+        throw mapError(err);
+    }
+});
+/**
+ * Callable 10: Admin requests the merchant to re-upload a clearer Vodafone Cash receipt.
+ */
+exports.requestManualSubscriptionResubmission = (0, https_1.onCall)({ region: "us-central1" }, async (request) => {
+    var _a;
+    try {
+        const payload = ((_a = request.data) !== null && _a !== void 0 ? _a : {});
+        return await manualSubService.requestManualSubscriptionResubmission(request.auth
+            ? {
+                uid: request.auth.uid,
+                token: request.auth.token,
+            }
+            : undefined, payload);
+    }
+    catch (err) {
+        throw mapError(err);
+    }
+});
+/**
+ * Callable 11: Master-Admin-only update of Vodafone Cash wallet number, official pricing, and duration.
+ */
+exports.updateManualSubscriptionSettings = (0, https_1.onCall)({ region: "us-central1" }, async (request) => {
+    var _a;
+    try {
+        const payload = ((_a = request.data) !== null && _a !== void 0 ? _a : {});
+        return await manualSubService.updateManualSubscriptionSettings(request.auth
+            ? {
+                uid: request.auth.uid,
+                token: request.auth.token,
+            }
+            : undefined, payload);
+    }
+    catch (err) {
+        throw mapError(err);
+    }
+});
+/**
+ * Trigger 3: Notifies admins whenever a merchant submits a new manual subscription request.
+ */
+exports.onManualSubscriptionRequestCreated = (0, firestore_2.onDocumentCreated)({ document: "manual_subscription_requests/{requestId}", region: "us-central1" }, async (event) => {
+    var _a;
+    const requestId = event.params.requestId;
+    const data = (_a = event.data) === null || _a === void 0 ? void 0 : _a.data();
+    if (!data)
+        return;
+    try {
+        await manualSubService.handleNewManualSubscriptionRequest(requestId, data);
+    }
+    catch (err) {
+        logger.error("Failed to process new manual subscription request alert", {
+            requestId,
+            error: err instanceof Error ? err.message : String(err),
+        });
     }
 });
 //# sourceMappingURL=index.js.map

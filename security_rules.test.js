@@ -537,4 +537,134 @@ describe('El-Batal Express Real Firebase Emulator Security Audit (Firestore + St
       })
     );
   });
+
+  test('7. Manual Vodafone Cash subscriptions: merchant isolation, no self-approval/paid tampering, settings locked, private receipts', async () => {
+    const anonDb = testEnv.unauthenticatedContext().firestore();
+    const merch1Db = testEnv.authenticatedContext('merchant_1').firestore();
+    const merch2Db = testEnv.authenticatedContext('merchant_2').firestore();
+    const adminDb = testEnv.authenticatedContext('admin_1').firestore();
+    const merch1Storage = testEnv.authenticatedContext('merchant_1').storage(BUCKET_URL);
+    const merch2Storage = testEnv.authenticatedContext('merchant_2').storage(BUCKET_URL);
+    const adminStorage = testEnv.authenticatedContext('admin_1').storage(BUCKET_URL);
+
+    // Seed official config & an existing request via rules-disabled Admin context
+    await testEnv.withSecurityRulesDisabled(async (ctx) => {
+      const db = ctx.firestore();
+      await setDoc(doc(db, 'settings', 'manual_subscription_config'), {
+        vodafoneCashNumber: '01099887766',
+        walletHolderName: 'البطل إكسبريس',
+        isAcceptingSubscriptions: true,
+        durationDays: 30,
+      });
+      await setDoc(doc(db, 'manual_subscription_requests', 'req_resub'), {
+        merchantId: 'merchant_1',
+        planId: 'plan_2_captains',
+        amount: 400,
+        status: 'resubmission_requested',
+        paymentStatus: 'resubmission_requested',
+        receiptImagePath: 'subscription_receipts/merchant_1/old.jpg',
+      });
+      await setDoc(doc(db, 'merchants', 'merchant_1', 'notifications', 'n1'), {
+        type: 'subscription_approved',
+        title: 'تم التفعيل',
+        isRead: false,
+      });
+    });
+
+    // 1. Settings doc readable by signed-in users, NEVER directly writable by client (even admin -> Cloud Function only)
+    await assertFails(getDoc(doc(anonDb, 'settings', 'manual_subscription_config')));
+    await assertSucceeds(getDoc(doc(merch1Db, 'settings', 'manual_subscription_config')));
+    await assertFails(
+      updateDoc(doc(merch1Db, 'settings', 'manual_subscription_config'), {
+        vodafoneCashNumber: '01000000099',
+      })
+    );
+    await assertFails(
+      updateDoc(doc(adminDb, 'settings', 'manual_subscription_config'), {
+        vodafoneCashNumber: '01000000099',
+      })
+    );
+
+    // 2. Merchant 1 CAN create a pending request for self with pending_verification
+    await assertSucceeds(
+      setDoc(doc(merch1Db, 'manual_subscription_requests', 'req_m1_valid'), {
+        merchantId: 'merchant_1',
+        planId: 'plan_4_captains',
+        amount: 800,
+        status: 'pending',
+        paymentStatus: 'pending_verification',
+        receiptImagePath: 'subscription_receipts/merchant_1/r1.jpg',
+      })
+    );
+
+    // 3. Merchant 1 CANNOT self-approve or spoof another merchantId
+    await assertFails(
+      setDoc(doc(merch1Db, 'manual_subscription_requests', 'req_m1_hack'), {
+        merchantId: 'merchant_1',
+        planId: 'plan_4_captains',
+        amount: 800,
+        status: 'approved',
+        paymentStatus: 'paid',
+      })
+    );
+    await assertFails(
+      setDoc(doc(merch1Db, 'manual_subscription_requests', 'req_m1_spoof'), {
+        merchantId: 'merchant_2',
+        planId: 'plan_4_captains',
+        amount: 800,
+        status: 'pending',
+        paymentStatus: 'pending_verification',
+      })
+    );
+
+    // 4. Cross-merchant read is blocked; owning merchant & admin can read
+    await assertSucceeds(getDoc(doc(merch1Db, 'manual_subscription_requests', 'req_m1_valid')));
+    await assertSucceeds(getDoc(doc(adminDb, 'manual_subscription_requests', 'req_m1_valid')));
+    await assertFails(getDoc(doc(merch2Db, 'manual_subscription_requests', 'req_m1_valid')));
+
+    // 5. Merchant 1 can re-upload receipt ONLY when status == resubmission_requested (never directly set paid/approved)
+    await assertSucceeds(
+      updateDoc(doc(merch1Db, 'manual_subscription_requests', 'req_resub'), {
+        receiptImagePath: 'subscription_receipts/merchant_1/new.jpg',
+        status: 'pending',
+        paymentStatus: 'pending_verification',
+      })
+    );
+    await assertFails(
+      updateDoc(doc(merch1Db, 'manual_subscription_requests', 'req_m1_valid'), {
+        status: 'approved',
+        paymentStatus: 'paid',
+      })
+    );
+    await assertFails(deleteDoc(doc(merch1Db, 'manual_subscription_requests', 'req_m1_valid')));
+
+    // 6. operation_logs readable by admin, NOT writable from client
+    await assertFails(setDoc(doc(adminDb, 'operation_logs', 'fake_log'), { action: 'spoof' }));
+    await assertFails(setDoc(doc(merch1Db, 'operation_logs', 'fake_log'), { action: 'spoof' }));
+
+    // 7. Merchant notifications isolated to owning merchant (can mark isRead only)
+    await assertSucceeds(getDoc(doc(merch1Db, 'merchants', 'merchant_1', 'notifications', 'n1')));
+    await assertFails(getDoc(doc(merch2Db, 'merchants', 'merchant_1', 'notifications', 'n1')));
+    await assertSucceeds(
+      updateDoc(doc(merch1Db, 'merchants', 'merchant_1', 'notifications', 'n1'), { isRead: true })
+    );
+    await assertFails(
+      setDoc(doc(merch1Db, 'merchants', 'merchant_1', 'notifications', 'forged'), { title: 'fake' })
+    );
+
+    // 8. Storage: subscription_receipts/{merchantId} private to owning merchant & admin
+    await assertSucceeds(
+      uploadBytes(ref(merch1Storage, 'subscription_receipts/merchant_1/r1.jpg'), SAMPLE_JPEG_BYTES, {
+        contentType: 'image/jpeg',
+      })
+    );
+    await assertSucceeds(getBytes(ref(merch1Storage, 'subscription_receipts/merchant_1/r1.jpg')));
+    await assertSucceeds(getBytes(ref(adminStorage, 'subscription_receipts/merchant_1/r1.jpg')));
+    await assertFails(getBytes(ref(merch2Storage, 'subscription_receipts/merchant_1/r1.jpg')));
+    await assertFails(
+      uploadBytes(ref(merch2Storage, 'subscription_receipts/merchant_1/hack.jpg'), SAMPLE_JPEG_BYTES, {
+        contentType: 'image/jpeg',
+      })
+    );
+  });
 });

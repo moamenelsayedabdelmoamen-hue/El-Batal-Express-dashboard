@@ -20,6 +20,7 @@ import {
   Image as ImageIcon,
   MapPin,
   ExternalLink,
+  AlertTriangle,
 } from 'lucide-react';
 import { Restaurant, SubscriptionStatus, Order } from '../types';
 import { RestaurantService } from '../services/restaurantService';
@@ -52,6 +53,7 @@ export const RestaurantsPage: React.FC = () => {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
   const [uploadingLogo, setUploadingLogo] = useState(false);
+  const [storageAuthDenied, setStorageAuthDenied] = useState(false);
 
   // Form states for Add / Edit
   const [formData, setFormData] = useState({
@@ -69,6 +71,7 @@ export const RestaurantsPage: React.FC = () => {
 
   const fetchRestaurants = async () => {
     setLoading(true);
+    setStorageAuthDenied(false);
     try {
       const [resRestaurants, resOrders] = await Promise.all([
         RestaurantService.getAll(),
@@ -131,6 +134,41 @@ export const RestaurantsPage: React.FC = () => {
     });
   }, [restaurants, searchQuery, statusFilter, subscriptionFilter]);
 
+  const getMerchantLogoFallbacks = (restaurant: Restaurant): string[] => {
+    const candidateIds = Array.from(
+      new Set(
+        [
+          restaurant.id,
+          restaurant.ownerUid,
+          restaurant.raw?.uid,
+          restaurant.raw?.userId,
+          restaurant.raw?.merchantId,
+          restaurant.raw?.restaurantId,
+          restaurant.raw?.id,
+        ].filter((v): v is string => typeof v === 'string' && v.trim().length > 0)
+      )
+    );
+
+    const paths: string[] = [];
+    candidateIds.forEach((mid) => {
+      paths.push(`merchants/${mid}/logo/logo.jpg`);
+      paths.push(`merchants/${mid}/logo/logo.png`);
+      paths.push(`merchants/${mid}/logo.jpg`);
+      paths.push(`merchants/${mid}/logo.png`);
+      paths.push(`restaurants/${mid}/logo/logo.jpg`);
+      paths.push(`restaurants/${mid}/logo/logo.png`);
+      paths.push(`restaurants/${mid}/logo.jpg`);
+      paths.push(`restaurants/${mid}/logo.png`);
+      paths.push(`merchants/${mid}/logo`);
+      paths.push(`restaurants/${mid}/logo`);
+      paths.push(`merchants/${mid}`);
+      paths.push(`restaurants/${mid}`);
+      paths.push(`logos/${mid}`);
+      paths.push(`users/${mid}`);
+    });
+    return paths;
+  };
+
   const handleLogoFileChange = async (e: React.ChangeEvent<HTMLInputElement>, merchantId?: string) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -139,7 +177,7 @@ export const RestaurantsPage: React.FC = () => {
     try {
       const folderId = merchantId || `merchant_${Date.now()}`;
       const ext = file.name.split('.').pop() || 'png';
-      const storagePath = `merchants/${folderId}/logo_${Date.now()}.${ext}`;
+      const storagePath = `merchants/${folderId}/logo/logo_${Date.now()}.${ext}`;
       const downloadUrl = await uploadImageToFirebaseStorage(file, storagePath);
       setFormData((prev) => ({ ...prev, logo: downloadUrl }));
       success('تم رفع صورة اللوجو للتاجر بنجاح');
@@ -260,7 +298,7 @@ export const RestaurantsPage: React.FC = () => {
         isActive: true,
       });
     } catch (err) {
-      toastError('يجب إنشاء حساب التاجر من تطبيق التاجر حتى يرتبط المستند بمعرّف Firebase Authentication الصحيح.');
+      toastError('فشل إضافة التاجر');
     } finally {
       setActionLoading(false);
     }
@@ -388,6 +426,29 @@ export const RestaurantsPage: React.FC = () => {
         </div>
       </div>
 
+      {/* Firebase Storage Rules Notice when unauthorized */}
+      {storageAuthDenied && (
+        <div className="bg-amber-500/10 border border-amber-500/30 rounded-2xl p-4 flex items-start gap-3 text-xs text-amber-200">
+          <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+          <div>
+            <p className="font-extrabold text-amber-300 mb-1">
+              قواعد Firebase Storage تمنع قراءة بعض شعارات التجار (storage/unauthorized)
+            </p>
+            <p className="text-amber-200/80 leading-relaxed">
+              تأكد من نشر ملف <span className="font-mono text-white">storage.rules</span> المحدث في مشروع Firebase لتفعيل قراءة شعارات التجار من المسارات{' '}
+              <span className="font-mono text-white" dir="ltr">
+                merchants/&#123;merchantId&#125;/...
+              </span>{' '}
+              و{' '}
+              <span className="font-mono text-white" dir="ltr">
+                restaurants/&#123;merchantId&#125;/...
+              </span>
+              .
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Merchants Table */}
       <div className="bg-[#11141c] border border-zinc-800/90 rounded-3xl shadow-xl overflow-hidden">
         {loading ? (
@@ -435,11 +496,7 @@ export const RestaurantsPage: React.FC = () => {
                     restaurantOrdersCount[restaurant.id] ??
                     0;
 
-                  const storageFallbacks = [
-                    `merchants/${restaurant.id}`,
-                    `merchants/${restaurant.id}`,
-                    `users/${restaurant.id}`,
-                  ];
+                  const storageFallbacks = getMerchantLogoFallbacks(restaurant);
 
                   return (
                     <tr key={restaurant.id} className="hover:bg-zinc-900/40 transition-colors">
@@ -457,11 +514,16 @@ export const RestaurantsPage: React.FC = () => {
                       <td className="py-4 px-4">
                         <div className="flex items-center gap-2">
                           <FirebaseImage
-                            src={restaurant.logo || restaurant.image}
+                            src={restaurant.logoPath || restaurant.logo || restaurant.image}
                             fallbackStoragePaths={storageFallbacks}
                             alt={`لوجو ${restaurant.name}`}
                             className="w-11 h-11 rounded-2xl border border-amber-500/30 shadow-xs"
                             onClick={() => setViewingRestaurant(restaurant)}
+                            onErrorCode={(code) => {
+                              if (code === 'storage/unauthorized') {
+                                setStorageAuthDenied(true);
+                              }
+                            }}
                             fallbackContent={
                               <div className="w-full h-full bg-amber-500/10 text-amber-400 flex items-center justify-center font-black text-sm">
                                 {restaurant.name.charAt(0)}
@@ -515,23 +577,23 @@ export const RestaurantsPage: React.FC = () => {
                             <span className="text-[11px] text-zinc-500">لا يوجد رابط موقع</span>
                           )}
 
-                          {restaurant.coords ? (
+                          {(restaurant.coords || restaurant.locationUrl) && (
                             <button
                               type="button"
                               onClick={() =>
                                 navigate(`/live-map?restaurantId=${encodeURIComponent(restaurant.id)}`)
                               }
-                              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 text-[11px] font-bold transition-colors cursor-pointer"
+                              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-bold transition-colors cursor-pointer ${
+                                restaurant.coords
+                                  ? 'bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-emerald-400'
+                                  : 'bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 text-amber-300'
+                              }`}
                               title="تحديد موقع التاجر على الخرائط المباشرة"
                             >
                               <MapPin className="w-3.5 h-3.5 shrink-0" />
-                              <span>تحديد على الخريطة</span>
+                              <span>{restaurant.coords ? 'تحديد على الخريطة' : 'تثبيت على الخريطة'}</span>
                             </button>
-                          ) : restaurant.locationUrl ? (
-                            <span className="text-[10px] text-amber-400/90">
-                              رابط مباشر (بدون إحداثيات GPS)
-                            </span>
-                          ) : null}
+                          )}
                         </div>
                       </td>
 
@@ -634,13 +696,15 @@ export const RestaurantsPage: React.FC = () => {
 
             <div className="flex items-center gap-4 mb-6">
               <FirebaseImage
-                src={viewingRestaurant.logo || viewingRestaurant.image}
-                fallbackStoragePaths={[
-                  `merchants/${viewingRestaurant.id}`,
-                  `merchants/${viewingRestaurant.id}`,
-                ]}
+                src={viewingRestaurant.logoPath || viewingRestaurant.logo || viewingRestaurant.image}
+                fallbackStoragePaths={getMerchantLogoFallbacks(viewingRestaurant)}
                 alt={viewingRestaurant.name}
                 className="w-16 h-16 rounded-2xl border border-amber-500/30"
+                onErrorCode={(code) => {
+                  if (code === 'storage/unauthorized') {
+                    setStorageAuthDenied(true);
+                  }
+                }}
                 fallbackContent={
                   <div className="w-full h-full bg-amber-500/10 text-amber-400 flex items-center justify-center font-bold text-lg">
                     <Building2 className="w-7 h-7" />
@@ -649,7 +713,14 @@ export const RestaurantsPage: React.FC = () => {
               />
               <div>
                 <h3 className="text-lg font-black text-white">{viewingRestaurant.name}</h3>
-                <p className="text-xs text-zinc-400">معرف التاجر: {viewingRestaurant.id}</p>
+                <p className="text-xs text-zinc-400">
+                  معرف التاجر: <span className="font-mono">{viewingRestaurant.id}</span>
+                  {viewingRestaurant.sourceCollection && (
+                    <span className="mr-2 px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-300 font-mono text-[10px]">
+                      {viewingRestaurant.sourceCollection}
+                    </span>
+                  )}
+                </p>
               </div>
             </div>
 
@@ -678,6 +749,27 @@ export const RestaurantsPage: React.FC = () => {
                 <span className="text-zinc-500 block mb-1">حالة الاشتراك</span>
                 <StatusBadge status={viewingRestaurant.subscriptionStatus || 'Active'} type="subscription" />
               </div>
+              {(viewingRestaurant.subscriptionPlan || viewingRestaurant.subscriptionEndDate) && (
+                <div className="col-span-2 p-3.5 rounded-xl bg-zinc-900/80 border border-zinc-800 flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <span className="text-zinc-500 block mb-0.5">باقة الاشتراك</span>
+                    <span className="font-bold text-amber-400">
+                      {viewingRestaurant.subscriptionPlan ||
+                        (viewingRestaurant.captainsCount
+                          ? `${viewingRestaurant.captainsCount} كابتن`
+                          : 'الباقة القياسية')}
+                    </span>
+                  </div>
+                  {viewingRestaurant.subscriptionEndDate && (
+                    <div className="text-left">
+                      <span className="text-zinc-500 block mb-0.5">تاريخ الانتهاء</span>
+                      <span className="font-mono font-bold text-zinc-200">
+                        {new Date(viewingRestaurant.subscriptionEndDate).toLocaleDateString('ar-EG')}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
               <div className="col-span-2 p-3.5 rounded-xl bg-zinc-900/80 border border-zinc-800">
                 <span className="text-zinc-500 block mb-1">العنوان والموقع</span>
                 <span className="font-bold text-zinc-200">{viewingRestaurant.address || 'غير محدد'}</span>
@@ -698,7 +790,8 @@ export const RestaurantsPage: React.FC = () => {
                     </a>
                     {viewingRestaurant.coords && (
                       <span className="text-[11px] text-emerald-400 font-mono" dir="ltr">
-                        GPS: {viewingRestaurant.coords.lat.toFixed(6)}, {viewingRestaurant.coords.lng.toFixed(6)}
+                        GPS (محدد تلقائياً على الخريطة): {viewingRestaurant.coords.lat.toFixed(6)},{' '}
+                        {viewingRestaurant.coords.lng.toFixed(6)}
                       </span>
                     )}
                   </div>

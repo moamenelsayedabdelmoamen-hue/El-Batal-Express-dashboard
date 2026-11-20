@@ -173,7 +173,7 @@ export const LoginPage: React.FC = () => {
         </div>
 
         <div className="mt-6 flex flex-wrap items-center justify-center gap-x-4 gap-y-2 text-xs text-zinc-400">
-          <Link to="/" className="hover:text-amber-400 transition-colors">
+          <Link to="/home" className="hover:text-amber-400 transition-colors">
             الصفحة الرئيسية للمنصة
           </Link>
           <span aria-hidden="true">·</span>

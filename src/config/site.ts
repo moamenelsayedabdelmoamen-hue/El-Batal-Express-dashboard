@@ -11,8 +11,10 @@ export const SITE_CONFIG = {
   adminContactEmail: 'moamen.elsayed.abdelmoamen@gmail.com',
   // Support contact configured in Dashboard Settings (admin should verify/update before final submission)
   supportContactEmail: 'support@elbatalexpress.com',
+  publicUrl: 'https://elbatalexpress.web.app',
+  homeUrl: 'https://elbatalexpress.web.app/home',
   routes: {
-    home: '/',
+    home: '/home',
     privacyPolicy: '/privacy-policy',
     termsOfService: '/terms-of-service',
     login: '/login',
@@ -67,7 +69,7 @@ export function getPublicOrigin(): string {
   if (typeof window !== 'undefined' && window.location?.origin) {
     return window.location.origin;
   }
-  return 'https://YOUR_OWNED_DOMAIN';
+  return 'https://elbatalexpress.web.app';
 }
 
 export function getInitialPublicLang(): PublicLang {

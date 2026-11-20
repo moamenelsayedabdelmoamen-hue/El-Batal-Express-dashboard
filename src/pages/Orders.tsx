@@ -591,7 +591,7 @@ export const OrdersPage: React.FC = () => {
           </div>
           <div className="flex items-center gap-2.5 shrink-0">
             <button
-              onClick={() => navigate('/restaurants')}
+              onClick={() => navigate('/merchants')}
               className="px-3.5 py-2 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-zinc-300 hover:text-white border border-zinc-700 text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer shadow-xs"
             >
               <ArrowRight className="w-3.5 h-3.5" />

@@ -16,6 +16,7 @@ import { RestaurantsPage } from './pages/Restaurants';
 import { CaptainsPage } from './pages/Captains';
 import { OrdersPage } from './pages/Orders';
 import { SubscriptionsPage } from './pages/Subscriptions';
+import { SubscriptionRequestsPage } from './pages/SubscriptionRequests';
 import { PaymentsPage } from './pages/Payments';
 import { SettingsPage } from './pages/Settings';
 import { SendOrderPage } from './pages/SendOrder';
@@ -32,7 +33,8 @@ export default function App() {
           <NotificationProvider>
             <Routes>
               {/* Public Brand & Verification Routes (No Authentication Required) */}
-              <Route path="/" element={<LandingPage />} />
+              <Route path="/" element={<Navigate to="/home" replace />} />
+              <Route path="/home" element={<LandingPage />} />
               <Route path="/privacy-policy" element={<PrivacyPolicyPage />} />
               <Route path="/terms-of-service" element={<TermsOfServicePage />} />
 
@@ -47,10 +49,13 @@ export default function App() {
                   <Route path="/live-map" element={<LiveMapPage />} />
                   <Route path="/send-order" element={<SendOrderPage />} />
                   <Route path="/shifts" element={<CaptainShiftsPage />} />
-                  <Route path="/restaurants" element={<RestaurantsPage />} />
+                  <Route path="/merchants" element={<RestaurantsPage />} />
+                  <Route path="/merchants/:restaurantId/orders" element={<OrdersPage />} />
+                  <Route path="/restaurants" element={<Navigate to="/merchants" replace />} />
                   <Route path="/restaurants/:restaurantId/orders" element={<OrdersPage />} />
                   <Route path="/captains" element={<CaptainsPage />} />
                   <Route path="/orders" element={<OrdersPage />} />
+                  <Route path="/subscription-requests" element={<SubscriptionRequestsPage />} />
                   <Route path="/subscriptions" element={<SubscriptionsPage />} />
                   <Route path="/payments" element={<PaymentsPage />} />
                   <Route path="/sheets" element={<GoogleSheetsPage />} />
@@ -61,7 +66,7 @@ export default function App() {
               </Route>
 
               {/* Fallback redirects to public landing page */}
-              <Route path="*" element={<Navigate to="/" replace />} />
+              <Route path="*" element={<Navigate to="/home" replace />} />
             </Routes>
           </NotificationProvider>
         </ToastProvider>

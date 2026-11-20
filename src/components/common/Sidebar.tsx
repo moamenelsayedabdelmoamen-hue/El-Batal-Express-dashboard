@@ -16,8 +16,10 @@ import {
   FileSpreadsheet,
   Compass,
   CalendarClock,
+  ClipboardCheck,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
+import { useNotifications } from '../../contexts/NotificationContext';
 import appLogo from '../../assets/images/elbatal_logo_1789202744301.jpg';
 import { AdminProfileModal } from './AdminProfileModal';
 
@@ -28,16 +30,28 @@ interface SidebarProps {
 
 export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
   const { user, logout } = useAuth();
+  const { pendingSubscriptionRequestsCount } = useNotifications();
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
 
-  const navItems = [
+  const navItems: Array<{
+    to: string;
+    label: string;
+    icon: React.ComponentType<{ className?: string }>;
+    badgeCount?: number;
+  }> = [
     { to: '/dashboard', label: 'لوحة التحكم الرئيسية', icon: LayoutDashboard },
     { to: '/live-map', label: 'الخريطة المباشرة', icon: Compass },
     { to: '/send-order', label: 'إرسال طلب لكابتن', icon: Send },
     { to: '/shifts', label: 'إدارة شفتات العمل', icon: CalendarClock },
-    { to: '/restaurants', label: 'التجار', icon: UtensilsCrossed },
+    { to: '/merchants', label: 'التجار', icon: UtensilsCrossed },
     { to: '/captains', label: 'الكباتن', icon: Bike },
     { to: '/orders', label: 'الطلبات', icon: ShoppingBag },
+    {
+      to: '/subscription-requests',
+      label: 'طلبات الاشتراك',
+      icon: ClipboardCheck,
+      badgeCount: pendingSubscriptionRequestsCount,
+    },
     { to: '/subscriptions', label: 'الاشتراكات', icon: CreditCard },
     { to: '/payments', label: 'المدفوعات', icon: Receipt },
     { to: '/sheets', label: 'تصدير وجداول البيانات', icon: FileSpreadsheet },
@@ -115,16 +129,30 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
                 }
               >
                 {({ isActive }) => (
-                  <div className="flex items-center gap-3.5 min-w-0">
-                    <Icon
-                      className={`w-5 h-5 shrink-0 transition-colors ${
-                        isActive
-                          ? 'text-zinc-950'
-                          : 'text-zinc-400 group-hover:text-amber-400'
-                      }`}
-                    />
-                    <span className="truncate">{item.label}</span>
-                  </div>
+                  <>
+                    <div className="flex items-center gap-3.5 min-w-0">
+                      <Icon
+                        className={`w-5 h-5 shrink-0 transition-colors ${
+                          isActive
+                            ? 'text-zinc-950'
+                            : 'text-zinc-400 group-hover:text-amber-400'
+                        }`}
+                      />
+                      <span className="truncate">{item.label}</span>
+                    </div>
+                    {typeof item.badgeCount === 'number' && item.badgeCount > 0 && (
+                      <span
+                        className={`min-w-[22px] h-5 px-1.5 rounded-md text-[11px] font-mono font-black tabular-nums flex items-center justify-center shrink-0 ${
+                          isActive
+                            ? 'bg-zinc-950 text-amber-400'
+                            : 'bg-rose-500 text-white'
+                        }`}
+                        aria-label={`${item.badgeCount} طلب بانتظار المراجعة`}
+                      >
+                        {item.badgeCount > 99 ? '99+' : item.badgeCount}
+                      </span>
+                    )}
+                  </>
                 )}
               </NavLink>
             );

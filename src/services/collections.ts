@@ -5,9 +5,8 @@
  */
 
 export const COLLECTIONS = {
+  RESTAURANTS: 'restaurants',
   MERCHANTS: 'merchants',
-  /** @deprecated Use MERCHANTS. Kept as an in-code alias while UI terminology is migrated. */
-  RESTAURANTS: 'merchants',
   CAPTAINS: 'captains',
   ORDERS: 'orders',
   ORDER_CODES: 'order_codes',
@@ -18,6 +17,8 @@ export const COLLECTIONS = {
   USERS: 'users',
   CAPTAIN_SCHEDULES: 'captain_schedules',
   NOTIFICATIONS: 'notifications',
+  MANUAL_SUBSCRIPTION_REQUESTS: 'manual_subscription_requests',
+  OPERATION_LOGS: 'operation_logs',
 } as const;
 
 export const RESTAURANT_FIELDS = {

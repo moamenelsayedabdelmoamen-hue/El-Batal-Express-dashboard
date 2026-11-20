@@ -6,8 +6,9 @@ import {
 import { db, isFirebaseConfigured, handleFirestoreError, OperationType } from '../firebase/config';
 import { COLLECTIONS } from './collections';
 import { Captain, Restaurant, Order, NearestCaptainResult, CaptainStatus } from '../types';
-import { extractCoordinates, extractLocationUrl, haversineDistanceKm, formatDistanceArabic, isLocationFresh } from '../utils/geoUtils';
+import { extractCoordinates, haversineDistanceKm, formatDistanceArabic, isLocationFresh } from '../utils/geoUtils';
 import { extractOrderCode, fetchOrderCodesLookup, normalizeOrderStatus } from './orderService';
+import { mapDocToRestaurant } from './restaurantService';
 
 /**
  * Service for managing real-time map data from Firestore.
@@ -33,10 +34,39 @@ export function mapDocToLiveCaptain(id: string, data: Record<string, any>): Capt
 
   const isOnline = Boolean(data.isOnline ?? (status === 'available' || status === 'busy'));
 
+  const rawImageCandidates = [
+    data.profileImagePath,
+    data.profile_image_path,
+    data.profileImage,
+    data.profile_image,
+    data.profileImageUrl,
+    data.profile_image_url,
+    data.photoURL,
+    data.photoUrl,
+    data.photo_url,
+    data.avatarUri,
+    data.avatar_uri,
+    data.avatarUrl,
+    data.avatar,
+    data.image,
+    data.imageUrl,
+  ];
+  const profileImage =
+    rawImageCandidates.find(
+      (v): v is string =>
+        typeof v === 'string' &&
+        v.trim().length > 0 &&
+        !v.trim().toLowerCase().startsWith('content://') &&
+        !v.trim().toLowerCase().startsWith('file://') &&
+        !v.trim().toLowerCase().startsWith('android.resource://')
+    )?.trim() || '';
+
   return {
     id,
     name: data.name || data.fullName || data.captainName || 'كابتن بدون اسم',
     phone: data.phone || data.mobile || data.phoneNumber || '—',
+    profileImage,
+    photoURL: profileImage,
     status,
     isOnline,
     ordersCount: typeof data.ordersCount === 'number' ? data.ordersCount : (data.totalDeliveries || 0),
@@ -51,32 +81,14 @@ export function mapDocToLiveCaptain(id: string, data: Record<string, any>): Capt
   };
 }
 
-export function mapDocToLiveRestaurant(id: string, data: Record<string, any>): Restaurant {
-  const coords = extractCoordinates(data);
-  const locationUrl = extractLocationUrl(data, coords);
-
+export function mapDocToLiveRestaurant(
+  id: string,
+  data: Record<string, any>,
+  sourceCollection: 'restaurants' | 'merchants' = 'restaurants'
+): Restaurant {
   return {
-    id,
-    name: data.name || data.nameAr || data.merchantName || data.restaurantName || data.title || 'بدون اسم',
-    category: data.category || data.cuisine || data.type || 'عام',
-    phone: data.phone || data.phoneNumber || data.contact || '—',
-    rating: typeof data.rating === 'number' ? data.rating : 5.0,
-    subscriptionStatus: data.subscriptionStatus || 'Active',
-    isActive: typeof data.isActive === 'boolean' ? data.isActive : (data.status === 'active' || data.status === 'نشط'),
-    createdAt: data.createdAt?.toDate ? data.createdAt.toDate().toISOString() : (data.createdAt || new Date().toISOString()),
-    address:
-      data.address ||
-      data.locationAddress ||
-      data.addressAr ||
-      data.locationName ||
-      (typeof data.location === 'string' && !data.location.startsWith('http') ? data.location : '—'),
-    ownerEmail: data.ownerEmail || data.email || '—',
-    logo: data.logo || data.logoUrl || data.image || data.imageUrl || data.avatar,
-    location: data.location || data.coordinates || data.coords,
-    locationUrl,
-    coords,
-    status: data.status || (data.isActive ? 'active' : 'inactive'),
-    raw: data,
+    ...mapDocToRestaurant(id, data, sourceCollection),
+    status: data.status || (data.isActive !== false ? 'active' : 'inactive'),
   };
 }
 
@@ -118,7 +130,8 @@ export const LiveMapService = {
   },
 
   /**
-   * Subscribes to the restaurants collection in real-time.
+   * Subscribes to both restaurants and merchants collections in real-time
+   * and automatically extracts coordinates from merchant location links.
    */
   subscribeRestaurants(
     onUpdate: (restaurants: Restaurant[]) => void,
@@ -129,16 +142,48 @@ export const LiveMapService = {
       return () => {};
     }
 
-    try {
-      const q = query(collection(db, COLLECTIONS.RESTAURANTS));
-      const unsubscribe = onSnapshot(
-        q,
-        (snapshot) => {
-          const list: Restaurant[] = [];
-          snapshot.forEach((docSnap) => {
-            list.push(mapDocToLiveRestaurant(docSnap.id, docSnap.data()));
+    const restDocs = new Map<string, Record<string, any>>();
+    const merchDocs = new Map<string, Record<string, any>>();
+
+    const emitMerged = () => {
+      const merged = new Map<string, { data: Record<string, any>; source: 'restaurants' | 'merchants' }>();
+      restDocs.forEach((d, id) => merged.set(id, { data: d, source: 'restaurants' }));
+      merchDocs.forEach((d, id) => {
+        const existing = merged.get(id);
+        if (existing) {
+          const combined: Record<string, any> = { ...d, ...existing.data };
+          Object.entries(d).forEach(([k, v]) => {
+            if (
+              v !== undefined &&
+              v !== null &&
+              v !== '' &&
+              (combined[k] === undefined || combined[k] === null || combined[k] === '')
+            ) {
+              combined[k] = v;
+            }
           });
-          onUpdate(list);
+          merged.set(id, { data: combined, source: existing.source });
+        } else {
+          merged.set(id, { data: d, source: 'merchants' });
+        }
+      });
+
+      const list: Restaurant[] = [];
+      merged.forEach((entry, id) => {
+        list.push(mapDocToLiveRestaurant(id, entry.data, entry.source));
+      });
+      onUpdate(list);
+    };
+
+    try {
+      const unsubRest = onSnapshot(
+        query(collection(db, COLLECTIONS.RESTAURANTS)),
+        (snapshot) => {
+          restDocs.clear();
+          snapshot.forEach((docSnap) => {
+            restDocs.set(docSnap.id, docSnap.data());
+          });
+          emitMerged();
         },
         (error) => {
           handleFirestoreError(error, OperationType.GET, COLLECTIONS.RESTAURANTS);
@@ -146,7 +191,29 @@ export const LiveMapService = {
         }
       );
 
-      return unsubscribe;
+      let unsubMerch = () => {};
+      try {
+        unsubMerch = onSnapshot(
+          query(collection(db, COLLECTIONS.MERCHANTS)),
+          (snapshot) => {
+            merchDocs.clear();
+            snapshot.forEach((docSnap) => {
+              merchDocs.set(docSnap.id, docSnap.data());
+            });
+            emitMerged();
+          },
+          () => {
+            // Silently ignore if 'merchants' collection is empty or rules not yet deployed
+          }
+        );
+      } catch {
+        // ignore
+      }
+
+      return () => {
+        unsubRest();
+        unsubMerch();
+      };
     } catch (err) {
       handleFirestoreError(err, OperationType.GET, COLLECTIONS.RESTAURANTS);
       return () => {};

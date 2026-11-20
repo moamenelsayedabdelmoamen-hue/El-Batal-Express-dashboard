@@ -21,11 +21,11 @@ export const PublicLayout: React.FC<PublicLayoutProps> = ({
 
   const navLinks = [
     {
-      to: '/',
+      to: '/home',
       label: isAr ? 'الرئيسية' : 'Home',
     },
     {
-      to: '/#ecosystem',
+      to: '/home#ecosystem',
       label: isAr ? 'منظومة العمل' : 'Platform',
       isAnchor: true,
     },
@@ -55,7 +55,7 @@ export const PublicLayout: React.FC<PublicLayoutProps> = ({
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-8">
           {/* Zone 1: Clean single-line Brand Wordmark */}
           <Link
-            to="/"
+            to="/home"
             className="flex items-center gap-3 whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 rounded-lg"
           >
             <img
@@ -203,7 +203,7 @@ export const PublicLayout: React.FC<PublicLayoutProps> = ({
               </h3>
               <ul className="space-y-2 text-xs sm:text-sm text-zinc-400">
                 <li>
-                  <Link to="/" className="hover:text-amber-400 transition-colors">
+                  <Link to="/home" className="hover:text-amber-400 transition-colors">
                     {isAr ? 'الصفحة الرئيسية' : 'Home Page'}
                   </Link>
                 </li>

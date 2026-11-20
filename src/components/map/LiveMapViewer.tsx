@@ -11,12 +11,15 @@ interface LiveMapViewerProps {
   selectedRestaurantId?: string | null;
   selectedCaptainId?: string | null;
   selectedOrderId?: string | null;
+  focusTrigger?: number;
+  pickingForRestaurant?: Restaurant | null;
   filter: 'all' | 'restaurants' | 'captains' | 'available' | 'busy' | 'trips';
   showOfflineCaptains?: boolean;
   onSelectRestaurant: (restaurant: Restaurant) => void;
   onSelectCaptain: (captain: Captain) => void;
   onSelectOrder: (order: Order) => void;
   onFindNearestCaptain: (restaurant: Restaurant) => void;
+  onMapClickCoordinates?: (lat: number, lng: number) => void;
 }
 
 export const LiveMapViewer: React.FC<LiveMapViewerProps> = ({
@@ -26,12 +29,15 @@ export const LiveMapViewer: React.FC<LiveMapViewerProps> = ({
   selectedRestaurantId,
   selectedCaptainId,
   selectedOrderId,
+  focusTrigger = 0,
+  pickingForRestaurant = null,
   filter,
   showOfflineCaptains = false,
   onSelectRestaurant,
   onSelectCaptain,
   onSelectOrder,
   onFindNearestCaptain,
+  onMapClickCoordinates,
 }) => {
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
@@ -41,18 +47,23 @@ export const LiveMapViewer: React.FC<LiveMapViewerProps> = ({
   const captainMarkersRef = useRef<Map<string, L.Marker>>(new Map());
   const tripLinesRef = useRef<Map<string, L.Polyline>>(new Map());
 
+  const isPickingRef = useRef(Boolean(pickingForRestaurant));
+  isPickingRef.current = Boolean(pickingForRestaurant);
+
   // Store callbacks in refs to prevent re-attaching listeners on every render
   const callbacksRef = useRef({
     onSelectRestaurant,
     onSelectCaptain,
     onSelectOrder,
     onFindNearestCaptain,
+    onMapClickCoordinates,
   });
   callbacksRef.current = {
     onSelectRestaurant,
     onSelectCaptain,
     onSelectOrder,
     onFindNearestCaptain,
+    onMapClickCoordinates,
   };
 
   // 1. Initialize Leaflet Map once
@@ -76,6 +87,12 @@ export const LiveMapViewer: React.FC<LiveMapViewerProps> = ({
 
     // Zoom control at bottom right for ergonomic RTL layout
     L.control.zoom({ position: 'bottomright' }).addTo(map);
+
+    map.on('click', (e: L.LeafletMouseEvent) => {
+      if (isPickingRef.current && callbacksRef.current.onMapClickCoordinates) {
+        callbacksRef.current.onMapClickCoordinates(e.latlng.lat, e.latlng.lng);
+      }
+    });
 
     mapInstanceRef.current = map;
 
@@ -333,8 +350,11 @@ export const LiveMapViewer: React.FC<LiveMapViewerProps> = ({
     });
   }, [activeOrders, restaurants, captains, filter, selectedOrderId]);
 
-  // Center on Selected Item when selection or coordinates first become available
+  // Center on Selected Item when selection or coordinates first become available,
+  // or auto-fit all plotted merchants & captains once merchants/captains load.
   const lastCenteredKeyRef = useRef<string | null>(null);
+  const hasAutoFittedRef = useRef(false);
+  const hasFittedWithRestaurantsRef = useRef(false);
 
   useEffect(() => {
     const map = mapInstanceRef.current;
@@ -343,25 +363,55 @@ export const LiveMapViewer: React.FC<LiveMapViewerProps> = ({
     if (selectedRestaurantId) {
       const rest = restaurants.find((r) => r.id === selectedRestaurantId);
       if (rest?.coords) {
-        const key = `rest:${rest.id}`;
+        const key = `rest:${rest.id}:${focusTrigger}`;
         if (lastCenteredKeyRef.current !== key) {
           lastCenteredKeyRef.current = key;
-          map.flyTo([rest.coords.lat, rest.coords.lng], 16, { duration: 1.1 });
+          hasAutoFittedRef.current = true;
+          hasFittedWithRestaurantsRef.current = true;
+          map.flyTo([rest.coords.lat, rest.coords.lng], 16, { duration: 1.0 });
         }
       }
     } else if (selectedCaptainId) {
       const capt = captains.find((c) => c.id === selectedCaptainId);
       if (capt?.coords) {
-        const key = `capt:${capt.id}`;
+        const key = `capt:${capt.id}:${focusTrigger}`;
         if (lastCenteredKeyRef.current !== key) {
           lastCenteredKeyRef.current = key;
-          map.flyTo([capt.coords.lat, capt.coords.lng], 15, { duration: 1.1 });
+          hasAutoFittedRef.current = true;
+          map.flyTo([capt.coords.lat, capt.coords.lng], 15, { duration: 1.0 });
         }
       }
     } else {
       lastCenteredKeyRef.current = null;
+      const restPoints: [number, number][] = [];
+      restaurants.forEach((r) => {
+        if (r.coords) restPoints.push([r.coords.lat, r.coords.lng]);
+      });
+
+      const captPoints: [number, number][] = [];
+      captains.forEach((c) => {
+        if (c.coords && (showOfflineCaptains || c.status !== 'offline' || c.isOnline)) {
+          captPoints.push([c.coords.lat, c.coords.lng]);
+        }
+      });
+
+      const shouldFitInitially = !hasAutoFittedRef.current && (restPoints.length > 0 || captPoints.length > 0);
+      const shouldRefitForRestaurants = !hasFittedWithRestaurantsRef.current && restPoints.length > 0;
+
+      if (shouldFitInitially || shouldRefitForRestaurants) {
+        const points = [...restPoints, ...captPoints];
+        hasAutoFittedRef.current = true;
+        if (restPoints.length > 0) {
+          hasFittedWithRestaurantsRef.current = true;
+        }
+        if (points.length === 1) {
+          map.setView(points[0], 15);
+        } else if (points.length > 1) {
+          map.fitBounds(L.latLngBounds(points), { padding: [50, 50], maxZoom: 15 });
+        }
+      }
     }
-  }, [selectedRestaurantId, selectedCaptainId, restaurants, captains]);
+  }, [selectedRestaurantId, selectedCaptainId, focusTrigger, restaurants, captains, showOfflineCaptains]);
 
   // Method to Fit Bounds of all visible entities
   const handleCenterAll = () => {
@@ -389,7 +439,13 @@ export const LiveMapViewer: React.FC<LiveMapViewerProps> = ({
   };
 
   return (
-    <div className="relative w-full h-[640px] md:h-[720px] rounded-2xl overflow-hidden border border-zinc-800/80 shadow-2xl bg-[#090b10]">
+    <div
+      className={`relative w-full h-[640px] md:h-[720px] rounded-2xl overflow-hidden border shadow-2xl bg-[#090b10] ${
+        pickingForRestaurant
+          ? 'border-amber-400 ring-2 ring-amber-500/40 [&_.leaflet-container]:!cursor-crosshair'
+          : 'border-zinc-800/80'
+      }`}
+    >
       {/* Map DOM node */}
       <div ref={mapContainerRef} className="w-full h-full z-0" />
 
@@ -399,7 +455,7 @@ export const LiveMapViewer: React.FC<LiveMapViewerProps> = ({
           type="button"
           onClick={handleCenterAll}
           className="px-3.5 py-2 rounded-xl bg-zinc-900/90 hover:bg-zinc-800 text-amber-400 hover:text-amber-300 font-bold text-xs border border-amber-500/30 hover:border-amber-400 shadow-xl backdrop-blur-md transition-all flex items-center gap-2 cursor-pointer"
-          title="عرض جميع المطاعم والكباتن على الخريطة"
+          title="عرض جميع التجار والكباتن على الخريطة"
         >
           <Maximize2 className="w-4 h-4" />
           <span>تركيز على الكل</span>
@@ -414,7 +470,7 @@ export const LiveMapViewer: React.FC<LiveMapViewerProps> = ({
         <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-zinc-300">
           <div className="flex items-center gap-2">
             <span className="w-3 h-3 rounded-md bg-amber-500 shrink-0"></span>
-            <span>مطعم مسجل</span>
+            <span>تاجر مسجل</span>
           </div>
           <div className="flex items-center gap-2">
             <span className="w-3 h-3 rounded-full bg-emerald-500 shrink-0 animate-pulse"></span>

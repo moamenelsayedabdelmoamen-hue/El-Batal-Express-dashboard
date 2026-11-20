@@ -10,8 +10,10 @@ import {HttpsError, onCall} from "firebase-functions/v2/https";
 import {onTaskDispatched} from "firebase-functions/v2/tasks";
 import {
   createAdminDatabaseAdapter,
+  createAdminManualSubscriptionEffects,
   createAdminServerEffects,
 } from "./firebaseAdapter.js";
+import {ManualSubscriptionsServerService} from "./manualSubscriptionsService.js";
 import {OrderServerService} from "./ordersService.js";
 import {DomainHttpsError, ReassignTaskPayload} from "./types.js";
 import {readNormalizedOrderStatus} from "./validators.js";
@@ -19,9 +21,14 @@ import {readNormalizedOrderStatus} from "./validators.js";
 initializeApp();
 setGlobalOptions({region: "us-central1", maxInstances: 10});
 
+const dbAdapter = createAdminDatabaseAdapter(getFirestore());
 const service = new OrderServerService(
-  createAdminDatabaseAdapter(getFirestore()),
+  dbAdapter,
   createAdminServerEffects()
+);
+const manualSubService = new ManualSubscriptionsServerService(
+  dbAdapter,
+  createAdminManualSubscriptionEffects()
 );
 
 function mapError(err: unknown): HttpsError {
@@ -226,3 +233,119 @@ export const reassignOrderOffer = onTaskDispatched(
     }
   }
 );
+
+/**
+ * Callable 8: Server-authoritative approval of a manual Vodafone Cash subscription request.
+ * Atomically approves the request, activates subscriptions/{merchantId} & merchants/{merchantId},
+ * creates a single financial record in payments/, writes operation_logs, and notifies the merchant.
+ */
+export const approveManualSubscriptionRequest = onCall(
+  {region: "us-central1"},
+  async (request) => {
+    try {
+      const payload = (request.data ?? {}) as Record<string, unknown>;
+      return await manualSubService.approveManualSubscriptionRequest(
+        request.auth
+          ? {
+            uid: request.auth.uid,
+            token: request.auth.token as Record<string, unknown>,
+          }
+          : undefined,
+        payload
+      );
+    } catch (err) {
+      throw mapError(err);
+    }
+  }
+);
+
+/**
+ * Callable 9: Server-authoritative rejection of a manual Vodafone Cash subscription request.
+ * Records rejection reason and notifies the merchant without activating any subscription.
+ */
+export const rejectManualSubscriptionRequest = onCall(
+  {region: "us-central1"},
+  async (request) => {
+    try {
+      const payload = (request.data ?? {}) as Record<string, unknown>;
+      return await manualSubService.rejectManualSubscriptionRequest(
+        request.auth
+          ? {
+            uid: request.auth.uid,
+            token: request.auth.token as Record<string, unknown>,
+          }
+          : undefined,
+        payload
+      );
+    } catch (err) {
+      throw mapError(err);
+    }
+  }
+);
+
+/**
+ * Callable 10: Admin requests the merchant to re-upload a clearer Vodafone Cash receipt.
+ */
+export const requestManualSubscriptionResubmission = onCall(
+  {region: "us-central1"},
+  async (request) => {
+    try {
+      const payload = (request.data ?? {}) as Record<string, unknown>;
+      return await manualSubService.requestManualSubscriptionResubmission(
+        request.auth
+          ? {
+            uid: request.auth.uid,
+            token: request.auth.token as Record<string, unknown>,
+          }
+          : undefined,
+        payload
+      );
+    } catch (err) {
+      throw mapError(err);
+    }
+  }
+);
+
+/**
+ * Callable 11: Master-Admin-only update of Vodafone Cash wallet number, official pricing, and duration.
+ */
+export const updateManualSubscriptionSettings = onCall(
+  {region: "us-central1"},
+  async (request) => {
+    try {
+      const payload = (request.data ?? {}) as Record<string, unknown>;
+      return await manualSubService.updateManualSubscriptionSettings(
+        request.auth
+          ? {
+            uid: request.auth.uid,
+            token: request.auth.token as Record<string, unknown>,
+          }
+          : undefined,
+        payload
+      );
+    } catch (err) {
+      throw mapError(err);
+    }
+  }
+);
+
+/**
+ * Trigger 3: Notifies admins whenever a merchant submits a new manual subscription request.
+ */
+export const onManualSubscriptionRequestCreated = onDocumentCreated(
+  {document: "manual_subscription_requests/{requestId}", region: "us-central1"},
+  async (event) => {
+    const requestId = event.params.requestId;
+    const data = event.data?.data() as Record<string, unknown> | undefined;
+    if (!data) return;
+    try {
+      await manualSubService.handleNewManualSubscriptionRequest(requestId, data);
+    } catch (err) {
+      logger.error("Failed to process new manual subscription request alert", {
+        requestId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+);
+

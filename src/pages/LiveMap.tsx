@@ -6,30 +6,35 @@ import {
   Store,
   Navigation,
   Search,
-  Filter,
-  RefreshCw,
   Eye,
   EyeOff,
   Activity,
-  Phone,
-  Clock,
-  ArrowUpRight,
-  ShieldCheck,
   Compass,
+  ExternalLink,
+  CheckCircle2,
+  Crosshair,
+  X,
 } from 'lucide-react';
 import { LiveMapViewer } from '../components/map/LiveMapViewer';
 import { NearestCaptainsModal } from '../components/map/NearestCaptainsModal';
 import { EntityDetailsPanel } from '../components/map/EntityDetailsPanel';
 import { LiveMapService } from '../services/liveMapService';
+import { RestaurantService } from '../services/restaurantService';
 import { Restaurant, Captain, Order } from '../types';
+import { Coordinates } from '../utils/geoUtils';
+import { resolveMapUrlToCoordinates } from '../utils/mapLinkResolver';
+import { useToast } from '../contexts/ToastContext';
 
 export const LiveMapPage: React.FC = () => {
   const [searchParams] = useSearchParams();
-  const [restaurants, setRestaurants] = useState<Restaurant[]>([]);
+  const { success, error: toastError } = useToast();
+
+  const [rawRestaurants, setRawRestaurants] = useState<Restaurant[]>([]);
+  const [resolvedCoordsMap, setResolvedCoordsMap] = useState<Record<string, Coordinates>>({});
   const [captains, setCaptains] = useState<Captain[]>([]);
   const [activeOrders, setActiveOrders] = useState<Order[]>([]);
 
-  const [isLoading, setIsLoading] = useState(true);
+  const [, setIsLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [filter, setFilter] = useState<'all' | 'restaurants' | 'captains' | 'available' | 'busy' | 'trips'>('all');
   const [showOfflineCaptains, setShowOfflineCaptains] = useState(false);
@@ -38,9 +43,17 @@ export const LiveMapPage: React.FC = () => {
   const [selectedRestaurant, setSelectedRestaurant] = useState<Restaurant | null>(null);
   const [selectedCaptain, setSelectedCaptain] = useState<Captain | null>(null);
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
+  const [focusTrigger, setFocusTrigger] = useState(0);
+
+  // Interactive click-to-pin mode for merchants with short map links lacking lat/lng
+  const [pickingForRestaurant, setPickingForRestaurant] = useState<Restaurant | null>(null);
+  const [savingPin, setSavingPin] = useState(false);
 
   // Modal for Nearest Captains
   const [nearestModalRestaurant, setNearestModalRestaurant] = useState<Restaurant | null>(null);
+
+  // Track which merchant links have already been queued for async resolution
+  const attemptedResolveRef = useRef<Set<string>>(new Set());
 
   // 1. Subscribe to real-time Firestore collections
   useEffect(() => {
@@ -59,7 +72,7 @@ export const LiveMapPage: React.FC = () => {
 
     const unsubRestaurants = LiveMapService.subscribeRestaurants(
       (data) => {
-        setRestaurants(data);
+        setRawRestaurants(data);
         setIsLoading(false);
       },
       (err) => {
@@ -83,6 +96,44 @@ export const LiveMapPage: React.FC = () => {
       unsubOrders();
     };
   }, []);
+
+  // Automatically resolve merchant location links that don't yet have inline numeric coordinates
+  useEffect(() => {
+    let cancelled = false;
+    const candidates = rawRestaurants.filter(
+      (r) => !r.coords && (r.locationUrl || (r.address && r.address !== '—'))
+    );
+
+    candidates.forEach(async (rest) => {
+      const attemptKey = `${rest.id}:${rest.locationUrl || ''}:${rest.address || ''}`;
+      if (attemptedResolveRef.current.has(attemptKey)) return;
+      attemptedResolveRef.current.add(attemptKey);
+
+      const coords = await resolveMapUrlToCoordinates(rest.locationUrl, rest.address);
+      if (!cancelled && coords) {
+        setResolvedCoordsMap((prev) => ({
+          ...prev,
+          [rest.id]: coords,
+        }));
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [rawRestaurants]);
+
+  // Merge synchronously extracted coordinates and async resolved coordinates
+  const restaurants = useMemo<Restaurant[]>(() => {
+    return rawRestaurants.map((r) => {
+      if (r.coords) return r;
+      const resolved = resolvedCoordsMap[r.id];
+      if (resolved) {
+        return { ...r, coords: resolved };
+      }
+      return r;
+    });
+  }, [rawRestaurants, resolvedCoordsMap]);
 
   // Auto-select restaurant when navigated from Merchants page (/live-map?restaurantId=...)
   const restaurantQueryParam = searchParams.get('restaurantId') || searchParams.get('restaurant');
@@ -108,13 +159,23 @@ export const LiveMapPage: React.FC = () => {
         setSelectedCaptain(null);
         setSelectedOrder(null);
         setFilter((prev) => (prev === 'all' || prev === 'restaurants' ? prev : 'all'));
+        setFocusTrigger((n) => n + 1);
       } else if (selectedRestaurant?.id === matched.id) {
         setSelectedRestaurant(matched);
       }
     }
   }, [restaurantQueryParam, restaurants, selectedRestaurant?.id]);
 
-  // 2. Computed Live Statistics
+  // Keep selectedRestaurant synchronized when its coordinates resolve or update in real time
+  useEffect(() => {
+    if (!selectedRestaurant) return;
+    const latest = restaurants.find((r) => r.id === selectedRestaurant.id);
+    if (latest && latest !== selectedRestaurant) {
+      setSelectedRestaurant(latest);
+    }
+  }, [restaurants, selectedRestaurant]);
+
+  // 2. Computed Live Statistics & Merchant Location Lists
   const stats = useMemo(() => {
     const restaurantsWithGps = restaurants.filter((r) => r.coords).length;
     const onlineCaptains = captains.filter((c) => c.isOnline || c.status === 'available' || c.status === 'busy');
@@ -132,6 +193,16 @@ export const LiveMapPage: React.FC = () => {
       activeTripsCount,
     };
   }, [restaurants, captains, activeOrders]);
+
+  const plottedMerchants = useMemo(
+    () => restaurants.filter((r) => Boolean(r.coords)),
+    [restaurants]
+  );
+
+  const merchantsNeedingPin = useMemo(
+    () => restaurants.filter((r) => !r.coords && Boolean(r.locationUrl)),
+    [restaurants]
+  );
 
   // 3. Filtered Search Results
   const searchResults = useMemo(() => {
@@ -163,12 +234,14 @@ export const LiveMapPage: React.FC = () => {
     setSelectedRestaurant(restaurant);
     setSelectedCaptain(null);
     setSelectedOrder(null);
+    setFocusTrigger((n) => n + 1);
   };
 
   const handleSelectCaptain = (captain: Captain) => {
     setSelectedCaptain(captain);
     setSelectedRestaurant(null);
     setSelectedOrder(null);
+    setFocusTrigger((n) => n + 1);
   };
 
   const handleSelectOrder = (order: Order) => {
@@ -181,6 +254,29 @@ export const LiveMapPage: React.FC = () => {
     setNearestModalRestaurant(restaurant);
   };
 
+  const handleMapClickCoordinates = async (lat: number, lng: number) => {
+    if (!pickingForRestaurant || savingPin) return;
+    setSavingPin(true);
+    const target = pickingForRestaurant;
+    try {
+      const coords = { lat, lng };
+      await RestaurantService.update(target.id, {
+        sourceCollection: target.sourceCollection,
+        coords,
+        locationUrl: target.locationUrl || `https://www.google.com/maps?q=${lat},${lng}`,
+      });
+      setResolvedCoordsMap((prev) => ({ ...prev, [target.id]: coords }));
+      setPickingForRestaurant(null);
+      setSelectedRestaurant({ ...target, coords });
+      setFocusTrigger((n) => n + 1);
+      success(`تم تحديد وحفظ موقع "${target.name}" على الخريطة بنجاح`);
+    } catch {
+      toastError('تعذر حفظ موقع التاجر على الخريطة');
+    } finally {
+      setSavingPin(false);
+    }
+  };
+
   return (
     <div className="space-y-5 animate-in fade-in duration-300">
       {/* Top Header & Real-time Indicator */}
@@ -190,7 +286,7 @@ export const LiveMapPage: React.FC = () => {
             <Compass className="w-6 h-6" />
           </div>
           <div>
-            <div className="flex items-center gap-2.5">
+            <div className="flex items-center gap-2.5 flex-wrap">
               <h2 className="text-xl font-extrabold text-zinc-100 tracking-wide">
                 الخريطة الحية والمواقع (Live Map)
               </h2>
@@ -200,7 +296,7 @@ export const LiveMapPage: React.FC = () => {
               </span>
             </div>
             <p className="text-xs text-zinc-400 mt-1">
-              متابعة مواقع الكباتن والمطاعم والرحلات النشطة جغرافياً وتحديد أقرب كابتن متاح عبر OpenStreetMap و Leaflet
+              متابعة مواقع التجار والكباتن والرحلات النشطة وتحديد موقع أي تاجر مباشرة من رابط موقعه الجغرافي
             </p>
           </div>
         </div>
@@ -231,7 +327,7 @@ export const LiveMapPage: React.FC = () => {
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
         <div className="p-3.5 rounded-xl bg-[#0d1017] border border-zinc-800/80 shadow-md">
           <div className="flex items-center justify-between">
-            <span className="text-xs text-zinc-400 font-bold">المطاعم على الخريطة</span>
+            <span className="text-xs text-zinc-400 font-bold">التجار على الخريطة</span>
             <Store className="w-4 h-4 text-amber-400" />
           </div>
           <div className="mt-2 flex items-baseline gap-1.5">
@@ -304,7 +400,7 @@ export const LiveMapPage: React.FC = () => {
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="بحث سريع باسم المطعم، اسم الكابتن، أو رقم الهاتف..."
+            placeholder="بحث سريع باسم التاجر، اسم الكابتن، أو رقم الهاتف..."
             className="w-full pl-4 pr-10 py-2.5 rounded-xl bg-zinc-900/80 border border-zinc-800 text-xs text-zinc-100 placeholder-zinc-500 focus:outline-hidden focus:border-amber-500/50"
           />
           {searchQuery && (
@@ -332,9 +428,11 @@ export const LiveMapPage: React.FC = () => {
                   <div className="flex items-center gap-2">
                     <Store className="w-3.5 h-3.5 text-amber-400" />
                     <span className="font-bold">{rest.name}</span>
-                    <span className="text-[10px] text-zinc-400">({rest.category || 'مطعم'})</span>
+                    <span className="text-[10px] text-zinc-400">({rest.category || 'تاجر'})</span>
                   </div>
-                  <span className="text-[10px] text-amber-400">عرض على الخريطة ←</span>
+                  <span className="text-[10px] text-amber-400">
+                    {rest.coords ? 'عرض على الخريطة ←' : 'تثبيت على الخريطة ←'}
+                  </span>
                 </button>
               ))}
 
@@ -383,7 +481,7 @@ export const LiveMapPage: React.FC = () => {
                 : 'bg-zinc-900 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800'
             }`}
           >
-            المطاعم
+            التجار ({plottedMerchants.length})
           </button>
 
           <button
@@ -424,6 +522,111 @@ export const LiveMapPage: React.FC = () => {
         </div>
       </div>
 
+      {/* Plotted Merchants & Quick Pin Bar */}
+      {(plottedMerchants.length > 0 || merchantsNeedingPin.length > 0) && (
+        <div className="p-4 rounded-2xl bg-[#0d1017] border border-zinc-800/80 space-y-3 shadow-md">
+          {plottedMerchants.length > 0 && (
+            <div>
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <div className="flex items-center gap-2 text-xs font-extrabold text-zinc-200">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                  <span>التجار المحددين تلقائياً على الخريطة ({plottedMerchants.length})</span>
+                </div>
+                <span className="text-[11px] text-zinc-500">اضغط على اسم التاجر للانتقال مباشرة إلى موقعه</span>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {plottedMerchants.map((merchant) => {
+                  const isActive = selectedRestaurant?.id === merchant.id;
+                  return (
+                    <button
+                      key={merchant.id}
+                      type="button"
+                      onClick={() => handleSelectRestaurant(merchant)}
+                      className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
+                        isActive
+                          ? 'bg-amber-500 text-zinc-950 border-amber-400 shadow-md shadow-amber-500/20'
+                          : 'bg-zinc-900/90 hover:bg-zinc-800 text-zinc-200 border-zinc-800 hover:border-amber-500/40'
+                      }`}
+                    >
+                      <MapPin className={`w-3.5 h-3.5 ${isActive ? 'text-zinc-950' : 'text-amber-400'}`} />
+                      <span>{merchant.name}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {merchantsNeedingPin.length > 0 && (
+            <div className="pt-2 border-t border-zinc-800/80">
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <div className="flex items-center gap-2 text-xs font-extrabold text-amber-300">
+                  <Crosshair className="w-4 h-4 text-amber-400" />
+                  <span>تجار بروابط مختصرة تحتاج تحديد الموقع على الخريطة ({merchantsNeedingPin.length})</span>
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {merchantsNeedingPin.map((merchant) => (
+                  <div
+                    key={merchant.id}
+                    className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs bg-amber-500/10 border border-amber-500/30 text-amber-200"
+                  >
+                    <span className="font-bold">{merchant.name}</span>
+                    {merchant.locationUrl && (
+                      <a
+                        href={merchant.locationUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 text-sky-400 hover:text-sky-300 underline"
+                        title="فتح رابط الموقع الأصلي في خرائط جوجل"
+                      >
+                        <ExternalLink className="w-3 h-3" />
+                        <span>فتح الرابط</span>
+                      </a>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPickingForRestaurant(merchant);
+                        setSelectedRestaurant(merchant);
+                      }}
+                      className="px-2 py-0.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-zinc-950 font-extrabold text-[11px] cursor-pointer"
+                    >
+                      تحديد بالنقر على الخريطة
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Map Pin Picking Banner */}
+      {pickingForRestaurant && (
+        <div className="p-4 rounded-2xl bg-amber-500/15 border border-amber-400/50 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+          <div className="flex items-center gap-2.5 text-amber-200">
+            <Crosshair className="w-5 h-5 text-amber-400 animate-pulse shrink-0" />
+            <div>
+              <p className="font-extrabold text-amber-300">
+                وضع تحديد الموقع المباشر للتاجر: «{pickingForRestaurant.name}»
+              </p>
+              <p className="text-amber-100/80">
+                انقر الآن على موقع التاجر في الخريطة بالأسفل ليتم تثبيته وحفظ الإحداثيات في قاعدة البيانات فوراً.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setPickingForRestaurant(null)}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-zinc-200 font-bold border border-zinc-700 shrink-0 cursor-pointer"
+          >
+            <X className="w-3.5 h-3.5" />
+            <span>إلغاء التحديد</span>
+          </button>
+        </div>
+      )}
+
       {/* Main Interactive Map Viewer */}
       <LiveMapViewer
         restaurants={restaurants}
@@ -434,10 +637,13 @@ export const LiveMapPage: React.FC = () => {
         selectedRestaurantId={selectedRestaurant?.id}
         selectedCaptainId={selectedCaptain?.id}
         selectedOrderId={selectedOrder?.id}
+        focusTrigger={focusTrigger}
+        pickingForRestaurant={pickingForRestaurant}
         onSelectRestaurant={handleSelectRestaurant}
         onSelectCaptain={handleSelectCaptain}
         onSelectOrder={handleSelectOrder}
         onFindNearestCaptain={handleOpenNearestModal}
+        onMapClickCoordinates={handleMapClickCoordinates}
       />
 
       {/* Floating or Docked Entity Details Panel */}
@@ -454,6 +660,7 @@ export const LiveMapPage: React.FC = () => {
           setSelectedOrder(null);
         }}
         onFindNearestCaptain={handleOpenNearestModal}
+        onStartPickingRestaurant={(merchant) => setPickingForRestaurant(merchant)}
       />
 
       {/* Nearest Captains Modal */}

@@ -6,10 +6,20 @@ service firebase.storage {
       return request.auth != null;
     }
 
-    // Trusted DB-backed admin check (never trusts spoofable client fields)
+    // Trusted DB-backed or token-verified admin check (matches firestore.rules)
     function isAdmin() {
-      return isAuthenticated() &&
-        firestore.exists(/databases/(default)/documents/admins/$(request.auth.uid));
+      return isAuthenticated() && (
+        firestore.exists(/databases/(default)/documents/admins/$(request.auth.uid)) ||
+        (
+          'email' in request.auth.token &&
+          request.auth.token.email in [
+            'moamen.elsayed.abdelmoamen@gmail.com',
+            'admin@elbatalexpress.com'
+          ]
+        ) ||
+        ('role' in request.auth.token && request.auth.token.role == 'admin') ||
+        ('admin' in request.auth.token && request.auth.token.admin == true)
+      );
     }
 
     // Trusted DB-backed merchant account check
@@ -123,8 +133,10 @@ service firebase.storage {
       );
 
       allow create, update: if isAuthenticated()
-        && request.auth.uid == captainId
-        && !isMerchantAccount()
+        && (
+          (request.auth.uid == captainId && !isMerchantAccount()) ||
+          isAdmin()
+        )
         && isValidImageUpload();
 
       allow delete: if isAdmin();
@@ -185,7 +197,58 @@ service firebase.storage {
       allow delete: if isAdmin();
     }
 
-    // 4. Default zero-trust deny for all other paths
+    // 4. Merchant & Restaurant Logos: merchants/{merchantId}/**, restaurants/{merchantId}/**, logos/**
+    // - Read: Authenticated users only (never unauthenticated public access)
+    // - Write: Owning merchant or admin with validated image upload
+    match /merchants/{merchantId}/{allFiles=**} {
+      allow read: if isAuthenticated();
+      allow create, update: if isAuthenticated()
+        && (request.auth.uid == merchantId || isAdmin())
+        && isValidImageUpload();
+      allow delete: if isAdmin();
+    }
+
+    match /restaurants/{merchantId}/{allFiles=**} {
+      allow read: if isAuthenticated();
+      allow create, update: if isAuthenticated()
+        && (request.auth.uid == merchantId || isAdmin())
+        && isValidImageUpload();
+      allow delete: if isAdmin();
+    }
+
+    match /logos/{allFiles=**} {
+      allow read: if isAuthenticated();
+      allow create, update: if isAdmin() && isValidImageUpload();
+      allow delete: if isAdmin();
+    }
+
+    // 4.5 Manual Vodafone Cash Subscription Receipts:
+    // - Strictly private: ONLY the owning merchant or an admin can read the transfer receipt.
+    // - Upload: ONLY the owning merchant (verified merchant account + valid image MIME & <=10MB).
+    // - Delete: Admin only.
+    match /subscription_receipts/{merchantId}/{allFiles=**} {
+      allow read: if isAuthenticated() && (
+        request.auth.uid == merchantId || isAdmin()
+      );
+      allow create, update: if isAuthenticated()
+        && isMerchantAccount()
+        && request.auth.uid == merchantId
+        && isValidImageUpload();
+      allow delete: if isAdmin();
+    }
+
+    match /manual_subscription_receipts/{merchantId}/{allFiles=**} {
+      allow read: if isAuthenticated() && (
+        request.auth.uid == merchantId || isAdmin()
+      );
+      allow create, update: if isAuthenticated()
+        && isMerchantAccount()
+        && request.auth.uid == merchantId
+        && isValidImageUpload();
+      allow delete: if isAdmin();
+    }
+
+    // 5. Default zero-trust deny for all other paths
     match /{allPaths=**} {
       allow read, write: if false;
     }

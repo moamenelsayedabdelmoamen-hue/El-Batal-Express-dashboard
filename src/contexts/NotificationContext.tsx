@@ -16,6 +16,7 @@ import { extractOrderCode } from '../services/orderService';
 interface NotificationContextValue {
   notifications: AdminNotification[];
   unreadCount: number;
+  pendingSubscriptionRequestsCount: number;
   fcmPermission: NotificationPermission | 'unsupported';
   fcmToken: string | null;
   soundEnabled: boolean;
@@ -66,6 +67,7 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
     }
   });
   const [activeBannerAlert, setActiveBannerAlert] = useState<AdminNotification | null>(null);
+  const [pendingSubscriptionRequestsCount, setPendingSubscriptionRequestsCount] = useState<number>(0);
 
   const soundEnabledRef = useRef(soundEnabled);
   useEffect(() => {
@@ -77,6 +79,9 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
   const isInitialOrdersSnapshotRef = useRef<boolean>(true);
   // Track orders we already alerted for unassigned delay
   const alertedStalledOrderIdsRef = useRef<Set<string>>(new Set());
+  // Track already-seen manual subscription request IDs
+  const knownSubRequestIdsRef = useRef<Set<string>>(new Set());
+  const isInitialSubRequestsSnapshotRef = useRef<boolean>(true);
 
   const handleIncomingNotification = useCallback(
     (notif: AdminNotification, showToastAndSound = true) => {
@@ -92,7 +97,9 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
         if (soundEnabledRef.current) {
           playAlertChime(notif.type);
         }
-        showBrowserNotification(notif.title, notif.body, '/orders');
+        const targetUrl =
+          notif.type === 'manual_subscription_request' ? '/subscription-requests' : '/orders';
+        showBrowserNotification(notif.title, notif.body, targetUrl);
 
         if (notif.type === 'captain_assignment_failed') {
           toastError(`${notif.title}: ${notif.body}`);
@@ -240,6 +247,68 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
     }
   }, [authLoading, user, notifyNewOrder, notifyCaptainAssignmentFailed]);
 
+  // 3. Real-time Firestore Watcher on `manual_subscription_requests` for live sidebar counter & admin alerts
+  useEffect(() => {
+    if (authLoading || !user || !isFirebaseConfigured || !auth?.currentUser) {
+      setPendingSubscriptionRequestsCount(0);
+      return;
+    }
+
+    try {
+      const colRef = collection(db, COLLECTIONS.MANUAL_SUBSCRIPTION_REQUESTS);
+      const unsubscribe = onSnapshot(
+        colRef,
+        (snapshot) => {
+          let pendingCount = 0;
+          snapshot.docs.forEach((d) => {
+            const st = String(d.data()?.status || 'pending').trim().toLowerCase();
+            if (st === 'pending' || st === 'under_review' || st === 'pending_review') {
+              pendingCount += 1;
+            }
+          });
+          setPendingSubscriptionRequestsCount(pendingCount);
+
+          if (isInitialSubRequestsSnapshotRef.current) {
+            snapshot.docs.forEach((d) => knownSubRequestIdsRef.current.add(d.id));
+            isInitialSubRequestsSnapshotRef.current = false;
+            return;
+          }
+
+          snapshot.docChanges().forEach((change) => {
+            if (change.type === 'added' && !knownSubRequestIdsRef.current.has(change.doc.id)) {
+              knownSubRequestIdsRef.current.add(change.doc.id);
+              const d = change.doc.data() || {};
+              const st = String(d.status || 'pending').trim().toLowerCase();
+              if (st === 'pending' || st === 'under_review' || st === 'pending_review') {
+                const merchantName = String(d.merchantName || d.restaurantName || 'تاجر');
+                const planName = String(d.planName || d.plan || 'باقة اشتراك');
+                const amount = Number(d.amount || d.price || 0);
+                NotificationService.createNotification({
+                  id: `manual_sub_req_${change.doc.id}`,
+                  type: 'manual_subscription_request',
+                  title: `طلب اشتراك فودافون كاش جديد — ${merchantName}`,
+                  body: `أرسل التاجر "${merchantName}" إيصال تحويل بمبلغ ${amount} ج.م لباقة "${planName}" بانتظار المراجعة.`,
+                  requestId: change.doc.id,
+                  merchantId: String(d.merchantId || ''),
+                  restaurantName: merchantName,
+                }).then((notif) => {
+                  handleIncomingNotification(notif, true);
+                });
+              }
+            }
+          });
+        },
+        () => {
+          // ignore snapshot permission/offline hiccups
+        }
+      );
+
+      return () => unsubscribe();
+    } catch {
+      return;
+    }
+  }, [authLoading, user, handleIncomingNotification]);
+
   const enableFcmPush = async () => {
     const res = await NotificationService.requestPermissionAndRegisterToken();
     setFcmPermission(res.permission);
@@ -306,6 +375,7 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
       value={{
         notifications,
         unreadCount,
+        pendingSubscriptionRequestsCount,
         fcmPermission,
         fcmToken,
         soundEnabled,

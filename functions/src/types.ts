@@ -139,3 +139,46 @@ export interface CaptainCandidate {
   lng: number;
   distanceKm: number;
 }
+
+export interface CallableAuthContext {
+  uid?: string;
+  token?: Record<string, unknown>;
+}
+
+export interface MerchantSubscriptionFcmPayload {
+  merchantId: string;
+  fcmToken: string;
+  requestId: string;
+  eventType:
+    | "subscription_approved"
+    | "subscription_rejected"
+    | "subscription_resubmission_requested";
+  title: string;
+  body: string;
+  planId?: string;
+  planName?: string;
+  maxCaptains?: number;
+  reason?: string;
+  dedupeKey: string;
+}
+
+export interface AdminManualSubFcmPayload {
+  requestId: string;
+  merchantId: string;
+  merchantName: string;
+  planName: string;
+  amount: number;
+  tokens: string[];
+}
+
+export interface ManualSubscriptionEffectsPort {
+  now(): number;
+  sentinels: SentinelFactory;
+  sendMerchantSubscriptionNotification(
+    payload: MerchantSubscriptionFcmPayload
+  ): Promise<void>;
+  sendAdminNewManualRequestNotification(
+    payload: AdminManualSubFcmPayload
+  ): Promise<void>;
+}
+

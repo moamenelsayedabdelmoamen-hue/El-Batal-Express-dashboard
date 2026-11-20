@@ -13,6 +13,7 @@ import {
   X,
   ArrowLeft,
   Sparkles,
+  ClipboardCheck,
 } from 'lucide-react';
 import { useNotifications } from '../../contexts/NotificationContext';
 import { AdminNotification } from '../../types';
@@ -33,7 +34,9 @@ export const NotificationCenter: React.FC = () => {
   } = useNotifications();
 
   const [isOpen, setIsOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState<'all' | 'new_order' | 'captain_assignment_failed'>('all');
+  const [activeTab, setActiveTab] = useState<
+    'all' | 'new_order' | 'manual_subscription_request' | 'captain_assignment_failed'
+  >('all');
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -67,6 +70,10 @@ export const NotificationCenter: React.FC = () => {
   const handleOpenNotificationOrder = (notif: AdminNotification) => {
     markAsRead(notif.id);
     setIsOpen(false);
+    if (notif.type === 'manual_subscription_request') {
+      navigate('/subscription-requests');
+      return;
+    }
     if (notif.restaurantName && notif.restaurantName !== 'نظام البطل إكسبريس') {
       navigate(`/orders?restaurant=${encodeURIComponent(notif.restaurantName)}`);
     } else {
@@ -195,8 +202,19 @@ export const NotificationCenter: React.FC = () => {
               </button>
               <button
                 type="button"
+                onClick={() => setActiveTab('manual_subscription_request')}
+                className={`px-2 py-1 rounded-lg font-bold transition-colors ${
+                  activeTab === 'manual_subscription_request'
+                    ? 'bg-amber-500 text-zinc-950'
+                    : 'text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                اشتراكات ({notifications.filter((n) => n.type === 'manual_subscription_request').length})
+              </button>
+              <button
+                type="button"
                 onClick={() => setActiveTab('captain_assignment_failed')}
-                className={`px-2.5 py-1 rounded-lg font-bold transition-colors ${
+                className={`px-2 py-1 rounded-lg font-bold transition-colors ${
                   activeTab === 'captain_assignment_failed'
                     ? 'bg-rose-500 text-white'
                     : 'text-zinc-400 hover:text-zinc-200'
@@ -243,6 +261,7 @@ export const NotificationCenter: React.FC = () => {
             ) : (
               filteredList.map((notif) => {
                 const isFailed = notif.type === 'captain_assignment_failed';
+                const isManualSub = notif.type === 'manual_subscription_request';
                 return (
                   <div
                     key={notif.id}
@@ -251,7 +270,9 @@ export const NotificationCenter: React.FC = () => {
                       !notif.isRead
                         ? isFailed
                           ? 'bg-rose-500/10 hover:bg-rose-500/15'
-                          : 'bg-amber-500/5 hover:bg-zinc-900/80'
+                          : isManualSub
+                            ? 'bg-amber-500/10 hover:bg-amber-500/15'
+                            : 'bg-amber-500/5 hover:bg-zinc-900/80'
                         : 'hover:bg-zinc-900/50 opacity-80'
                     }`}
                   >
@@ -259,11 +280,15 @@ export const NotificationCenter: React.FC = () => {
                       className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 border ${
                         isFailed
                           ? 'bg-rose-500/15 border-rose-500/30 text-rose-400'
-                          : 'bg-emerald-500/15 border-emerald-500/30 text-emerald-400'
+                          : isManualSub
+                            ? 'bg-amber-500/15 border-amber-500/30 text-amber-400'
+                            : 'bg-emerald-500/15 border-emerald-500/30 text-emerald-400'
                       }`}
                     >
                       {isFailed ? (
                         <AlertTriangle className="w-4 h-4" />
+                      ) : isManualSub ? (
+                        <ClipboardCheck className="w-4 h-4" />
                       ) : (
                         <ShoppingBag className="w-4 h-4" />
                       )}
@@ -273,12 +298,12 @@ export const NotificationCenter: React.FC = () => {
                       <div className="flex items-center justify-between gap-2">
                         <span
                           className={`text-xs font-black truncate ${
-                            isFailed ? 'text-rose-300' : 'text-zinc-100'
+                            isFailed ? 'text-rose-300' : isManualSub ? 'text-amber-300' : 'text-zinc-100'
                           }`}
                         >
                           {notif.title}
                         </span>
-                        <span className="text-[10px] font-mono text-zinc-500 shrink-0">
+                        <span className="text-[10px] font-mono text-zinc-500 shrink-0 tabular-nums">
                           {formatTimeAgo(notif.createdAt)}
                         </span>
                       </div>
@@ -287,17 +312,23 @@ export const NotificationCenter: React.FC = () => {
 
                       <div className="mt-2 flex items-center justify-between">
                         <span
-                          className={`text-[10px] font-bold px-2 py-0.5 rounded-md ${
+                          className={`text-[10px] font-bold ${
                             isFailed
-                              ? 'bg-rose-500/20 text-rose-300'
-                              : 'bg-emerald-500/20 text-emerald-300'
+                              ? 'text-rose-300'
+                              : isManualSub
+                                ? 'text-amber-300'
+                                : 'text-emerald-300'
                           }`}
                         >
-                          {isFailed ? 'تعثر تعيين كابتن' : 'طلب جديد'}
+                          {isFailed
+                            ? 'تعثر تعيين كابتن'
+                            : isManualSub
+                              ? 'طلب اشتراك فودافون كاش'
+                              : 'طلب جديد'}
                         </span>
 
                         <span className="inline-flex items-center gap-1 text-[11px] font-bold text-amber-400 hover:underline">
-                          <span>متابعة الطلب</span>
+                          <span>{isManualSub ? 'مراجعة الطلب' : 'متابعة الطلب'}</span>
                           <ArrowLeft className="w-3 h-3" />
                         </span>
                       </div>
@@ -324,6 +355,7 @@ export const InDashboardAlertBanner: React.FC = () => {
   if (!activeBannerAlert) return null;
 
   const isFailed = activeBannerAlert.type === 'captain_assignment_failed';
+  const isManualSub = activeBannerAlert.type === 'manual_subscription_request';
 
   return (
     <div className="px-4 sm:px-6 lg:px-8 pt-3 max-w-7xl w-full mx-auto">
@@ -331,7 +363,9 @@ export const InDashboardAlertBanner: React.FC = () => {
         className={`rounded-2xl p-3.5 sm:p-4 border shadow-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-all ${
           isFailed
             ? 'bg-gradient-to-r from-rose-950/90 via-[#1a1118] to-[#11141c] border-rose-500/50 text-rose-100'
-            : 'bg-gradient-to-r from-emerald-950/90 via-[#101c1a] to-[#11141c] border-emerald-500/50 text-emerald-100'
+            : isManualSub
+              ? 'bg-gradient-to-r from-amber-950/90 via-[#1c1710] to-[#11141c] border-amber-500/50 text-amber-100'
+              : 'bg-gradient-to-r from-emerald-950/90 via-[#101c1a] to-[#11141c] border-emerald-500/50 text-emerald-100'
         }`}
       >
         <div className="flex items-start sm:items-center gap-3">
@@ -339,24 +373,36 @@ export const InDashboardAlertBanner: React.FC = () => {
             className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 border ${
               isFailed
                 ? 'bg-rose-500/20 border-rose-500/40 text-rose-400'
-                : 'bg-emerald-500/20 border-emerald-500/40 text-emerald-400'
+                : isManualSub
+                  ? 'bg-amber-500/20 border-amber-500/40 text-amber-400'
+                  : 'bg-emerald-500/20 border-emerald-500/40 text-emerald-400'
             }`}
           >
             {isFailed ? (
-              <AlertTriangle className="w-5 h-5 animate-pulse" />
+              <AlertTriangle className="w-5 h-5" />
+            ) : isManualSub ? (
+              <ClipboardCheck className="w-5 h-5" />
             ) : (
-              <Sparkles className="w-5 h-5 animate-pulse" />
+              <Sparkles className="w-5 h-5" />
             )}
           </div>
 
           <div>
             <div className="flex items-center gap-2 flex-wrap">
               <span
-                className={`text-[10px] font-black px-2 py-0.5 rounded-full ${
-                  isFailed ? 'bg-rose-500 text-white' : 'bg-emerald-500 text-zinc-950'
+                className={`text-[10px] font-black px-2 py-0.5 rounded-md ${
+                  isFailed
+                    ? 'bg-rose-500 text-white'
+                    : isManualSub
+                      ? 'bg-amber-500 text-zinc-950'
+                      : 'bg-emerald-500 text-zinc-950'
                 }`}
               >
-                {isFailed ? 'تنبيه عاجل • تعثر تعيين كابتن' : 'إشعار فوري • طلب جديد'}
+                {isFailed
+                  ? 'تنبيه عاجل · تعثر تعيين كابتن'
+                  : isManualSub
+                    ? 'طلب اشتراك جديد · فودافون كاش'
+                    : 'إشعار فوري · طلب جديد'}
               </span>
               <h4 className="text-xs sm:text-sm font-black text-white">{activeBannerAlert.title}</h4>
             </div>
@@ -369,15 +415,21 @@ export const InDashboardAlertBanner: React.FC = () => {
             type="button"
             onClick={() => {
               markAsRead(activeBannerAlert.id);
-              navigate('/orders');
+              navigate(isManualSub ? '/subscription-requests' : '/orders');
             }}
-            className={`px-3.5 py-2 rounded-xl text-xs font-black transition-colors cursor-pointer ${
+            className={`px-3.5 py-2 rounded-xl text-xs font-black transition-colors cursor-pointer whitespace-nowrap ${
               isFailed
                 ? 'bg-rose-500 hover:bg-rose-400 text-white'
-                : 'bg-emerald-500 hover:bg-emerald-400 text-zinc-950'
+                : isManualSub
+                  ? 'bg-amber-500 hover:bg-amber-400 text-zinc-950'
+                  : 'bg-emerald-500 hover:bg-emerald-400 text-zinc-950'
             }`}
           >
-            {isFailed ? 'تعيين كابتن للطلب الآن' : 'عرض الطلب الجديد'}
+            {isFailed
+              ? 'تعيين كابتن للطلب الآن'
+              : isManualSub
+                ? 'مراجعة طلب الاشتراك'
+                : 'عرض الطلب الجديد'}
           </button>
 
           <button

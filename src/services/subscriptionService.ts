@@ -123,11 +123,11 @@ function normalizeStatus(rawStatus: any, endDateYMD?: string, isActiveMerchant?:
   }
   if (s === 'Pending' || s === 'pending' || s === 'معلق' || s === 'قيد الانتظار') return 'Pending';
   if (s === 'Expired' || s === 'expired' || s === 'منتهي') return 'Expired';
-  if (s === 'Suspended' || s === 'suspended' || s === 'موقوف' || s === 'inactive' || ['unsubscribed', 'none', 'payment_failed', 'failed', 'not_subscribed'].includes(s.toLowerCase())) return 'Suspended';
+  if (s === 'Suspended' || s === 'suspended' || s === 'موقوف' || s === 'inactive') return 'Suspended';
 
   if (isActiveMerchant === false) return 'Suspended';
   if (endDateYMD && endDateYMD < new Date().toISOString().split('T')[0]) return 'Expired';
-  return 'Suspended';
+  return 'Active';
 }
 
 function mapDocToSubscription(
@@ -237,25 +237,38 @@ export const SubscriptionService = {
     }
 
     try {
-      // Fetch both collections in parallel so we get all registered merchants and all subscription records
-      const [subsSnap, merchantsSnap] = await Promise.all([
+      // Fetch subscriptions, restaurants, and merchants in parallel
+      const [subsSnap, restResult, merchResult] = await Promise.all([
         getDocs(collection(db, COLLECTIONS.SUBSCRIPTIONS)),
         getDocs(collection(db, COLLECTIONS.RESTAURANTS)),
+        getDocs(collection(db, COLLECTIONS.MERCHANTS)).catch(() => null),
       ]);
 
       const merchantsById = new Map<string, Record<string, any>>();
       const merchantsByName = new Map<string, { id: string; data: Record<string, any> }>();
 
-      merchantsSnap.forEach((docSnap) => {
-        const d = docSnap.data();
-        merchantsById.set(docSnap.id, d);
-        const nameKey = String(d.name || d.nameAr || d.merchantName || d.restaurantName || '')
+      const registerMerchantDoc = (id: string, d: Record<string, any>) => {
+        const existing = merchantsById.get(id);
+        const merged = existing ? { ...d, ...existing } : d;
+        merchantsById.set(id, merged);
+        const nameKey = String(
+          merged.name || merged.nameAr || merged.merchantName || merged.storeName || merged.restaurantName || ''
+        )
           .trim()
           .toLowerCase();
         if (nameKey) {
-          merchantsByName.set(nameKey, { id: docSnap.id, data: d });
+          merchantsByName.set(nameKey, { id, data: merged });
         }
+      };
+
+      restResult.forEach((docSnap) => {
+        registerMerchantDoc(docSnap.id, docSnap.data());
       });
+      if (merchResult) {
+        merchResult.forEach((docSnap) => {
+          registerMerchantDoc(docSnap.id, docSnap.data());
+        });
+      }
 
       const list: Subscription[] = [];
       const coveredMerchantIds = new Set<string>();
@@ -286,13 +299,12 @@ export const SubscriptionService = {
         list.push(mapDocToSubscription(docSnap.id, subData, matchedMerchant));
       });
 
-      // 2. Also include every registered merchant in `merchants` that doesn't have a separate doc in `subscriptions`
-      merchantsSnap.forEach((docSnap) => {
-        if (!coveredMerchantIds.has(docSnap.id)) {
-          const mData = docSnap.data();
+      // 2. Also include every registered merchant that doesn't have a separate doc in `subscriptions`
+      merchantsById.forEach((mData, merchantId) => {
+        if (!coveredMerchantIds.has(merchantId)) {
           list.push(
-            mapDocToSubscription(docSnap.id, mData, {
-              id: docSnap.id,
+            mapDocToSubscription(merchantId, mData, {
+              id: merchantId,
               data: mData,
             })
           );
@@ -349,7 +361,7 @@ export const SubscriptionService = {
       }
       await updateDoc(restRef, payload);
     } catch {
-      // Ignore if merchant UID does not exist in merchants collection
+      // Ignore if restaurantId doc doesn't exist in restaurants collection
     }
   },
 
@@ -369,8 +381,8 @@ export const SubscriptionService = {
           {
             ...(targetSub
               ? {
-                  merchantId: targetSub.restaurantId,
-                  merchantName: targetSub.restaurantName,
+                  restaurantId: targetSub.restaurantId,
+                  restaurantName: targetSub.restaurantName,
                   plan: targetSub.plan,
                   captainsCount: targetSub.captainsCount || 2,
                   price: targetSub.price || 400,
@@ -417,8 +429,8 @@ export const SubscriptionService = {
         await setDoc(
           docRef,
           {
-            merchantId: targetRestId,
-            merchantName: updates.restaurantName || existing?.restaurantName || '',
+            restaurantId: targetRestId,
+            restaurantName: updates.restaurantName || existing?.restaurantName || '',
             captainsCount: updates.captainsCount,
             price: updates.price,
             plan: updates.plan,
@@ -471,8 +483,8 @@ export const SubscriptionService = {
         await setDoc(
           docRef,
           {
-            merchantId: data.restaurantId,
-            merchantName: data.restaurantName,
+            restaurantId: data.restaurantId,
+            restaurantName: data.restaurantName,
             plan: data.plan,
             captainsCount: data.captainsCount || 2,
             price: data.price,
@@ -525,7 +537,7 @@ export const SubscriptionService = {
           {
             ...(existing
               ? {
-                  merchantId: existing.restaurantId,
+                  restaurantId: existing.restaurantId,
                   restaurantName: existing.restaurantName,
                   plan: existing.plan,
                   captainsCount: existing.captainsCount || 2,

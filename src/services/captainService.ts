@@ -1,7 +1,7 @@
-import { sendPasswordResetEmail } from 'firebase/auth';
 import {
   collection,
   doc,
+  getDoc,
   getDocs,
   setDoc,
   updateDoc,
@@ -10,7 +10,7 @@ import {
   orderBy,
   serverTimestamp,
 } from 'firebase/firestore';
-import { auth, db, isFirebaseConfigured, handleFirestoreError, OperationType } from '../firebase/config';
+import { db, isFirebaseConfigured, handleFirestoreError, OperationType } from '../firebase/config';
 import { COLLECTIONS } from './collections';
 import { Captain, CaptainStatus } from '../types';
 import { extractCoordinates } from '../utils/geoUtils';
@@ -28,21 +28,60 @@ function formatFirestoreDate(val: any): string {
   return String(val);
 }
 
+function isLocalDeviceUri(val: unknown): boolean {
+  if (typeof val !== 'string') return false;
+  const lower = val.trim().toLowerCase();
+  return (
+    lower.startsWith('content://') ||
+    lower.startsWith('file://') ||
+    lower.startsWith('android.resource://')
+  );
+}
+
+function pickFirstValidImage(candidates: unknown[]): string {
+  for (const item of candidates) {
+    if (typeof item === 'string') {
+      const trimmed = item.trim();
+      if (trimmed && !isLocalDeviceUri(trimmed)) {
+        return trimmed;
+      }
+    }
+  }
+  return '';
+}
+
 function mapDocToCaptain(id: string, data: Record<string, any>): Captain {
-  const profileImage =
-    data.profileImage ||
-    data.profileImageUrl ||
-    data.photoURL ||
-    data.photoUrl ||
-    data.avatar ||
-    data.image ||
-    data.imageUrl ||
-    data.personalPhoto ||
-    data.captainImage ||
-    data.photo ||
-    data.picture ||
-    data.userImage ||
-    '';
+  const profileImage = pickFirstValidImage([
+    data.profileImagePath,
+    data.profile_image_path,
+    data.profileImage,
+    data.profile_image,
+    data.profileImageUrl,
+    data.profile_image_url,
+    data.photoURL,
+    data.photoUrl,
+    data.photo_url,
+    data.avatarUri,
+    data.avatar_uri,
+    data.avatarUrl,
+    data.avatar_url,
+    data.avatar,
+    data.image,
+    data.imageUrl,
+    data.image_url,
+    data.personalPhoto,
+    data.personal_photo,
+    data.captainImage,
+    data.captain_image,
+    data.driverImage,
+    data.driver_image,
+    data.photo,
+    data.picture,
+    data.userImage,
+    data.profile?.profileImagePath,
+    data.profile?.photoURL,
+    data.profile?.photoUrl,
+  ]);
 
   const email =
     data.email ||
@@ -51,16 +90,18 @@ function mapDocToCaptain(id: string, data: Record<string, any>): Captain {
     data.contactEmail ||
     '';
 
-  // Legacy plaintext credential fields are deliberately ignored and never copied into app state.
-  const safeRaw = { ...data };
-  ['password', 'captainPassword', 'userPassword', 'pass', 'pin'].forEach((field) => {
-    delete safeRaw[field];
-  });
+  const password =
+    data.password ||
+    data.captainPassword ||
+    data.userPassword ||
+    data.pass ||
+    data.pin ||
+    '';
 
   const rawStatus = (data.status as CaptainStatus) || (data.isOnline ? 'online' : 'offline');
 
   // Determine whether captain is allowed to receive orders
-  let canReceiveOrders = data.status === 'pending' ? false : true;
+  let canReceiveOrders = true;
   if (typeof data.canReceiveOrders === 'boolean') {
     canReceiveOrders = data.canReceiveOrders;
   } else if (typeof data.isReceivingOrders === 'boolean') {
@@ -68,11 +109,6 @@ function mapDocToCaptain(id: string, data: Record<string, any>): Captain {
   } else if (typeof data.receiveOrders === 'boolean') {
     canReceiveOrders = data.receiveOrders;
   } else if (data.isBlocked === true || data.isSuspended === true || data.orderReceptionDisabled === true) {
-    canReceiveOrders = false;
-  }
-
-  // Pending approval always takes precedence over legacy order-reception flags.
-  if (data.status === 'pending') {
     canReceiveOrders = false;
   }
 
@@ -89,6 +125,7 @@ function mapDocToCaptain(id: string, data: Record<string, any>): Captain {
     name: data.name || data.fullName || data.displayName || 'كابتن بدون اسم',
     phone: data.phone || data.phoneNumber || data.mobile || '—',
     email: email || '—',
+    password: password ? String(password) : '',
     profileImage,
     photoURL: profileImage,
     status: rawStatus,
@@ -110,7 +147,7 @@ function mapDocToCaptain(id: string, data: Record<string, any>): Captain {
     location: data.location || data.coordinates || data.coords,
     coords,
     lastLocationUpdate: data.lastLocationUpdate || data.lastUpdate || data.updatedAt,
-    raw: safeRaw,
+    raw: data,
   };
 }
 
@@ -121,8 +158,7 @@ export const CaptainService = {
     }
 
     try {
-      const q = query(collection(db, COLLECTIONS.CAPTAINS), orderBy('name', 'asc'));
-      const snapshot = await getDocs(q);
+      const snapshot = await getDocs(collection(db, COLLECTIONS.CAPTAINS));
 
       if (snapshot.empty) {
         localCaptainsCache = [];
@@ -134,6 +170,7 @@ export const CaptainService = {
         list.push(mapDocToCaptain(docSnap.id, docSnap.data()));
       });
 
+      list.sort((a, b) => a.name.localeCompare(b.name, 'ar'));
       localCaptainsCache = list;
       return { data: list, isLive: true };
     } catch (error) {
@@ -145,15 +182,7 @@ export const CaptainService = {
   async updateStatus(id: string, status: CaptainStatus): Promise<void> {
     const nowIso = new Date().toISOString();
     localCaptainsCache = localCaptainsCache.map((c) =>
-      c.id === id
-        ? {
-            ...c,
-            status,
-            isOnline: status === 'online',
-            canReceiveOrders: status === 'pending' ? false : c.canReceiveOrders,
-            statusUpdatedAt: nowIso,
-          }
-        : c
+      c.id === id ? { ...c, status, isOnline: status === 'online', statusUpdatedAt: nowIso } : c
     );
 
     if (isFirebaseConfigured) {
@@ -162,14 +191,6 @@ export const CaptainService = {
         await updateDoc(docRef, {
           status,
           isOnline: status === 'online',
-          ...(status === 'pending'
-            ? {
-                canReceiveOrders: false,
-                isReceivingOrders: false,
-                receiveOrders: false,
-                isBlocked: true,
-              }
-            : {}),
           statusUpdatedAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
@@ -215,19 +236,39 @@ export const CaptainService = {
     }
   },
 
-  async sendPasswordReset(id: string): Promise<void> {
-    const captain = localCaptainsCache.find((item) => item.id === id);
-    const email = captain?.email?.trim();
+  async updatePassword(id: string, newPassword: string): Promise<void> {
+    const nowIso = new Date().toISOString();
+    localCaptainsCache = localCaptainsCache.map((c) =>
+      c.id === id ? { ...c, password: newPassword, updatedAt: nowIso } : c
+    );
 
-    if (!email || email === '—' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      throw new Error('لا يوجد بريد إلكتروني صالح مرتبط بحساب الكابتن.');
-    }
-    if (!auth || !isFirebaseConfigured) {
-      throw new Error('خدمة Firebase Authentication غير متاحة حالياً.');
-    }
+    if (isFirebaseConfigured) {
+      try {
+        const docRef = doc(db, COLLECTIONS.CAPTAINS, id);
+        await updateDoc(docRef, {
+          password: newPassword,
+          captainPassword: newPassword,
+          updatedAt: serverTimestamp(),
+        });
 
-    // Firebase Authentication sends a one-time reset link; no plaintext password is read or stored.
-    await sendPasswordResetEmail(auth, email);
+        // Also sync to users collection if a corresponding user profile document exists
+        try {
+          const userDocRef = doc(db, COLLECTIONS.USERS, id);
+          const userSnap = await getDoc(userDocRef);
+          if (userSnap.exists()) {
+            await updateDoc(userDocRef, {
+              password: newPassword,
+              updatedAt: serverTimestamp(),
+            });
+          }
+        } catch {
+          // Ignore if users doc doesn't exist
+        }
+      } catch (error) {
+        handleFirestoreError(error, OperationType.UPDATE, `${COLLECTIONS.CAPTAINS}/${id}`);
+        throw error;
+      }
+    }
   },
 
   async updateCaptain(id: string, updates: Partial<Captain>): Promise<void> {
@@ -245,10 +286,16 @@ export const CaptainService = {
 
         if (updates.name !== undefined) payload.name = updates.name;
         if (updates.phone !== undefined) payload.phone = updates.phone;
+        if (updates.email !== undefined) payload.email = updates.email;
         if (updates.vehicleType !== undefined) payload.vehicleType = updates.vehicleType;
+        if (updates.password !== undefined) {
+          payload.password = updates.password;
+          payload.captainPassword = updates.password;
+        }
         if (updates.profileImage !== undefined) {
           payload.profileImage = updates.profileImage;
           payload.photoURL = updates.profileImage;
+          payload.profileImagePath = updates.profileImage;
         }
         if (updates.status !== undefined) {
           payload.status = updates.status;
@@ -269,6 +316,55 @@ export const CaptainService = {
         throw error;
       }
     }
+  },
+
+  async create(data: Omit<Captain, 'id'>): Promise<Captain> {
+    const newId = `capt_${Date.now()}`;
+    const nowIso = new Date().toISOString();
+    const canReceive = data.canReceiveOrders !== undefined ? data.canReceiveOrders : data.status !== 'offline';
+
+    const newCaptain: Captain = {
+      ...data,
+      id: newId,
+      canReceiveOrders: canReceive,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+      statusUpdatedAt: nowIso,
+    };
+
+    localCaptainsCache = [newCaptain, ...localCaptainsCache];
+
+    if (isFirebaseConfigured) {
+      try {
+        const docRef = doc(db, COLLECTIONS.CAPTAINS, newId);
+        await setDoc(docRef, {
+          name: data.name,
+          phone: data.phone,
+          email: data.email || '',
+          password: data.password || '',
+          captainPassword: data.password || '',
+          profileImage: data.profileImage || '',
+          photoURL: data.profileImage || '',
+          profileImagePath: data.profileImage || '',
+          status: data.status,
+          isOnline: data.status === 'online',
+          canReceiveOrders: canReceive,
+          isReceivingOrders: canReceive,
+          receiveOrders: canReceive,
+          isBlocked: !canReceive,
+          ordersCount: data.ordersCount || 0,
+          rating: data.rating || 5.0,
+          vehicleType: data.vehicleType || 'دراجة نارية',
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+          statusUpdatedAt: serverTimestamp(),
+        });
+      } catch (error) {
+        handleFirestoreError(error, OperationType.CREATE, `${COLLECTIONS.CAPTAINS}/${newId}`);
+      }
+    }
+
+    return newCaptain;
   },
 
   async delete(id: string): Promise<void> {

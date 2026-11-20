@@ -12,9 +12,10 @@ export const DashboardLayout: React.FC = () => {
     if (pathname.includes('/live-map')) return 'الخريطة المباشرة والمواقع الحية';
     if (pathname.includes('/send-order')) return 'إرسال طلب إلى كابتن التوصيل';
     if (pathname.includes('/shifts')) return 'إدارة شفتات وساعات عمل الكباتن';
-    if (pathname.includes('/restaurants')) return 'إدارة التجار';
+    if (pathname.includes('/merchants') || pathname.includes('/restaurants')) return 'إدارة التجار';
     if (pathname.includes('/captains')) return 'إدارة الكباتن';
     if (pathname.includes('/orders')) return 'إدارة الطلبات';
+    if (pathname.includes('/subscription-requests')) return 'طلبات الاشتراك';
     if (pathname.includes('/subscriptions')) return 'إدارة الاشتراكات';
     if (pathname.includes('/payments')) return 'المدفوعات والمعاملات';
     if (pathname.includes('/sheets')) return 'تكامل وجداول Google Sheets';

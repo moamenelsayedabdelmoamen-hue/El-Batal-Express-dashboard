@@ -42,17 +42,28 @@ export interface Restaurant {
   phone?: string;
   rating?: number;
   subscriptionStatus?: SubscriptionStatus;
+  subscriptionPlan?: string;
+  subscriptionStartDate?: string;
+  subscriptionEndDate?: string;
+  captainsCount?: number;
   isActive: boolean;
+  isOpen?: boolean;
+  isVerified?: boolean;
   createdAt?: any;
   address?: string;
   ownerEmail?: string;
+  ownerUid?: string;
   logo?: string;
+  logoPath?: string;
   image?: string;
   location?: any; // GeoPoint or { lat, lng } or { latitude, longitude }
   locationUrl?: string;
   coords?: { lat: number; lng: number } | null;
   activeOrdersCount?: number;
   status?: string;
+  workingHours?: string;
+  notes?: string;
+  sourceCollection?: 'restaurants' | 'merchants';
   // Preserve any raw fields from existing Firestore documents
   raw?: Record<string, any>;
 }
@@ -285,7 +296,11 @@ export interface CaptainSchedule {
 // -----------------------------------------------------------------------------
 // Firebase Cloud Messaging (FCM) & In-Dashboard Admin Notifications
 // -----------------------------------------------------------------------------
-export type AdminNotificationType = 'new_order' | 'captain_assignment_failed' | 'system';
+export type AdminNotificationType =
+  | 'new_order'
+  | 'captain_assignment_failed'
+  | 'manual_subscription_request'
+  | 'system';
 
 export interface AdminNotification {
   id: string;
@@ -294,11 +309,98 @@ export interface AdminNotification {
   body: string;
   orderId?: string;
   orderNumber?: string;
+  requestId?: string;
+  merchantId?: string;
   restaurantName?: string;
   reason?: string;
   isRead: boolean;
   createdAt: string;
   userId?: string;
 }
+
+// -----------------------------------------------------------------------------
+// Manual Vodafone Cash Subscription Review & Payment Settings Types
+// -----------------------------------------------------------------------------
+export type ManualSubscriptionRequestStatus =
+  | 'pending'
+  | 'under_review'
+  | 'resubmission_requested'
+  | 'approved'
+  | 'rejected';
+
+export interface ManualSubscriptionReviewEntry {
+  action: 'approved' | 'rejected' | 'resubmission_requested' | string;
+  reviewerId: string;
+  reviewerEmail?: string;
+  reviewerName?: string;
+  note?: string;
+  reason?: string;
+  timestampIso: string;
+  timestampMs?: number;
+}
+
+export interface ManualSubscriptionRequest {
+  id: string;
+  requestNumber: string;
+  merchantId: string;
+  merchantName: string;
+  merchantPhone: string;
+  merchantEmail: string;
+  planId: string;
+  planName: string;
+  maxCaptains: number;
+  amount: number;
+  durationDays: number;
+  senderPhone: string;
+  receiverWalletNumber: string;
+  transactionReference: string;
+  receiptImagePath: string;
+  receiptImageUrl: string;
+  status: ManualSubscriptionRequestStatus;
+  paymentStatus: string;
+  createdAt: string;
+  createdAtMs: number;
+  updatedAt?: string;
+  approvedBy?: string;
+  approvedByName?: string;
+  approvedByEmail?: string;
+  approvedAt?: string;
+  rejectedBy?: string;
+  rejectedByName?: string;
+  rejectedByEmail?: string;
+  rejectedAt?: string;
+  rejectionReason?: string;
+  resubmissionNote?: string;
+  adminNote?: string;
+  merchantNote?: string;
+  paymentDocId?: string;
+  subscriptionStartDate?: string;
+  subscriptionEndDate?: string;
+  reviewHistory: ManualSubscriptionReviewEntry[];
+  raw?: Record<string, any>;
+}
+
+export interface OfficialSubscriptionPlanConfig {
+  planId: string;
+  planName: string;
+  maxCaptains: number;
+  price: number;
+  isActive: boolean;
+}
+
+export interface ManualSubscriptionSettings {
+  vodafoneCashNumber: string;
+  walletHolderName: string;
+  isAcceptingSubscriptions: boolean;
+  pauseMessage: string;
+  durationDays: number;
+  plans: OfficialSubscriptionPlanConfig[];
+  updatedAt?: string;
+  updatedBy?: string;
+  updatedByEmail?: string;
+  updatedByName?: string;
+  isConfiguredInFirestore?: boolean;
+}
+
 
 

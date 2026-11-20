@@ -33,6 +33,17 @@ service cloud.firestore {
       );
     }
 
+    function isMasterAdmin() {
+      return isSignedIn() && (
+        request.auth.token.isMasterAdmin == true ||
+        request.auth.token.email == 'moamen.elsayed.abdelmoamen@gmail.com' ||
+        (
+          exists(/databases/$(database)/documents/admins/$(request.auth.uid)) &&
+          get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.isMasterAdmin == true
+        )
+      );
+    }
+
     function isCaptainAccount() {
       return isSignedIn() &&
         exists(/databases/$(database)/documents/captains/$(request.auth.uid));
@@ -341,6 +352,18 @@ service cloud.firestore {
         );
 
       allow delete: if isAdmin();
+
+      // Merchant-scoped notifications (subscription approvals, rejections, resubmission requests)
+      match /notifications/{notifId} {
+        allow get, list: if isSignedIn() && (
+          isAdmin() ||
+          (isMerchantAccount() && request.auth.uid == merchantId)
+        );
+        allow update: if isMerchantAccount()
+          && request.auth.uid == merchantId
+          && incoming().diff(existing()).affectedKeys().hasOnly(['isRead', 'readAt']);
+        allow create, delete: if false; // Strictly written by Cloud Functions (Admin SDK)
+      }
     }
 
     // --- 4. Admins Collection ---
@@ -456,13 +479,91 @@ service cloud.firestore {
       allow update, delete: if isAdmin();
     }
 
+    // Manual Vodafone Cash subscription requests:
+    // - Merchants may read ONLY their own requests, create new 'pending' requests with 'pending_verification',
+    //   and re-upload receipts ONLY when status == 'resubmission_requested'.
+    // - Merchants can NEVER self-approve, set paymentStatus == 'paid', or touch another merchant's request.
+    // - All admin approval / rejection / resubmission decisions execute strictly through Cloud Functions (Admin SDK).
+    function isValidManualSubscriptionCreate(data, uid) {
+      return data.merchantId == uid
+        && data.status == 'pending'
+        && data.paymentStatus == 'pending_verification'
+        && ('planId' in data) && data.planId is string && data.planId.size() >= 1 && data.planId.size() <= 80
+        && ('planName' in data) && data.planName is string && data.planName.size() >= 1 && data.planName.size() <= 120
+        && ('maxCaptains' in data) && data.maxCaptains is int && data.maxCaptains >= 1 && data.maxCaptains <= 100
+        && ('amount' in data) && data.amount is number && data.amount > 0 && data.amount <= 100000
+        && ('senderPhone' in data) && data.senderPhone is string && data.senderPhone.size() >= 8 && data.senderPhone.size() <= 32
+        && ('transactionReference' in data) && data.transactionReference is string && data.transactionReference.size() >= 2 && data.transactionReference.size() <= 120
+        && ('receiptImagePath' in data) && data.receiptImagePath is string
+        && (
+          data.receiptImagePath.matches('^subscription_receipts/' + uid + '/.+') ||
+          data.receiptImagePath.matches('^manual_subscription_receipts/' + uid + '/.+') ||
+          data.receiptImagePath.matches('^merchants/' + uid + '/.+')
+        )
+        && !('approvedBy' in data)
+        && !('approvedAt' in data)
+        && !('rejectedBy' in data)
+        && !('rejectedAt' in data)
+        && !('paymentDocId' in data);
+    }
+
+    match /manual_subscription_requests/{requestId} {
+      allow get, list: if isAdmin() || (
+        isMerchantAccount() &&
+        ('merchantId' in existing() && existing().merchantId == request.auth.uid)
+      );
+
+      allow create: if isMerchantAccount()
+        && isValidId(requestId)
+        && isValidManualSubscriptionCreate(incoming(), request.auth.uid);
+
+      allow update: if isMerchantAccount()
+        && existing().merchantId == request.auth.uid
+        && existing().status == 'resubmission_requested'
+        && incoming().merchantId == existing().merchantId
+        && incoming().planId == existing().planId
+        && incoming().maxCaptains == existing().maxCaptains
+        && incoming().amount == existing().amount
+        && incoming().status == 'pending'
+        && incoming().paymentStatus == 'pending_verification'
+        && !('approvedBy' in incoming())
+        && !('approvedAt' in incoming())
+        && !('paymentDocId' in incoming())
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'receiptImagePath',
+          'receiptImageUrl',
+          'senderPhone',
+          'transactionReference',
+          'merchantNote',
+          'status',
+          'paymentStatus',
+          'resubmittedAt',
+          'updatedAt'
+        ]);
+
+      allow delete: if false; // Immutable audit records
+    }
+
+    // Vodafone Cash & official package pricing config:
+    // - Readable by authenticated users (merchants & admins) so wallet numbers are never hardcoded.
+    // - Strictly written ONLY via Cloud Function updateManualSubscriptionSettings (Master Admin verified).
+    match /settings/manual_subscription_config {
+      allow read: if isSignedIn();
+      allow write: if false;
+    }
+
     match /settings/{settingId} {
       allow read: if isAdmin() || isSignedIn();
-      allow write: if isAdmin();
+      allow write: if isMasterAdmin();
+    }
+
+    match /notifications/{notificationId} {
+      allow get, list, create, update, delete: if isAdmin();
     }
 
     match /operation_logs/{logId} {
-      allow read, write: if isAdmin();
+      allow read: if isAdmin();
+      allow write: if false; // Strictly written by Cloud Functions (Admin SDK)
     }
 
     match /webhook_events/{eventId} {

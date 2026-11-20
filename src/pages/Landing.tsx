@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Link } from 'react-router-dom';
+import React, { useState, useEffect } from 'react';
+import { Link, useLocation } from 'react-router-dom';
 import {
   Store,
   Bike,
@@ -25,8 +25,18 @@ import heroDispatchImg from '../assets/images/hero_elbatal_dispatch_179478026762
 import operationsImg from '../assets/images/ecosystem_operations_1794780268920.jpg';
 
 export const LandingPage: React.FC = () => {
+  const location = useLocation();
   const [lang, setLang] = useState<PublicLang>(() => getInitialPublicLang());
   const isAr = lang === 'ar';
+
+  useEffect(() => {
+    if (location.hash) {
+      const target = document.getElementById(location.hash.replace('#', ''));
+      if (target) {
+        target.scrollIntoView({ behavior: 'smooth' });
+      }
+    }
+  }, [location.hash]);
 
   const handleToggleLang = () => {
     const next: PublicLang = lang === 'ar' ? 'en' : 'ar';
