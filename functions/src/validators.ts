@@ -395,6 +395,20 @@ export function readNormalizedOrderStatus(order: Record<string, unknown>): strin
 }
 
 /**
+ * Returns true only for terminal order states that release merchant package capacity.
+ * In particular, "out_for_delivery" and "delivering" are active states, not terminal.
+ */
+export function isTerminalMerchantOrderStatus(status: string): boolean {
+  const value = status.trim().toLowerCase();
+  return [
+    "delivered", "completed", "complete", "done", "cancelled", "canceled",
+    "expired", "failed", "declined", "rejected",
+    "ملغي", "ملغى", "تم الإلغاء", "تم الالغاء", "تم التسليم", "تم التوصيل",
+    "مكتمل", "مكتملة", "انتهى", "منتهي", "منتهية",
+  ].includes(value);
+}
+
+/**
  * Resolves effective normalized status accounting for merchantConfirmed flag.
  * @param {Record<string, unknown>} order Order document fields.
  * @return {string} Canonical lowercase status key.
