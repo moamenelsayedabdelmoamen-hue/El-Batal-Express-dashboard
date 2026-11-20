@@ -1318,6 +1318,7 @@ export class ManualSubscriptionsServerService {
           paymentMethod: "vodafone_cash",
           lastPaymentId: paymentDocId,
           lastRequestId: requestId,
+          pendingRequestId: null,
           startDate: startDateYmd,
           endDate: endDateYmd,
           startDateMs,
@@ -1364,6 +1365,7 @@ export class ManualSubscriptionsServerService {
           suspensionReason: null,
           cancellationReason: null,
           lastApprovedRequestId: requestId,
+          pendingRequestId: null,
           lastPaymentId: paymentDocId,
           ...(readString(merchantData, "activeManualSubscriptionRequestId") === requestId
             ? {
@@ -1578,8 +1580,13 @@ export class ManualSubscriptionsServerService {
       }
 
       const merchantRef = this.db.collection("merchants").doc(merchantId);
-      const merchantSnap = await tx.get(merchantRef);
+      const subscriptionRef = this.db.collection("subscriptions").doc(merchantId);
+      const [merchantSnap, subscriptionSnap] = await Promise.all([
+        tx.get(merchantRef),
+        tx.get(subscriptionRef),
+      ]);
       const merchantData = merchantSnap.exists ? merchantSnap.data() ?? {} : {};
+      const subscriptionData = subscriptionSnap.exists ? subscriptionSnap.data() ?? {} : {};
       merchantFcmToken = readString(merchantData, "fcmToken");
       planName = readString(reqData, "planName", "plan") || "باقة الاشتراك";
 
@@ -1606,12 +1613,40 @@ export class ManualSubscriptionsServerService {
         reviewHistory: s.arrayUnion(reviewEntry),
         updatedAt: s.serverTimestamp(),
       });
-      if (readString(merchantData, "activeManualSubscriptionRequestId") === requestId) {
-        tx.set(merchantRef, {
-          activeManualSubscriptionRequestId: null,
+      const rejectedState = {
+        status: "rejected",
+        subscriptionStatus: "rejected",
+        isActive: false,
+        isSubscribed: false,
+        paymentStatus: "rejected",
+        paymentMethod: "vodafone_cash_manual",
+        pendingRequestId: null,
+        rejectionReason: cleanReason,
+        planId: legacyPlanIdForCaptainLimit(readNumber(reqData, "maxCaptains") ?? 0),
+        planName,
+        maxCaptains: readNumber(reqData, "maxCaptains") ?? 0,
+        captainLimit: readNumber(reqData, "maxCaptains") ?? 0,
+        price: readNumber(reqData, "amount") ?? 0,
+        subscriptionVersion: Math.max(
+          readNumber(subscriptionData, "subscriptionVersion") ?? 0,
+          readNumber(merchantData, "subscriptionVersion") ?? 0
+        ) + 1,
+        subscriptionUpdatedAt: s.serverTimestamp(),
+        updatedAt: s.serverTimestamp(),
+        updatedBy: admin.uid,
+      };
+      tx.set(subscriptionRef, rejectedState, {merge: true});
+      tx.set(
+        merchantRef,
+        {
+          ...rejectedState,
+          ...(readString(merchantData, "activeManualSubscriptionRequestId") === requestId
+            ? {activeManualSubscriptionRequestId: null}
+            : {}),
           manualSubscriptionRequestUpdatedAt: s.serverTimestamp(),
-        }, {merge: true});
-      }
+        },
+        {merge: true}
+      );
 
       tx.set(opLogRef, {
         action: "reject_manual_subscription_request",
@@ -1746,8 +1781,13 @@ export class ManualSubscriptionsServerService {
       }
 
       const merchantRef = this.db.collection("merchants").doc(merchantId);
-      const merchantSnap = await tx.get(merchantRef);
+      const subscriptionRef = this.db.collection("subscriptions").doc(merchantId);
+      const [merchantSnap, subscriptionSnap] = await Promise.all([
+        tx.get(merchantRef),
+        tx.get(subscriptionRef),
+      ]);
       const merchantData = merchantSnap.exists ? merchantSnap.data() ?? {} : {};
+      const subscriptionData = subscriptionSnap.exists ? subscriptionSnap.data() ?? {} : {};
       const activeRequestId = readString(merchantData, "activeManualSubscriptionRequestId");
       if (activeRequestId && activeRequestId !== requestId) {
         const activeRequestSnap = await tx.get(
@@ -1806,8 +1846,40 @@ export class ManualSubscriptionsServerService {
         });
       }
 
+      const resubmissionState = {
+        merchantId,
+        restaurantId: merchantId,
+        status: "resubmission_required",
+        subscriptionStatus: "resubmission_required",
+        isActive: false,
+        isSubscribed: false,
+        planId: legacyPlanIdForCaptainLimit(readNumber(reqData, "maxCaptains") ?? 0),
+        planName,
+        maxCaptains: readNumber(reqData, "maxCaptains") ?? 0,
+        captainLimit: readNumber(reqData, "maxCaptains") ?? 0,
+        captainsCount: readNumber(reqData, "maxCaptains") ?? 0,
+        price: readNumber(reqData, "amount") ?? 0,
+        amount: readNumber(reqData, "amount") ?? 0,
+        durationDays: readNumber(reqData, "durationDays") ?? 30,
+        paymentStatus: "resubmission_required",
+        paymentMethod: "vodafone_cash_manual",
+        pendingRequestId: requestId,
+        senderPhone: readString(reqData, "senderPhone"),
+        transactionReference: readString(reqData, "transactionReference"),
+        receiptStoragePath: existingReceiptPath,
+        resubmissionReason: cleanNote,
+        subscriptionVersion: Math.max(
+          readNumber(subscriptionData, "subscriptionVersion") ?? 0,
+          readNumber(merchantData, "subscriptionVersion") ?? 0
+        ) + 1,
+        subscriptionUpdatedAt: s.serverTimestamp(),
+        updatedAt: s.serverTimestamp(),
+        updatedBy: admin.uid,
+      };
       tx.update(requestRef, updatePatch);
+      tx.set(subscriptionRef, resubmissionState, {merge: true});
       tx.set(merchantRef, {
+        ...resubmissionState,
         activeManualSubscriptionRequestId: requestId,
         manualSubscriptionRequestUpdatedAt: s.serverTimestamp(),
       }, {merge: true});
