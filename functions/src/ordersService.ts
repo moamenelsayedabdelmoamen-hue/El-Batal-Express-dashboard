@@ -1592,6 +1592,7 @@ export class OrderServerService {
       orderId,
       orderNumber: readString(order, "orderNumber", "order_number") || orderId,
       orderCode: readString(order, "orderCode", "order_code"),
+      merchantId: readString(order, "merchantId", "restaurantId", "storeId"),
       storeName:
         readString(
           order,
