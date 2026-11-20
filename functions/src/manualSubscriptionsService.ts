@@ -167,7 +167,17 @@ function isSubscriptionCurrentlyActive(
     parseTimestampMs(merchantData.subscriptionEndDate),
     parseTimestampMs(merchantData.endDate)
   );
-  return expiryMs === 0 || nowMs <= expiryMs;
+  if (expiryMs === 0) return true;
+  const expiryDate = new Date(expiryMs);
+  const isDateOnlyTimestamp =
+    expiryDate.getUTCHours() === 0 &&
+    expiryDate.getUTCMinutes() === 0 &&
+    expiryDate.getUTCSeconds() === 0 &&
+    expiryDate.getUTCMilliseconds() === 0;
+  const effectiveExpiryMs = isDateOnlyTimestamp
+    ? expiryMs + 24 * 60 * 60 * 1000 - 1
+    : expiryMs;
+  return nowMs <= effectiveExpiryMs;
 }
 
 function legacyPlanIdForCaptainLimit(maxCaptains: number): number {
