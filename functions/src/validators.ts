@@ -485,31 +485,52 @@ export function assertMerchantAndSubscriptionValid(
       );
     }
 
-    const embeddedSubStatus = readString(
-      merchantData,
-      "subscriptionStatus"
+    // A canonical active subscriptions/{uid} record must not be invalidated by a
+    // stale mirror flag on merchants/{uid}. The mirror wins only when it has a
+    // strictly newer subscriptionVersion (e.g. a direct Admin dashboard update).
+    const canonicalStatus = readString(
+      subData,
+      "status",
+      "subscriptionStatus",
+      "planStatus"
     ).toLowerCase();
-    if (
-      merchantData.isSubscribed === false ||
-      ["expired", "suspended", "cancelled", "canceled", "inactive"].includes(
-        embeddedSubStatus
-      )
-    ) {
-      throw new DomainHttpsError(
-        "failed-precondition",
-        "اشتراك التاجر منتهي أو غير نشط حالياً."
-      );
-    }
+    const canonicalVersion = Number(subData?.subscriptionVersion ?? 0);
+    const merchantVersion = Number(merchantData.subscriptionVersion ?? 0);
+    const canonicalActive = [
+      "active", "approved", "trial", "نشط", "نشطة", "ساري", "سارية"
+    ].includes(canonicalStatus);
+    const canonicalSubscriptionWins = Boolean(subData) &&
+      canonicalActive &&
+      canonicalVersion >= merchantVersion;
 
-    const mSubEnd = Math.max(
-      parseTimestampMs(merchantData.subscriptionEndDate),
-      parseTimestampMs(merchantData.subscriptionExpiresAt)
-    );
-    if (mSubEnd > 0 && nowMs > endOfDayMs(mSubEnd)) {
-      throw new DomainHttpsError(
-        "failed-precondition",
-        "انتهت صلاحية اشتراك التاجر ولا يمكن قبول الطلب."
+    if (!canonicalSubscriptionWins) {
+      const embeddedSubStatus = readString(
+        merchantData,
+        "subscriptionStatus",
+        "planStatus"
+      ).toLowerCase();
+      if (
+        merchantData.isSubscribed === false ||
+        ["expired", "suspended", "cancelled", "canceled", "inactive"].includes(
+          embeddedSubStatus
+        )
+      ) {
+        throw new DomainHttpsError(
+          "failed-precondition",
+          "اشتراك التاجر منتهي أو غير نشط حالياً."
+        );
+      }
+
+      const mSubEnd = Math.max(
+        parseTimestampMs(merchantData.subscriptionEndDate),
+        parseTimestampMs(merchantData.subscriptionExpiresAt)
       );
+      if (mSubEnd > 0 && nowMs > endOfDayMs(mSubEnd)) {
+        throw new DomainHttpsError(
+          "failed-precondition",
+          "انتهت صلاحية اشتراك التاجر ولا يمكن قبول الطلب."
+        );
+      }
     }
   }
 
