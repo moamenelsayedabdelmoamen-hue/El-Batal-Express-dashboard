@@ -2157,26 +2157,29 @@ export class ManualSubscriptionsServerService {
     const planName = readString(reqData, "planName", "plan") || "باقة اشتراك";
     const amount = readNumber(reqData, "amount", "price") ?? 0;
 
-    await this.db
+    // Use a deterministic document and create it only once. A retried
+    // Firestore event must not reset isRead after an admin has opened the alert.
+    const notificationRef = this.db
       .collection("notifications")
-      .doc(`manual_sub_req_${requestId}`)
-      .set(
-        {
-          type: "manual_subscription_request",
-          targetRole: "admin",
-          title: `طلب اشتراك فودافون كاش جديد — ${merchantName}`,
-          message: `أرسل التاجر "${merchantName}" إيصال تحويل بمبلغ ${amount} ج.م للباقة "${planName}" بانتظار المراجعة.`,
-          body: `أرسل التاجر "${merchantName}" إيصال تحويل بمبلغ ${amount} ج.م للباقة "${planName}" بانتظار المراجعة.`,
-          requestId,
-          merchantId,
-          restaurantName: merchantName,
-          planName,
-          amount,
-          isRead: false,
-          createdAt: s.serverTimestamp(),
-        },
-        {merge: true}
-      );
+      .doc(`manual_sub_req_${requestId}`);
+    await this.db.runTransaction(async (tx) => {
+      const existing = await tx.get(notificationRef);
+      if (existing.exists) return;
+      tx.set(notificationRef, {
+        type: "manual_subscription_request",
+        targetRole: "admin",
+        title: `طلب اشتراك فودافون كاش جديد — ${merchantName}`,
+        message: `أرسل التاجر "${merchantName}" إيصال تحويل بمبلغ ${amount} ج.م للباقة "${planName}" بانتظار المراجعة.`,
+        body: `أرسل التاجر "${merchantName}" إيصال تحويل بمبلغ ${amount} ج.م للباقة "${planName}" بانتظار المراجعة.`,
+        requestId,
+        merchantId,
+        restaurantName: merchantName,
+        planName,
+        amount,
+        isRead: false,
+        createdAt: s.serverTimestamp(),
+      });
+    });
 
     // Collect admin FCM tokens if registered
     const adminTokens = new Set<string>();
