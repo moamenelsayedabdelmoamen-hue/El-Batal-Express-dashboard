@@ -1602,6 +1602,7 @@ export class OrderServerService {
         ) || "مطعم مسجل",
       storePhone: readString(order, "storePhone", "merchantPhone"),
       storeImage: readString(order, "storeImage", "merchantLogo", "storeLogo"),
+      storeImagePath: readString(order, "storeImagePath", "merchantStoragePath"),
       storeLocationUrl: readString(order, "storeLocationUrl", "locationUrl"),
       pickupAddress:
         readString(order, "pickupAddress", "storeAddress", "merchantAddress") ||
