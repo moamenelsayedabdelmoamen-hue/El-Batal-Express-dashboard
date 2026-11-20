@@ -84,14 +84,21 @@ describe("Static Security & Architecture Invariants (Rules + Server-Only + Paymo
       /match\s+\/merchants\/\{merchantId\}\/\{allFiles=\*\*\}\s*\{[\s\S]*?allow read:\s*if isAuthenticated\(\)[\s\S]*?!allFiles\.matches\('subscription_receipts\/\.\*'\)/
     );
     // Nested merchant receipt paths are create-only for the owner; generic asset rules cannot grant updates.
+    const genericMerchantRules = storageRules.match(
+      /match\s+\/merchants\/\{merchantId\}\/\{allFiles=\*\*\}\s*\{([\s\S]*?)\n    \}/
+    )?.[1] || "";
     assert.match(
-      storageRules,
-      /match\\s+\\/merchants\\/\\{merchantId\\}\\/\\{allFiles=\\*\\*\\}\\s*\\{[\\s\\S]*?allow create, update:\\s*if isAuthenticated\\(\\)[\\s\\S]*?!allFiles\\.matches\\('subscription_receipts\\/\\.\\*'\\)/
+      genericMerchantRules,
+      /allow create, update:\s*if isAuthenticated\(\)[\s\S]*?!allFiles\.matches\('subscription_receipts\/\.\*'\)/
     );
+    const nestedReceiptRules = storageRules.match(
+      /match\s+\/merchants\/\{merchantId\}\/subscription_receipts\/\{fileName\}\s*\{([\s\S]*?)\n    \}/
+    )?.[1] || "";
     assert.match(
-      storageRules,
-      /match\\s+\\/merchants\\/\\{merchantId\\}\\/subscription_receipts\\/\\{fileName\\}\\s*\\{[\\s\\S]*?allow create:\\s*if isAuthenticated\\(\\)[\\s\\S]*?request\\.auth\\.uid == merchantId[\\s\\S]*?allow update, delete:\\s*if isAdmin\\(\\);/
+      nestedReceiptRules,
+      /allow create:\s*if isAuthenticated\(\)[\s\S]*?request\.auth\.uid == merchantId/
     );
+    assert.match(nestedReceiptRules, /allow update, delete:\s*if isAdmin\(\);/);
   });
 
   it("5. Central Cloud Functions exports all 4 required functions + settings updater + notification trigger", () => {
