@@ -398,12 +398,8 @@ export function readNormalizedOrderStatus(order: Record<string, unknown>): strin
  * Merchant may cancel only before pickup / customer receipt review / delivery.
  */
 export function isMerchantCancelableOrderStatus(status: string): boolean {
-  return ![
-    "picked_up", "order_data_entered", "awaiting_merchant_confirmation",
-    "awaiting_confirmation", "merchant_rejected", "en_route", "confirmed",
-    "merchant_confirmed", "out_for_delivery", "delivering", "delivered",
-    "completed", "done",
-  ].includes(status.trim().toLowerCase());
+  return ["pending", "searching", "offered", "accepted", "assigned"]
+    .includes(status.trim().toLowerCase());
 }
 
 /**
