@@ -504,6 +504,14 @@ export const merchantCreateOrder = onCall(
               orderPayload.customerLongitude = customerLongitude;
             }
 
+            // Admission mutex: every order creation for this merchant writes the same
+            // merchant document inside the transaction. Concurrent requests therefore conflict,
+            // retry, and re-count the newly-created active order before admitting another.
+            tx.update(merchantRef, {
+              orderAdmissionVersion: FieldValue.increment(1),
+              orderAdmissionUpdatedAt: FieldValue.serverTimestamp(),
+            });
+
             tx.create(codeRef, {
               code: orderCode,
               orderCode,
