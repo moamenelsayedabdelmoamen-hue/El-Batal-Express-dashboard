@@ -890,9 +890,15 @@ describe("Manual Vodafone Cash Subscriptions Server Service (Full 14-Scenario Su
     assert.equal(reqDoc.rejectionReason, "لم يتم استلام المبلغ على محفظة فودافون كاش");
     assert.equal(reqDoc.rejectedBy, "admin_1");
 
-    // Subscription MUST remain inactive and NO payment created
-    assert.equal(db.getDocData("subscriptions/merchant_1"), undefined);
-    assert.equal(db.getDocData("merchants/merchant_1").isSubscribed, false);
+    // Rejection state is synced so the Merchant App can release the pending review state.
+    const rejectedSub = db.getDocData("subscriptions/merchant_1");
+    const rejectedMerchant = db.getDocData("merchants/merchant_1");
+    assert.equal(rejectedSub.status, "rejected");
+    assert.equal(rejectedSub.paymentStatus, "rejected");
+    assert.equal(rejectedSub.pendingRequestId, null);
+    assert.equal(rejectedMerchant.subscriptionStatus, "rejected");
+    assert.equal(rejectedMerchant.pendingRequestId, null);
+    assert.equal(rejectedMerchant.isSubscribed, false);
     assert.equal(db.listCollection("payments").length, 0);
 
     // Merchant notified
