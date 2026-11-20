@@ -396,11 +396,9 @@ service cloud.firestore {
     }
 
     function isAvailablePendingOrder(data) {
+      // Only the captain holding the current server-issued offer can read a pending offer.
       return ('status' in data && data.status == 'pending')
-        && (
-          ('offeredCaptainId' in data && data.offeredCaptainId == request.auth.uid) ||
-          ('eligibleCaptainIds' in data && request.auth.uid in data.eligibleCaptainIds)
-        );
+        && ('offeredCaptainId' in data && data.offeredCaptainId == request.auth.uid);
     }
 
     function isOrderOwnedByMerchant(data) {
@@ -424,23 +422,60 @@ service cloud.firestore {
              isOrderOwnedByCustomer(data);
     }
 
+    function isMerchantConfirmingSubmittedOrder() {
+      let changed = request.resource.data.diff(resource.data).affectedKeys();
+      return resource.data.captainId != null
+        && resource.data.customerDetailsSubmitted == true
+        && request.resource.data.customerDetailsSubmitted == true
+        && request.resource.data.customerDetailsConfirmed == true
+        && request.resource.data.customerDetailsRejected == false
+        && request.resource.data.merchantConfirmed == true
+        && request.resource.data.isConfirmed == true
+        && request.resource.data.status == 'en_route'
+        && request.resource.data.orderStatus == 'en_route'
+        && changed.hasOnly([
+          'customerDetailsConfirmed', 'customerDetailsRejected', 'merchantConfirmed',
+          'isConfirmed', 'rejectionReason', 'confirmedAt', 'updatedAt',
+          'status', 'orderStatus', 'status_ar'
+        ]);
+    }
+
+    function isMerchantRejectingSubmittedOrder() {
+      let changed = request.resource.data.diff(resource.data).affectedKeys();
+      return resource.data.captainId != null
+        && resource.data.customerDetailsSubmitted == true
+        && request.resource.data.customerDetailsSubmitted == false
+        && request.resource.data.customerDetailsRejected == true
+        && request.resource.data.customerDetailsConfirmed == false
+        && request.resource.data.merchantConfirmed == false
+        && request.resource.data.isConfirmed == false
+        && request.resource.data.status == 'merchant_rejected'
+        && request.resource.data.orderStatus == 'merchant_rejected'
+        && request.resource.data.rejectionReason is string
+        && request.resource.data.rejectionReason.size() > 0
+        && changed.hasOnly([
+          'customerDetailsSubmitted', 'customerDetailsConfirmed', 'customerDetailsRejected',
+          'merchantConfirmed', 'isConfirmed', 'rejectionReason', 'rejectedAt', 'updatedAt',
+          'status', 'orderStatus', 'status_ar'
+        ]);
+    }
+
+    function isMerchantCancellingUnassignedOrder() {
+      let changed = request.resource.data.diff(resource.data).affectedKeys();
+      return resource.data.captainId == null
+        && resource.data.status in ['pending', 'searching', 'جاري البحث', 'جاري البحث عن كابتن']
+        && request.resource.data.status == 'cancelled'
+        && changed.hasOnly(['status', 'status_ar', 'cancelReason', 'cancelledAt']);
+    }
+
     match /orders/{orderId} {
       allow get: if isSignedIn() && isValidId(orderId) && canReadOrder(existing());
       allow list: if isSignedIn() && canReadOrder(existing());
 
-      // Merchant clients may create only a pending order for their own approved, verified account.
-      allow create: if isAdmin() || (
-        isMerchantAccount()
-        && request.auth.token.email_verified == true
-        && incoming().merchantId == request.auth.uid
-        && incoming().captainId == null
-        && incoming().dispatchStatus == 'searching'
-        && incoming().status == 'pending'
-        && get(/databases/$(database)/documents/merchants/$(request.auth.uid)).data.status in ['approved', 'active']
-      );
+      // Orders are created exclusively by the trusted merchant Cloud Function (Admin SDK).
+      allow create: if isAdmin();
 
-      // All captain order lifecycle mutations must execute via Cloud Functions (Admin SDK).
-      // Merchants may only update non-dispatch/non-captain fields on their own orders.
+      // Captain clients are read-only. Merchants may perform only specific lifecycle transitions.
       allow update: if isAdmin() || (
         isOrderOwnedByMerchant(existing())
         && incoming().merchantId == existing().merchantId
@@ -448,11 +483,33 @@ service cloud.firestore {
         && incoming().orderCode == existing().orderCode
         && incoming().captainId == existing().captainId
         && !incoming().diff(existing()).affectedKeys().hasAny([
-          'captainId', 'captainUid', 'driverId', 'assignedCaptainId',
-          'offeredCaptainId', 'eligibleCaptainIds', 'excludedCaptainIds',
-          'timedOutCaptainIds', 'dispatchStatus', 'assignedAt', 'acceptedAt',
-          'deliveredAt', 'completedAt', 'captainEarning', 'platformCommission'
-        ])
+          'merchantId', 'userId', 'restaurantId', 'orderCode', 'code',
+          'captainId', 'captainUid', 'driverId', 'assignedCaptainId', 'offeredCaptainId',
+          'eligibleCaptainIds', 'excludedCaptainIds', 'timedOutCaptainIds',
+          'dispatchStatus', 'dispatchAttemptId', 'dispatchLockedUntilMs', 'dispatchTriggerSource',
+          'dispatchAssignedByAttemptId', 'assignedAt', 'acceptedAt',
+          'createdByServerFunction', 'subscriptionVersionAtCreation',
+          'capacityReserved', 'capacityReleased', 'capacityReservedAt', 'capacityReleasedAt',
+          'capacityReleasedReason', 'captainEarnings', 'driverEarnings', 'commission',
+          'platformFee', 'walletCredited', 'payoutAmount', 'settlementStatus', 'paymentStatus'
+        ]) &&
+        (
+          !incoming().diff(existing()).affectedKeys().hasAny([
+            'status', 'orderStatus', 'status_ar', 'merchantConfirmed',
+            'customerDetailsSubmitted', 'customerDetailsConfirmed', 'customerDetailsRejected',
+            'isConfirmed', 'confirmedAt', 'rejectedAt', 'cancelReason', 'cancelledAt'
+          ]) ||
+          isMerchantConfirmingSubmittedOrder() ||
+          isMerchantRejectingSubmittedOrder() ||
+          isMerchantCancellingUnassignedOrder()
+        ) &&
+        (
+          !incoming().diff(existing()).affectedKeys().hasAny([
+            'price', 'serviceFee', 'deliveryFee', 'totalAmount'
+          ]) ||
+          (resource.data.captainId == null &&
+            resource.data.status in ['pending', 'searching', 'جاري البحث', 'جاري البحث عن كابتن'])
+        )
       );
       allow delete: if isAdmin();
     }
