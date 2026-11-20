@@ -137,10 +137,18 @@ await setDoc(doc(adminDb, 'merchants', 'merchant_2'), {
 
     await setDoc(doc(adminDb, 'orders', 'order_picked_up_c1'), {
       orderNumber: 'EXP-101',
+      orderCode: '548291',
       status: 'picked_up',
+      orderStatus: 'picked_up',
       captainId: 'captain_1',
       merchantId: 'merchant_1',
+      userId: 'merchant_1',
       customerId: 'user_1',
+      customerDetailsSubmitted: true,
+      customerDetailsConfirmed: false,
+      customerDetailsRejected: false,
+      merchantConfirmed: false,
+      isConfirmed: false,
       deliveryFee: 35,
     });
 
@@ -466,11 +474,15 @@ describe('El-Batal Express Real Firebase Emulator Security Audit (Firestore + St
         query(
           collection(cap1Db, 'orders'),
           where('status', '==', 'pending'),
-          where('eligibleCaptainIds', 'array-contains', 'captain_1')
+          where('offeredCaptainId', '==', 'captain_1')
         )
       )
     );
     assert.equal(pendingSnap.size, 1);
+
+    // Another eligible candidate cannot read an offer addressed to captain_1.
+    const cap2Db = testEnv.authenticatedContext('captain_2').firestore();
+    await assertFails(getDoc(doc(cap2Db, 'orders', 'order_pending_open')));
 
     const ownOrdersSnap = await assertSucceeds(
       getDocs(query(collection(cap1Db, 'orders'), where('captainId', '==', 'captain_1')))
@@ -490,6 +502,27 @@ describe('El-Batal Express Real Firebase Emulator Security Audit (Firestore + St
     await assertFails(setDoc(doc(user1Db, 'restaurants', 'fake_rest'), { name: 'Fake' }));
     await assertFails(setDoc(doc(cap1Db, 'merchants', 'captain_1'), { name: 'Spoof Merchant' }));
     await assertFails(setDoc(doc(cap1Db, 'drivers', 'captain_1'), { uid: 'captain_1', accountType: 'captain' }));
+
+    // Merchant cannot force delivery completion or change arbitrary order states directly.
+    await assertFails(
+      updateDoc(doc(merch1Db, 'orders', 'order_picked_up_c1'), { status: 'delivered' })
+    );
+
+    // Merchant may confirm only a receipt that was submitted by the assigned captain.
+    await assertSucceeds(
+      updateDoc(doc(merch1Db, 'orders', 'order_picked_up_c1'), {
+        customerDetailsConfirmed: true,
+        customerDetailsRejected: false,
+        merchantConfirmed: true,
+        isConfirmed: true,
+        rejectionReason: '',
+        confirmedAt: new Date(),
+        updatedAt: new Date(),
+        status: 'en_route',
+        orderStatus: 'en_route',
+        status_ar: 'جاري التوصيل'
+      })
+    );
 
     // Merchant CANNOT read captain PII docs or register themselves in captains
     await assertFails(getDoc(doc(merch1Db, 'captains', 'captain_1')));
