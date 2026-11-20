@@ -862,277 +862,45 @@ exports.submitCustomerDeliveryDetails = onRequest({ cors: true, timeoutSeconds: 
 exports.submitReceiptAndCustomerData = onRequest({ cors: true, timeoutSeconds: 30, memory: "256MiB" }, handleSubmitCustomerDeliveryDetails);
 
 // ------------------------------------------------------------------------------
-// 5. Cloud Function: merchantConfirmOrder (Merchant reviews details & receipt)
-// ------------------------------------------------------------------------------
+// Retired insecure legacy endpoint. All order operations must use authenticated Dashboard/functions callables.
 exports.merchantConfirmOrder = onRequest(
-  { cors: true, timeoutSeconds: 30, memory: "256MiB" },
-  async (req, res) => {
-    if (req.method !== "POST") return res.status(405).json({ error: "Method Not Allowed" });
-    const { orderId, confirmed, approved, status, rejectionReason } = req.body || {};
-    if (!orderId) return res.status(400).json({ error: "معرف الطلب مطلوب" });
-
-    const normalizedReqStatus = String(status || "").trim().toLowerCase();
-    const isConfirmed = confirmed === true ||
-      confirmed === "true" ||
-      approved === true ||
-      ["confirmed", "merchant_confirmed", "approved", "en_route"].includes(normalizedReqStatus);
-
-    const db = admin.firestore();
-    const orderRef = await resolveOrderReference(db, orderId);
-
-    try {
-      let assignedCaptainId = "";
-      await db.runTransaction(async (transaction) => {
-        const doc = await transaction.get(orderRef);
-        if (!doc.exists) throw new Error("الطلب غير موجود");
-        const docData = doc.data() || {};
-        assignedCaptainId = String(
-          docData.captainId || docData.driverId || docData.assignedCaptainId || docData.captainUid || ""
-        ).trim();
-
-        if (isConfirmed) {
-          transaction.update(orderRef, {
-            status: "en_route",
-            merchantConfirmed: true,
-            rejectionReason: admin.firestore.FieldValue.delete(),
-            merchantConfirmedAt: admin.firestore.FieldValue.serverTimestamp(),
-            updatedAt: admin.firestore.FieldValue.serverTimestamp()
-          });
-        } else {
-          transaction.update(orderRef, {
-            status: "merchant_rejected",
-            merchantConfirmed: false,
-            rejectionReason: rejectionReason || "بيانات الإيصال أو العميل غير مطابقة",
-            updatedAt: admin.firestore.FieldValue.serverTimestamp()
-          });
-        }
-      });
-
-      if (isConfirmed && assignedCaptainId) {
-        try {
-          const capDoc = await db.collection("captains").doc(assignedCaptainId).get();
-          const cData = capDoc.exists ? (capDoc.data() || {}) : {};
-          const fcmToken = String(cData.fcmToken || cData.fcm_token || cData.messagingToken || "").trim();
-          if (fcmToken) {
-            await admin.messaging().send({
-              token: fcmToken,
-              android: {
-                priority: "high",
-                notification: {
-                  channelId: "el_batal_orders_channel",
-                  sound: "default",
-                  title: "تم تأكيد بيانات الطلب من التاجر",
-                  body: "يمكنك الآن تسليم الطلب للعميل وتأكيد التسليم من البطاقة النشطة."
-                }
-              },
-              data: {
-                type: "merchant_confirmed",
-                orderId: String(orderRef.id)
-              }
-            });
-          }
-        } catch (fcmErr) {
-          console.warn("merchantConfirmOrder FCM notice:", fcmErr.message);
-        }
-      }
-
-      return res.status(200).json({ success: true, message: isConfirmed ? "تم تأكيد الطلب بنجاح" : "تم رفض البيانات" });
-    } catch (err) {
-      return res.status(400).json({ error: err.message });
-    }
+  {cors: true, timeoutSeconds: 15, memory: "256MiB"},
+  async (_req, res) => {
+    res.set("Cache-Control", "no-store");
+    return res.status(410).json({
+      success: false,
+      code: "ENDPOINT_RETIRED",
+      message: "مسار تأكيد التاجر القديم متوقف. استخدم مسار تأكيد التاجر المعتمد في لوحة الإدارة."
+    });
   }
 );
 
-// ------------------------------------------------------------------------------
-// 6. Cloud Function: confirmDelivery (alias: completeDelivery)
-// ------------------------------------------------------------------------------
-async function handleConfirmDelivery(req, res) {
-  if (req.method !== "POST") return res.status(405).json({ error: "Method Not Allowed" });
-  const user = await authenticateCaptain(req, res);
-  if (!user) return;
-
-  const { orderId } = req.body || {};
-  if (!orderId) return res.status(400).json({ error: "معرف الطلب مطلوب" });
-
-  const db = admin.firestore();
-  const orderRef = await resolveOrderReference(db, orderId);
-  const cleanId = String(orderId).trim().replace(/^#+/, "");
-  const captainRef = db.collection("captains").doc(user.uid);
-  const transactionRecordRef = captainRef.collection("transactions").doc(cleanId);
-
-  try {
-    let earnedDeliveryFee = 25.0;
-    await db.runTransaction(async (transaction) => {
-      const orderDoc = await transaction.get(orderRef);
-      if (!orderDoc.exists) throw new Error("الطلب غير موجود");
-      const orderData = orderDoc.data();
-      if (orderData.captainId !== user.uid && orderData.driverId !== user.uid) {
-        throw new Error("غير مصرح: هذا الطلب ليس مسنداً إليك");
-      }
-      if (orderData.status === "delivered" || orderData.status === "completed") {
-        throw new Error("الطلب مسجل كمكتمل مسبقاً");
-      }
-
-      if (typeof orderData.deliveryFee === "number" && orderData.deliveryFee > 0) {
-        earnedDeliveryFee = orderData.deliveryFee;
-      }
-
-      // 1. Mark order delivered
-      transaction.update(orderRef, {
-        status: "delivered",
-        deliveredAt: admin.firestore.FieldValue.serverTimestamp(),
-        updatedAt: admin.firestore.FieldValue.serverTimestamp()
-      });
-
-      // 2. Safely increment captain wallet balance and order count
-      transaction.update(captainRef, {
-        walletBalance: admin.firestore.FieldValue.increment(earnedDeliveryFee),
-        totalOrdersCount: admin.firestore.FieldValue.increment(1),
-        updatedAt: admin.firestore.FieldValue.serverTimestamp()
-      });
-
-      // 3. Financial audit record
-      transaction.set(transactionRecordRef, {
-        amount: earnedDeliveryFee,
-        type: "delivery_earning",
-        orderId: String(orderId),
-        description: `أرباح توصيل الطلب رقم #${orderId}`,
-        createdAt: admin.firestore.FieldValue.serverTimestamp()
-      });
-    });
-
-    return res.status(200).json({
-      success: true,
-      message: "تم تسليم الطلب بنجاح وإضافة الأرباح لمحفظتك",
-      earnedAmount: earnedDeliveryFee
-    });
-  } catch (err) {
-    console.error("confirmDelivery error:", err.message);
-    return res.status(400).json({ error: err.message });
-  }
-}
-
-exports.confirmDelivery = onRequest({ cors: true, timeoutSeconds: 30, memory: "256MiB" }, handleConfirmDelivery);
-exports.completeDelivery = onRequest({ cors: true, timeoutSeconds: 30, memory: "256MiB" }, handleConfirmDelivery);
-
-// ------------------------------------------------------------------------------
-// 7. Cloud Function: expireDeliveryOffer
-// Ends the 60s window, excludes current captain, and immediately reassigns to nearest captain
-// ------------------------------------------------------------------------------
+// Retired insecure legacy endpoint. All order operations must use authenticated Dashboard/functions callables.
 exports.expireDeliveryOffer = onRequest(
-  { cors: true, timeoutSeconds: 30, memory: "256MiB" },
-  async (req, res) => {
-    if (req.method !== "POST") return res.status(405).json({ error: "Method Not Allowed" });
-    const { orderId, captainId } = req.body || {};
-    if (!orderId) return res.status(400).json({ error: "معرف الطلب مطلوب" });
-
-    const db = admin.firestore();
-    const orderRef = await resolveOrderReference(db, orderId);
-
-    try {
-      let shouldReassign = false;
-      let updatedExcluded = [];
-      let latestOrderData = {};
-
-      await db.runTransaction(async (transaction) => {
-        const doc = await transaction.get(orderRef);
-        if (!doc.exists) throw new Error("الطلب غير موجود");
-        const data = doc.data() || {};
-        latestOrderData = data;
-
-        const existingAssignedCaptain = String(data.captainId || data.driverId || "").trim();
-        if (existingAssignedCaptain) {
-          return;
-        }
-
-        const currentStatus = String(data.status || "").trim().toLowerCase();
-        if (["pending", "searching", "offered", "new", "ready", "ready_for_pickup", "waiting_driver"].includes(currentStatus)) {
-          const excluded = Array.isArray(data.excludedCaptainIds) ? [...data.excludedCaptainIds] : [];
-          const targetCaptain = captainId || data.offeredCaptainId;
-          if (targetCaptain && !excluded.includes(targetCaptain)) {
-            excluded.push(targetCaptain);
-          }
-          updatedExcluded = excluded;
-
-          transaction.update(orderRef, {
-            status: "searching",
-            offeredCaptainId: null,
-            offerExpiresAt: null,
-            excludedCaptainIds: excluded,
-            updatedAt: admin.firestore.FieldValue.serverTimestamp()
-          });
-          shouldReassign = true;
-        }
-      });
-
-      let assignResult = null;
-      if (shouldReassign) {
-        assignResult = await assignNearestCaptainInternal(
-          db,
-          orderRef,
-          { ...latestOrderData, excludedCaptainIds: updatedExcluded },
-          updatedExcluded
-        );
-      }
-
-      return res.status(200).json({
-        success: true,
-        message: assignResult?.assigned
-          ? `انتهت مهلة قبول الطلب وتم تحويله إلى أقرب كابتن للتاجر (${assignResult.offeredCaptainId})`
-          : "انتهت مهلة قبول الطلب وتم تحويله للبحث عن أقرب كابتن متاح",
-        reassigned: shouldReassign,
-        offeredCaptainId: assignResult?.offeredCaptainId || null,
-        distanceKm: assignResult?.distanceKm || null
-      });
-    } catch (err) {
-      return res.status(400).json({ error: err.message });
-    }
+  {cors: true, timeoutSeconds: 15, memory: "256MiB"},
+  async (_req, res) => {
+    res.set("Cache-Control", "no-store");
+    return res.status(410).json({
+      success: false,
+      code: "ENDPOINT_RETIRED",
+      message: "انتهت صلاحية مسار انتهاء العرض القديم. يعالج الخادم المركزي انتهاء المهلة تلقائياً."
+    });
   }
 );
 
-// ------------------------------------------------------------------------------
-// 8. Cloud Function: assignNextAvailableCaptain
-// Selects the nearest online, active, non-busy, in-shift captain to the merchant
-// ------------------------------------------------------------------------------
+// Retired insecure legacy endpoint. All order operations must use authenticated Dashboard/functions callables.
 exports.assignNextAvailableCaptain = onRequest(
-  { cors: true, timeoutSeconds: 30, memory: "256MiB" },
-  async (req, res) => {
-    if (req.method !== "POST") return res.status(405).json({ error: "Method Not Allowed" });
-    const { orderId } = req.body || {};
-    if (!orderId) return res.status(400).json({ error: "معرف الطلب مطلوب" });
-
-    const db = admin.firestore();
-    const orderRef = await resolveOrderReference(db, orderId);
-
-    try {
-      const orderDoc = await orderRef.get();
-      if (!orderDoc.exists) return res.status(404).json({ error: "الطلب غير موجود" });
-      const orderData = orderDoc.data() || {};
-      const excluded = Array.isArray(orderData.excludedCaptainIds) ? orderData.excludedCaptainIds : [];
-
-      const assignResult = await assignNearestCaptainInternal(db, orderRef, orderData, excluded);
-
-      if (assignResult.assigned) {
-        return res.status(200).json({
-          success: true,
-          message: `تم إسناد العرض لأقرب كابتن للتاجر (${assignResult.offeredCaptainId})`,
-          offeredCaptainId: assignResult.offeredCaptainId,
-          distanceKm: assignResult.distanceKm,
-          expiresInSeconds: 60
-        });
-      }
-
-      return res.status(200).json({
-        success: true,
-        message: "لا يوجد كباتن متاحين حالياً، يتم الاستمرار في البحث"
-      });
-    } catch (err) {
-      return res.status(500).json({ error: err.message });
-    }
+  {cors: true, timeoutSeconds: 15, memory: "256MiB"},
+  async (_req, res) => {
+    res.set("Cache-Control", "no-store");
+    return res.status(410).json({
+      success: false,
+      code: "ENDPOINT_RETIRED",
+      message: "مسار الإسناد القديم متوقف. توزيع الطلبات يتم حصرياً من الخادم المركزي."
+    });
   }
 );
 
-// ------------------------------------------------------------------------------
 // 9. Cloud Function: uploadImageToImgBB
 // ------------------------------------------------------------------------------
 exports.uploadImageToImgBB = onRequest(
