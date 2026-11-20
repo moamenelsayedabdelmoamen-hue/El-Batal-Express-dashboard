@@ -478,9 +478,13 @@ export const merchantCreateOrder = onCall(
               readString(merchant, "logoStoragePath"),
               ...merchantImageCandidates,
             ];
-            const storeImagePath = imagePathCandidates.find((value) =>
-              value.startsWith("gs://") || value.startsWith(`merchants/${uid}/`)
-            ) || "";
+            const merchantStoragePrefix = `merchants/${uid}/`;
+            const storeImagePath = imagePathCandidates.find((value) => {
+              if (value.startsWith(merchantStoragePrefix)) return true;
+              if (!value.startsWith("gs://")) return false;
+              const bucketRelativePath = value.replace(/^gs:\/\/[^/]+\//, "");
+              return bucketRelativePath.startsWith(merchantStoragePrefix);
+            }) || "";
             if (!merchantName) {
               throw new HttpsError("failed-precondition", "اسم التاجر غير مسجل في ملف المتجر.");
             }
