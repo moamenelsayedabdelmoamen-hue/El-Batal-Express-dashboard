@@ -19,9 +19,11 @@ import com.example.data.OrderStatus
 import com.example.data.ShiftEntity
 import com.example.data.ShiftManager
 import com.example.data.ShiftStatus
+import com.example.data.StartupSessionState
 import com.example.data.location.CaptainLocationTracker
 import com.example.data.location.GpsStatus
 import com.example.data.storage.ImageUploadState
+import com.example.ui.navigation.ScreenRoute
 import android.util.Log
 import com.example.data.extractShiftsFromMap
 import com.example.notifications.CaptainNotificationManager
@@ -378,7 +380,31 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
     private val _pendingNavigateTab = MutableStateFlow<Int?>(null)
     val pendingNavigateTab: StateFlow<Int?> = _pendingNavigateTab.asStateFlow()
 
+    // Process-scoped splash & route state (survives backgrounding & config changes; resets on cold restart)
+    private val _hasCompletedIntroSplash = MutableStateFlow(false)
+    val hasCompletedIntroSplash: StateFlow<Boolean> = _hasCompletedIntroSplash.asStateFlow()
+
+    private val _currentRoute = MutableStateFlow<String>(ScreenRoute.Splash.route)
+    val currentRoute: StateFlow<String> = _currentRoute.asStateFlow()
+
+    private val _unverifiedEmail = MutableStateFlow("")
+    val unverifiedEmail: StateFlow<String> = _unverifiedEmail.asStateFlow()
+
+    internal var startupSessionResolverOverride: (suspend () -> StartupSessionState)? = null
+    private var isResolvingStartupSession = false
+
     private val expiredOfferNotifiedIds = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+
+    fun navigateTo(route: String) {
+        if (route == ScreenRoute.Splash.route && _hasCompletedIntroSplash.value) {
+            return
+        }
+        _currentRoute.value = route
+    }
+
+    fun setUnverifiedEmail(email: String) {
+        _unverifiedEmail.value = email
+    }
 
     fun consumePendingNavigateTab() {
         _pendingNavigateTab.value = null
@@ -905,6 +931,41 @@ class CaptainViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             val isValid = repository.validateCurrentSession()
             onResult(isValid)
+        }
+    }
+
+    /**
+     * Called once when the intro splash video finishes playing or encounters an error.
+     * Evaluates Firebase Authentication + captain registration state and navigates accordingly.
+     * Subsequent calls within the same app process are ignored so the intro flow never replays.
+     */
+    fun onIntroSplashFinished() {
+        if (_hasCompletedIntroSplash.value || isResolvingStartupSession) return
+        isResolvingStartupSession = true
+        viewModelScope.launch {
+            try {
+                val sessionState = startupSessionResolverOverride?.invoke()
+                    ?: repository.resolveStartupSessionState()
+                _hasCompletedIntroSplash.value = true
+                when (sessionState) {
+                    is StartupSessionState.Authenticated -> {
+                        _currentRoute.value = ScreenRoute.Main.route
+                    }
+                    is StartupSessionState.NeedsEmailVerification -> {
+                        _unverifiedEmail.value = sessionState.email
+                        _currentRoute.value = ScreenRoute.VerifyEmail.route
+                    }
+                    is StartupSessionState.Unauthenticated -> {
+                        _currentRoute.value = ScreenRoute.Login.route
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w("CaptainViewModel", "Startup session check fallback to Login: ${e.message}")
+                _hasCompletedIntroSplash.value = true
+                _currentRoute.value = ScreenRoute.Login.route
+            } finally {
+                isResolvingStartupSession = false
+            }
         }
     }
 

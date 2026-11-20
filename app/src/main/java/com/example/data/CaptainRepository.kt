@@ -50,6 +50,20 @@ data class SyncOrdersSummary(
     val activeCount: Int
 )
 
+/**
+ * Startup session routing result evaluated right after the intro splash video completes or fails.
+ */
+sealed class StartupSessionState {
+    /** Captain has a valid verified Firebase Auth session and valid captains/{uid} document (including pending review). */
+    object Authenticated : StartupSessionState()
+
+    /** Captain signed up in Firebase Auth but has not completed email verification / registration yet. */
+    data class NeedsEmailVerification(val email: String) : StartupSessionState()
+
+    /** No valid Firebase Auth session (signed out, deleted, banned, or non-captain account). */
+    object Unauthenticated : StartupSessionState()
+}
+
 interface CaptainCloudMetadataPort {
     fun currentAuthUid(): String?
     suspend fun saveCaptainImageMetadata(uid: String, fields: Map<String, Any>)
@@ -1830,15 +1844,25 @@ class CaptainRepository(
      * Strict session validation on app resume / splash:
      * 1. Requires non-null Firebase Auth currentUser.
      * 2. Reloads Firebase Auth user and strictly requires isEmailVerified == true.
-     * 3. Fetches exclusively captains/{uid} and requires existence + accountType == "captain" + active status.
+     * 3. Fetches exclusively captains/{uid} and requires existence + accountType == "captain" + active/pending status.
      */
     suspend fun validateCurrentSession(): Boolean {
+        return resolveStartupSessionState() is StartupSessionState.Authenticated
+    }
+
+    /**
+     * Evaluates Firebase Authentication and captain registration state after the intro splash video finishes:
+     * - Authenticated: valid verified Firebase session + valid captains/{uid} doc (preserves pending-review state inside Main).
+     * - NeedsEmailVerification: Firebase user exists but email verification / registration is incomplete.
+     * - Unauthenticated: signed out, invalid user, non-captain, or disabled/banned account.
+     */
+    suspend fun resolveStartupSessionState(): StartupSessionState {
         val currentAuth = authBackend.currentUser()
         if (currentAuth == null) {
             captainDao.updateLoginState(false)
             stopRealtimeOrdersListener()
             stopRealtimeShiftListener()
-            return false
+            return StartupSessionState.Unauthenticated
         }
 
         val reloadedUser = try {
@@ -1850,7 +1874,7 @@ class CaptainRepository(
                 captainDao.updateLoginState(false)
                 stopRealtimeOrdersListener()
                 stopRealtimeShiftListener()
-                return false
+                return StartupSessionState.Unauthenticated
             }
             currentAuth
         }
@@ -1859,7 +1883,8 @@ class CaptainRepository(
             captainDao.updateLoginState(false)
             stopRealtimeOrdersListener()
             stopRealtimeShiftListener()
-            return false
+            val pendingEmail = reloadedUser.email.ifBlank { captainDao.getCaptain()?.email.orEmpty() }
+            return StartupSessionState.NeedsEmailVerification(pendingEmail)
         }
 
         val uid = reloadedUser.uid
@@ -1870,7 +1895,7 @@ class CaptainRepository(
                 captainDao.updateLoginState(false)
                 stopRealtimeOrdersListener()
                 stopRealtimeShiftListener()
-                return false
+                return StartupSessionState.Unauthenticated
             }
 
             val current = captainDao.getCaptain()
@@ -1895,7 +1920,7 @@ class CaptainRepository(
                     reconcileDailyWallets()
                 }
             }
-            true
+            StartupSessionState.Authenticated
         } catch (e: Exception) {
             Log.w("CaptainRepository", "Session validation network check: ${e.message}")
             val current = captainDao.getCaptain()
@@ -1910,12 +1935,12 @@ class CaptainRepository(
                     startRealtimeOrdersListener()
                     startRealtimeShiftListener()
                 }
-                true
+                StartupSessionState.Authenticated
             } else {
                 captainDao.updateLoginState(false)
                 stopRealtimeOrdersListener()
                 stopRealtimeShiftListener()
-                false
+                StartupSessionState.Unauthenticated
             }
         }
     }

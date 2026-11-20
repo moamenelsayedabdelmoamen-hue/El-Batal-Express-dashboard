@@ -52,6 +52,7 @@ import com.example.ui.screens.ProfileScreen
 import com.example.ui.screens.ShiftsScreen
 import com.example.ui.screens.SignUpScreen
 import com.example.ui.screens.SplashScreen
+import com.example.ui.screens.SplashVideoPlaybackMode
 import com.example.ui.screens.WalletScreen
 import com.example.ui.theme.DarkSurface
 import com.example.ui.theme.ExpressRed
@@ -130,7 +131,10 @@ fun CaptainBottomNavigationBar(
 }
 
 @Composable
-fun AppNavigation(viewModel: CaptainViewModel) {
+fun AppNavigation(
+    viewModel: CaptainViewModel,
+    splashPlaybackMode: SplashVideoPlaybackMode = SplashVideoPlaybackMode.ExoPlayerDefault
+) {
     val context = LocalContext.current
     val captain by viewModel.captainState.collectAsStateWithLifecycle()
     val activeOrder by viewModel.activeOrder.collectAsStateWithLifecycle()
@@ -172,9 +176,9 @@ fun AppNavigation(viewModel: CaptainViewModel) {
     val orderActionError by viewModel.orderActionError.collectAsStateWithLifecycle()
     val pendingNavigateTab by viewModel.pendingNavigateTab.collectAsStateWithLifecycle()
 
-    var currentRoute by remember { mutableStateOf<String>(ScreenRoute.Splash.route) }
+    val currentRoute by viewModel.currentRoute.collectAsStateWithLifecycle()
+    val unverifiedEmail by viewModel.unverifiedEmail.collectAsStateWithLifecycle()
     var selectedBottomTab by remember { mutableIntStateOf(0) }
-    var unverifiedEmail by remember { mutableStateOf("") }
 
     LaunchedEffect(pendingNavigateTab) {
         pendingNavigateTab?.let { targetTab ->
@@ -255,10 +259,9 @@ fun AppNavigation(viewModel: CaptainViewModel) {
         ScreenRoute.Splash.route -> {
             SplashScreen(
                 isLoggedIn = captain?.isLoggedIn == true,
+                playbackMode = splashPlaybackMode,
                 onNavigateNext = {
-                    viewModel.validateSession { isValid ->
-                        currentRoute = if (isValid) ScreenRoute.Main.route else ScreenRoute.Login.route
-                    }
+                    viewModel.onIntroSplashFinished()
                 }
             )
         }
@@ -269,18 +272,18 @@ fun AppNavigation(viewModel: CaptainViewModel) {
                     viewModel.login(
                         phoneOrEmail = phoneOrEmail,
                         pass = pass,
-                        onSuccess = { currentRoute = ScreenRoute.Main.route },
+                        onSuccess = { viewModel.navigateTo(ScreenRoute.Main.route) },
                         onNeedsEmailVerification = { email ->
-                            unverifiedEmail = email
+                            viewModel.setUnverifiedEmail(email)
                             onNeedsEmailVerification(email)
                         },
                         onError = onError
                     )
                 },
-                onNavigateSignUp = { currentRoute = ScreenRoute.SignUp.route },
+                onNavigateSignUp = { viewModel.navigateTo(ScreenRoute.SignUp.route) },
                 onNavigateVerifyEmail = { email ->
-                    unverifiedEmail = email
-                    currentRoute = ScreenRoute.VerifyEmail.route
+                    viewModel.setUnverifiedEmail(email)
+                    viewModel.navigateTo(ScreenRoute.VerifyEmail.route)
                 },
                 onForgotPasswordClick = { phoneOrEmail, onSuccess, onError ->
                     viewModel.sendPasswordReset(phoneOrEmail, onSuccess, onError)
@@ -289,7 +292,7 @@ fun AppNavigation(viewModel: CaptainViewModel) {
         }
         ScreenRoute.SignUp.route -> {
             BackHandler {
-                currentRoute = ScreenRoute.Login.route
+                viewModel.navigateTo(ScreenRoute.Login.route)
             }
             SignUpScreen(
                 isLoading = isLoading,
@@ -308,18 +311,18 @@ fun AppNavigation(viewModel: CaptainViewModel) {
                         idBackUri = idBackUri,
                         licenseUri = licenseUri,
                         onEmailSent = { sentEmail ->
-                            unverifiedEmail = sentEmail
-                            currentRoute = ScreenRoute.VerifyEmail.route
+                            viewModel.setUnverifiedEmail(sentEmail)
+                            viewModel.navigateTo(ScreenRoute.VerifyEmail.route)
                         },
                         onError = onError
                     )
                 },
-                onNavigateLogin = { currentRoute = ScreenRoute.Login.route }
+                onNavigateLogin = { viewModel.navigateTo(ScreenRoute.Login.route) }
             )
         }
         ScreenRoute.VerifyEmail.route -> {
             BackHandler {
-                currentRoute = ScreenRoute.Login.route
+                viewModel.navigateTo(ScreenRoute.Login.route)
             }
             EmailVerificationScreen(
                 email = unverifiedEmail.ifBlank { captain?.email ?: "" },
@@ -333,10 +336,10 @@ fun AppNavigation(viewModel: CaptainViewModel) {
                     viewModel.resendVerificationEmail(onResult)
                 },
                 onNavigateLogin = {
-                    currentRoute = ScreenRoute.Login.route
+                    viewModel.navigateTo(ScreenRoute.Login.route)
                 },
                 onVerifiedSuccess = {
-                    currentRoute = ScreenRoute.Main.route
+                    viewModel.navigateTo(ScreenRoute.Main.route)
                 }
             )
         }
@@ -480,7 +483,7 @@ fun AppNavigation(viewModel: CaptainViewModel) {
                                 onLogout = {
                                     viewModel.logout {
                                         selectedBottomTab = 0
-                                        currentRoute = ScreenRoute.Login.route
+                                        viewModel.navigateTo(ScreenRoute.Login.route)
                                     }
                                 }
                             )
