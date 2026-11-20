@@ -148,12 +148,12 @@ function isSubscriptionCurrentlyActive(
     normalizeStatus(subscriptionData.status),
     normalizeStatus(subscriptionData.subscriptionStatus),
     normalizeStatus(merchantData.subscriptionStatus),
-    normalizeStatus(merchantData.status),
   ];
+  // merchantData.status / isActive are account-level fields in legacy documents,
+  // so only explicit subscription fields can block a new subscription request.
   const activeFlag = subscriptionData.isActive === true ||
     subscriptionData.isSubscribed === true ||
-    merchantData.isSubscribed === true ||
-    merchantData.isActive === true;
+    merchantData.isSubscribed === true;
   const activeStatus = statuses.some((status) =>
     ["active", "approved", "trial", "enabled", "valid", "subscribed"].includes(status)
   );
