@@ -753,6 +753,8 @@ export const merchantUpdateOrderDetails = onCall(
           deliveryFee,
           delivery_fee: deliveryFee,
           captainEarning: deliveryFee,
+          status: "pending",
+          dispatchStatus: "searching",
           updatedAt: FieldValue.serverTimestamp(),
           merchantEditedAt: FieldValue.serverTimestamp(),
           merchantEditedBy: uid,
