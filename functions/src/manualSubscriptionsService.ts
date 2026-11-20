@@ -450,10 +450,10 @@ export class ManualSubscriptionsServerService {
           "هذا الطلب موجود بالفعل ولا يقبل إعادة الإرسال في حالته الحالية."
         );
       }
-      if (ACTIVE_PENDING_STATUSES.has(st)) {
+      if (ACTIVE_PENDING_STATUSES.has(st) || RESUBMISSION_STATUSES.has(st)) {
         throw new DomainHttpsError(
           "already-exists",
-          "لديك طلب اشتراك قيد المراجعة بالفعل. يرجى انتظار مراجعة الإدارة قبل إرسال طلب جديد."
+          "لديك طلب اشتراك قيد المراجعة أو يحتاج إلى إعادة إرسال بالفعل. يرجى متابعة الطلب الحالي."
         );
       }
     }
@@ -462,7 +462,6 @@ export class ManualSubscriptionsServerService {
       const dupRefSnap = await this.db
         .collection("manual_subscription_requests")
         .where("transactionReference", "==", transactionReference)
-        .limit(5)
         .get();
       for (const dSnap of dupRefSnap.docs) {
         if (resubmissionTargetDocId && dSnap.id === resubmissionTargetDocId) {
