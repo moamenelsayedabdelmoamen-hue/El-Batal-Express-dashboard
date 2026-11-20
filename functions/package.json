@@ -9,7 +9,8 @@
     "start": "npm run shell",
     "deploy": "firebase deploy --only functions",
     "logs": "firebase functions:log",
-    "migrate:remove-legacy-captain-passwords": "node scripts/cleanup-legacy-captain-password-fields.cjs"
+    "migrate:remove-legacy-captain-passwords": "node scripts/cleanup-legacy-captain-password-fields.cjs",
+    "test": "node --test test/*.test.mjs"
   },
   "name": "functions",
   "engines": {
