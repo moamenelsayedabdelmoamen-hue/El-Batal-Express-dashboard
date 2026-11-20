@@ -1661,10 +1661,25 @@ export class ManualSubscriptionsServerService {
         );
       }
 
-      const merchantSnap = await tx.get(
-        this.db.collection("merchants").doc(merchantId)
-      );
+      const merchantRef = this.db.collection("merchants").doc(merchantId);
+      const merchantSnap = await tx.get(merchantRef);
       const merchantData = merchantSnap.exists ? merchantSnap.data() ?? {} : {};
+      const activeRequestId = readString(merchantData, "activeManualSubscriptionRequestId");
+      if (activeRequestId && activeRequestId !== requestId) {
+        const activeRequestSnap = await tx.get(
+          this.db.collection("manual_subscription_requests").doc(activeRequestId)
+        );
+        const activeStatus = normalizeStatus(activeRequestSnap.data()?.status);
+        if (
+          activeRequestSnap.exists &&
+          (ACTIVE_PENDING_STATUSES.has(activeStatus) || RESUBMISSION_STATUSES.has(activeStatus))
+        ) {
+          throw new DomainHttpsError(
+            "already-exists",
+            "لدى التاجر طلب اشتراك آخر قيد المراجعة ولا يمكن فتح مراجعة ثانية."
+          );
+        }
+      }
       merchantFcmToken = readString(merchantData, "fcmToken");
       planName = readString(reqData, "planName", "plan") || "باقة الاشتراك";
 
@@ -1708,6 +1723,10 @@ export class ManualSubscriptionsServerService {
       }
 
       tx.update(requestRef, updatePatch);
+      tx.set(merchantRef, {
+        activeManualSubscriptionRequestId: requestId,
+        manualSubscriptionRequestUpdatedAt: s.serverTimestamp(),
+      }, {merge: true});
 
       tx.set(opLogRef, {
         action: "request_subscription_receipt_resubmission",
