@@ -395,6 +395,40 @@ export function readNormalizedOrderStatus(order: Record<string, unknown>): strin
 }
 
 /**
+ * Merchant may cancel only before pickup / customer receipt review / delivery.
+ */
+export function isMerchantCancelableOrderStatus(status: string): boolean {
+  return ![
+    "picked_up", "order_data_entered", "awaiting_merchant_confirmation",
+    "awaiting_confirmation", "merchant_rejected", "en_route", "confirmed",
+    "merchant_confirmed", "out_for_delivery", "delivering", "delivered",
+    "completed", "done",
+  ].includes(status.trim().toLowerCase());
+}
+
+/**
+ * Canonical merchant approval/rejection transition for captain-submitted details.
+ */
+export function resolveMerchantConfirmationTransition(
+  status: string,
+  merchantConfirmed: boolean,
+  confirmed: boolean
+): {allowed: boolean; alreadyUpdated: boolean; nextStatus: string} {
+  const current = status.trim().toLowerCase();
+  if (merchantConfirmed && confirmed && current === "en_route") {
+    return {allowed: true, alreadyUpdated: true, nextStatus: "en_route"};
+  }
+  if (!["awaiting_merchant_confirmation", "awaiting_confirmation", "merchant_rejected"].includes(current)) {
+    return {allowed: false, alreadyUpdated: false, nextStatus: current};
+  }
+  return {
+    allowed: true,
+    alreadyUpdated: false,
+    nextStatus: confirmed ? "en_route" : "merchant_rejected",
+  };
+}
+
+/**
  * Returns true only for terminal order states that release merchant package capacity.
  * In particular, "out_for_delivery" and "delivering" are active states, not terminal.
  */
