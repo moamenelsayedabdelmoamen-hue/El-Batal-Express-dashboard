@@ -25,7 +25,10 @@ service cloud.firestore {
     }
 
     function isActiveAdminDocument() {
-      return exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      return isSignedIn()
+        && 'email_verified' in request.auth.token
+        && request.auth.token.email_verified == true
+        && exists(/databases/$(database)/documents/admins/$(request.auth.uid))
         && get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.role == 'admin'
         && get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.emailVerified == true
         && get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.status in ['active', 'approved'];
