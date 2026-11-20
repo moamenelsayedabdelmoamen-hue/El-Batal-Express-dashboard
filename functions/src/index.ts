@@ -1038,7 +1038,6 @@ export const merchantConfirmOrder = onCall(
         throw new HttpsError("permission-denied", "حساب التاجر غير مؤهل لاعتماد الطلب.");
       }
 
-      let captainId = "";
       const result = await db.runTransaction(async (tx) => {
         const snap = await tx.get(orderRef);
         if (!snap.exists) throw new HttpsError("not-found", "الطلب غير موجود.");
@@ -1089,25 +1088,8 @@ export const merchantConfirmOrder = onCall(
         return {alreadyUpdated: false, status: "merchant_rejected"};
       });
 
-      if (confirmed && captainId && !result.alreadyUpdated) {
-        try {
-          const captainSnap = await db.collection("captains").doc(captainId).get();
-          const fcmToken = readString(captainSnap.data(), "fcmToken", "fcm_token");
-          if (fcmToken) {
-            await getMessaging().send({
-              token: fcmToken,
-              android: {priority: "high"},
-              data: {type: "merchant_confirmed", orderId},
-            });
-          }
-        } catch (err) {
-          logger.warn("Failed to notify captain after merchant confirmation", {
-            orderId,
-            captainId,
-            error: err instanceof Error ? err.message : String(err),
-          });
-        }
-      }
+      // Captain receives the canonical order status through its authenticated Firestore listener.
+      // Do not reuse the "new_order" FCM path for merchant confirmation.
       return {success: true, orderId, ...result};
     } catch (err) {
       throw mapError(err);
@@ -1124,6 +1106,15 @@ export const onOrderCreatedDispatch = onDocumentCreated(
   {document: "orders/{orderId}", region: "us-central1"},
   async (event) => {
     const orderId = event.params.orderId;
+    const order = event.data?.data() ?? {};
+    // The Dashboard dispatcher owns only orders created by merchantCreateOrder.
+    // Legacy order paths remain untouched until their callers have migrated.
+    if (
+      order.dispatchAuthority !== "dashboard_functions" ||
+      order.createdByServerFunction !== "merchantCreateOrder"
+    ) {
+      return;
+    }
     try {
       await service.dispatchNewOrSearchingOrder(orderId);
     } catch (err) {
