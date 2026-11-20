@@ -137,9 +137,15 @@ try {
   );
   assert.equal(createdOrder.status, "searching");
   assert.equal(createdOrder.offeredCaptainId, null);
-  const createdAlert = await createdAlertRef.get();
-  assert.equal(createdAlert.exists, true);
-  assert.equal(createdAlert.data().type, "captain_assignment_failed");
+  const createdAlert = await waitForDocument(
+    createdAlertRef,
+    (data) => data.type === "captain_assignment_failed",
+    "admin alert for order with no eligible captains"
+  );
+  assert.equal(createdAlert.orderId, createdOrderId);
+  const alertsForCreatedOrder = await db.collection("notifications")
+    .where("orderId", "==", createdOrderId).get();
+  assert.equal(alertsForCreatedOrder.size, 1, "Duplicate event deliveries must not duplicate the admin alert");
 
   console.log("3/4 Test Firestore document-updated dispatch and capacity release triggers");
   // Re-queue the same order. The update trigger should run the dispatcher again.
