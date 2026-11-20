@@ -392,8 +392,8 @@ describe('El-Batal Express Real Firebase Emulator Security Audit (Firestore + St
   test('4. Merchant permissions: reads ONLY own order receipt, ZERO access to Captain ID cards, scoped Captain profile photo', async () => {
     const merch1Storage = testEnv.authenticatedContext('merchant_1').storage(BUCKET_URL);
     const merch2Storage = testEnv.authenticatedContext('merchant_2').storage(BUCKET_URL);
-    const merch1Db = testEnv.authenticatedContext('merchant_1').firestore();
-    const merch2Db = testEnv.authenticatedContext('merchant_2').firestore();
+    const merch1Db = testEnv.authenticatedContext('merchant_1', { email_verified: true }).firestore();
+    const merch2Db = testEnv.authenticatedContext('merchant_2', { email_verified: true }).firestore();
 
     // Merchant 1 CAN read receipt of order_picked_up_c1 (merchantId == 'merchant_1')
     await assertSucceeds(getBytes(ref(merch1Storage, 'orders/order_picked_up_c1/receipts/receipt_c1.jpg')));
@@ -428,7 +428,7 @@ describe('El-Batal Express Real Firebase Emulator Security Audit (Firestore + St
   test('5. Firestore financial, subscription, restaurant, and order write protections', async () => {
     const cap1Db = testEnv.authenticatedContext('captain_1').firestore();
     const user1Db = testEnv.authenticatedContext('user_1').firestore();
-    const merch1Db = testEnv.authenticatedContext('merchant_1').firestore();
+    const merch1Db = testEnv.authenticatedContext('merchant_1', { email_verified: true }).firestore();
 
     // Captain 1 CAN update safe operational/presence/image-path fields on own doc
     await assertSucceeds(
@@ -508,7 +508,8 @@ describe('El-Batal Express Real Firebase Emulator Security Audit (Firestore + St
   });
 
   test('6. Admin account has verified management access across Storage and Firestore', async () => {
-    const adminCtx = testEnv.authenticatedContext('admin_1');
+    // Exercise the server-issued custom-claim path used by the production admin session.
+    const adminCtx = testEnv.authenticatedContext('admin_1', { role: 'admin', admin: true });
     const adminDb = adminCtx.firestore();
     const adminStorage = adminCtx.storage(BUCKET_URL);
 
