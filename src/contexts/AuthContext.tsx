@@ -137,7 +137,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             if (!hasAdminClaim && db) {
               try {
                 const adminDoc = await getDoc(doc(db, COLLECTIONS.ADMINS, firebaseUser.uid));
-                if (adminDoc.exists() && adminDoc.data()?.role === 'admin' && adminDoc.data()?.emailVerified === true && ['active', 'approved'].includes(String(adminDoc.data()?.status || '').toLowerCase())) {
+                if (firebaseUser.emailVerified && adminDoc.exists() && adminDoc.data()?.role === 'admin' && adminDoc.data()?.emailVerified === true && ['active', 'approved'].includes(String(adminDoc.data()?.status || '').toLowerCase())) {
                   hasAdminClaim = true;
                 }
               } catch (err) {
@@ -273,7 +273,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!hasAdminClaim && db) {
       try {
         const adminDoc = await getDoc(doc(db, COLLECTIONS.ADMINS, cred.user.uid));
-        if (adminDoc.exists() && adminDoc.data()?.role === 'admin' && adminDoc.data()?.emailVerified === true && ['active', 'approved'].includes(String(adminDoc.data()?.status || '').toLowerCase())) {
+        if (cred.user.emailVerified && adminDoc.exists() && adminDoc.data()?.role === 'admin' && adminDoc.data()?.emailVerified === true && ['active', 'approved'].includes(String(adminDoc.data()?.status || '').toLowerCase())) {
           hasAdminClaim = true;
         }
       } catch (err) {
@@ -350,7 +350,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!hasAdminClaim && db) {
       try {
         const adminDoc = await getDoc(doc(db, COLLECTIONS.ADMINS, cred.user.uid));
-        if (adminDoc.exists() && adminDoc.data()?.role === 'admin' && adminDoc.data()?.emailVerified === true && ['active', 'approved'].includes(String(adminDoc.data()?.status || '').toLowerCase())) {
+        if (cred.user.emailVerified && adminDoc.exists() && adminDoc.data()?.role === 'admin' && adminDoc.data()?.emailVerified === true && ['active', 'approved'].includes(String(adminDoc.data()?.status || '').toLowerCase())) {
           hasAdminClaim = true;
         }
       } catch (err) {
