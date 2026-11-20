@@ -26,9 +26,14 @@ service cloud.firestore {
 
     function isAdmin() {
       return isSignedIn() && (
-        request.auth.token.role == 'admin' ||
-        request.auth.token.admin == true ||
-        (request.auth.token.email_verified == true && request.auth.token.email in ['moamen.elsayed.abdelmoamen@gmail.com', 'admin@elbatalexpress.com']) ||
+        ('role' in request.auth.token && request.auth.token.role == 'admin') ||
+        ('admin' in request.auth.token && request.auth.token.admin == true) ||
+        (
+          'email_verified' in request.auth.token &&
+          request.auth.token.email_verified == true &&
+          'email' in request.auth.token &&
+          request.auth.token.email in ['moamen.elsayed.abdelmoamen@gmail.com', 'admin@elbatalexpress.com']
+        ) ||
         exists(/databases/$(database)/documents/admins/$(request.auth.uid))
       );
     }
@@ -461,7 +466,8 @@ service cloud.firestore {
 
     match /settings/{settingId} {
       allow read: if isAdmin() || isSignedIn();
-      allow write: if isAdmin();
+      // Sensitive configuration is changed only by trusted Admin SDK Cloud Functions.
+      allow write: if false;
     }
 
     match /operation_logs/{logId} {
