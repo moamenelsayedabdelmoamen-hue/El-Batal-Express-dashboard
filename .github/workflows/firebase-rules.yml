@@ -1,10 +1,14 @@
-name: Firebase Rules Validation
+name: Firebase Rules and Emulator Security Tests
+
 on:
   pull_request:
     paths:
       - "firestore.rules"
       - "storage.rules"
       - "firebase.json"
+      - "security_rules.test.js"
+      - "functions/test/**"
+      - "functions/src/**"
       - ".github/workflows/firebase-rules.yml"
   push:
     branches: [main]
@@ -12,14 +16,23 @@ on:
       - "firestore.rules"
       - "storage.rules"
       - "firebase.json"
+      - "security_rules.test.js"
+      - "functions/test/**"
+      - "functions/src/**"
+      - ".github/workflows/firebase-rules.yml"
+
 jobs:
   validate:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 20
       - run: node -e "JSON.parse(require('fs').readFileSync('firestore.indexes.json', 'utf8')); console.log('Firestore indexes JSON valid')"
+      - run: npm ci
+      - run: npm install --no-save @firebase/rules-unit-testing
       - run: npm install --global firebase-tools
-      - run: firebase emulators:exec --only firestore,storage --project demo-elbatal "echo Firebase rules compiled"
+      - run: firebase emulators:exec --only firestore,storage --project demo-elbatal "node --test security_rules.test.js"
+      - run: node --test functions/test/rulesVerification.test.mjs
