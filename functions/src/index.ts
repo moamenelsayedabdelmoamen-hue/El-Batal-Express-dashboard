@@ -667,6 +667,106 @@ export const merchantCancelOrder = onCall(
 
 
 /**
+ * Merchant edits delivery details and the merchant-entered fee only while the order
+ * is still searching and has not been offered or assigned to a captain.
+ */
+export const merchantUpdateOrderDetails = onCall(
+  {region: "us-central1"},
+  async (request) => {
+    try {
+      const uid = request.auth?.uid;
+      if (!uid) throw new HttpsError("unauthenticated", "يجب تسجيل الدخول أولاً.");
+      if (request.auth?.token.email_verified !== true) {
+        throw new HttpsError("permission-denied", "يجب تأكيد البريد الإلكتروني أولاً.");
+      }
+
+      const data = (request.data ?? {}) as Record<string, unknown>;
+      const orderId = requireOrderId(data.orderId);
+      const destinationAddress = readString(data, "destinationAddress", "deliveryAddress", "address");
+      const orderDetails = readString(data, "orderDetails", "items").slice(0, 4000);
+      const customerName = readString(data, "customerName").slice(0, 200);
+      const customerPhone = readString(data, "customerPhone").slice(0, 40);
+      const deliveryNotes = readString(data, "deliveryNotes", "notes").slice(0, 1000);
+      const serviceFee = readString(data, "serviceFee", "price");
+      if (!destinationAddress || destinationAddress.length > 1000) {
+        throw new HttpsError("invalid-argument", "عنوان التوصيل مطلوب ويجب ألا يتجاوز 1000 حرف.");
+      }
+      if (!serviceFee) {
+        throw new HttpsError("invalid-argument", "يرجى إدخال قيمة خدمة التوصيل من تطبيق التاجر.");
+      }
+      const feeMatch = serviceFee.replace(/,/g, "").match(/\d+(?:\.\d+)?/);
+      if (!feeMatch) {
+        throw new HttpsError("invalid-argument", "قيمة خدمة التوصيل يجب أن تحتوي على مبلغ رقمي واضح.");
+      }
+      const deliveryFee = Number(feeMatch[0]);
+      if (!Number.isFinite(deliveryFee) || deliveryFee < 0 || deliveryFee > 100000) {
+        throw new HttpsError("invalid-argument", "قيمة خدمة التوصيل غير صالحة.");
+      }
+
+      const db = getFirestore();
+      const merchantSnap = await db.collection("merchants").doc(uid).get();
+      const merchant = merchantSnap.data() ?? {};
+      if (
+        !merchantSnap.exists ||
+        readString(merchant, "accountType").toLowerCase() !== "merchant" ||
+        !["approved", "active"].includes(readString(merchant, "status").toLowerCase())
+      ) {
+        throw new HttpsError("permission-denied", "حساب التاجر غير مؤهل لتعديل الطلب.");
+      }
+
+      const orderRef = db.collection("orders").doc(orderId);
+      await db.runTransaction(async (tx) => {
+        const orderSnap = await tx.get(orderRef);
+        if (!orderSnap.exists) throw new HttpsError("not-found", "الطلب غير موجود.");
+        const order = orderSnap.data() ?? {};
+        if (readString(order, "merchantId", "restaurantId", "userId") !== uid) {
+          throw new HttpsError("permission-denied", "هذا الطلب لا يخص متجرك.");
+        }
+
+        const status = readNormalizedOrderStatus(order);
+        const assignedCaptainId = extractOrderCaptainUid(order);
+        const offeredCaptainId = readString(order, "offeredCaptainId");
+        if (
+          assignedCaptainId ||
+          offeredCaptainId ||
+          !["pending", "searching"].includes(status)
+        ) {
+          throw new HttpsError(
+            "failed-precondition",
+            "لا يمكن تعديل الرسوم أو بيانات الطلب بعد إرسال العرض إلى كابتن أو بدء التنفيذ."
+          );
+        }
+
+        tx.update(orderRef, {
+          address: destinationAddress,
+          destinationAddress,
+          deliveryAddress: destinationAddress,
+          orderDetails,
+          items: orderDetails,
+          customerName,
+          customerPhone,
+          deliveryNotes,
+          notes: deliveryNotes,
+          price: serviceFee,
+          serviceFee,
+          totalAmount: serviceFee,
+          deliveryFee,
+          delivery_fee: deliveryFee,
+          captainEarning: deliveryFee,
+          updatedAt: FieldValue.serverTimestamp(),
+          merchantEditedAt: FieldValue.serverTimestamp(),
+          merchantEditedBy: uid,
+        });
+      });
+
+      return {success: true, orderId, serviceFee, deliveryFee};
+    } catch (err) {
+      throw mapError(err);
+    }
+  }
+);
+
+/**
  * Admin creates an unassigned order. The created document is the source of truth;
  * the Firestore create trigger dispatches it to an eligible captain.
  */
