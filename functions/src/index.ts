@@ -221,14 +221,14 @@ function generateDistinctOrderCode(): string {
 
 function isClosedMerchantOrderStatus(status: string): boolean {
   const value = status.trim().toLowerCase();
+  // Do not use substring checks for "deliver": they also match active states such as
+  // "out_for_delivery" and "delivering", which must continue consuming merchant capacity.
   return [
-    "delivered", "completed", "done", "cancelled", "canceled",
-    "ملغي", "ملغى", "تم الإلغاء", "تم الالغاء", "تم التسليم", "تم التوصيل", "مكتمل", "مكتملة",
-  ].includes(value) ||
-    value.includes("cancel") ||
-    value.includes("deliver") ||
-    value.includes("مكتمل") ||
-    value.includes("تسليم");
+    "delivered", "completed", "complete", "done", "cancelled", "canceled",
+    "expired", "failed", "declined", "rejected",
+    "ملغي", "ملغى", "تم الإلغاء", "تم الالغاء", "تم التسليم", "تم التوصيل",
+    "مكتمل", "مكتملة", "انتهى", "منتهي", "منتهية",
+  ].includes(value);
 }
 
 /**
@@ -1426,6 +1426,67 @@ export const merchantConfirmOrder = onCall(
   }
 );
 
+
+/**
+ * Releases a merchant's reserved package slot after an order becomes terminal.
+ * The transaction checks the current order and capacity ledger so duplicate trigger
+ * deliveries cannot release the same slot twice.
+ */
+export const onOrderCapacityReleased = onDocumentUpdated(
+  {document: "orders/{orderId}", region: "us-central1"},
+  async (event) => {
+    const before = event.data?.before.data() as Record<string, unknown> | undefined;
+    const after = event.data?.after.data() as Record<string, unknown> | undefined;
+    if (!after) return;
+    const beforeStatus = readNormalizedOrderStatus(before ?? {});
+    const afterStatus = readNormalizedOrderStatus(after);
+    if (isClosedMerchantOrderStatus(beforeStatus) || !isClosedMerchantOrderStatus(afterStatus)) return;
+
+    const merchantId = readString(after, "merchantId", "restaurantId", "userId");
+    if (!merchantId) return;
+
+    const db = getFirestore();
+    const orderId = event.params.orderId;
+    const orderRef = db.collection("orders").doc(orderId);
+    const capacityRef = db.collection("merchants").doc(merchantId)
+      .collection("capacity").doc("current");
+
+    await db.runTransaction(async (tx) => {
+      const [orderSnap, capacitySnap] = await Promise.all([
+        tx.get(orderRef),
+        tx.get(capacityRef),
+      ]);
+      if (!orderSnap.exists || !capacitySnap.exists) return;
+
+      const currentOrder = orderSnap.data() ?? {};
+      if (
+        currentOrder.capacityReleased === true ||
+        !isClosedMerchantOrderStatus(readNormalizedOrderStatus(currentOrder))
+      ) return;
+
+      const capacity = capacitySnap.data() ?? {};
+      const reservedIds = Array.isArray(capacity.reservedOrderIds)
+        ? capacity.reservedOrderIds.map((id) => String(id)).filter(Boolean)
+        : [];
+      if (!reservedIds.includes(orderId)) return;
+
+      const remainingIds = reservedIds.filter((id) => id !== orderId);
+      tx.update(orderRef, {
+        capacityReleased: true,
+        capacityReleasedAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      tx.set(capacityRef, {
+        reservedOrderIds: remainingIds,
+        activeReservationsCount: remainingIds.length,
+        capacityVersion: FieldValue.increment(1),
+        lastReleasedOrderId: orderId,
+        terminalStatusAtRelease: readNormalizedOrderStatus(currentOrder),
+        updatedAt: FieldValue.serverTimestamp(),
+      }, {merge: true});
+    });
+  }
+);
 
 /**
  * Trigger 1: Auto-dispatches newly created pending orders to nearest eligible captain
