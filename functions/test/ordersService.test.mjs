@@ -569,6 +569,8 @@ describe("El-Batal Cloud Functions Order Server Service", () => {
     const res = await service.handleReassignOfferTask(scheduledTasks[0].payload);
     assert.equal(res.status, "no_captains_available");
     assert.equal(db.getDocData("orders/ord_no_one").dispatchStatus, "no_captains_available");
+    // A duplicate dispatch event after the order entered no-captain state stays idempotent.
+    await service.dispatchNewOrSearchingOrder("ord_no_one");
 
     const notifs = await db.collection("notifications").get();
     assert.equal(notifs.size, 1);
