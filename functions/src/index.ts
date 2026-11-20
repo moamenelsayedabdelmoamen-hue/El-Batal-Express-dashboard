@@ -308,6 +308,9 @@ export const merchantCreateOrder = onCall(
           captainLimit: 0,
           activeCaptainsCount: 0,
           remainingCaptains: 0,
+          planId: 0,
+          planName: "",
+          subscriptionVersion: 1,
           isReplay: true,
         };
       }
@@ -344,6 +347,12 @@ export const merchantCreateOrder = onCall(
                 replay: true,
                 orderId: readString(keyData, "orderId"),
                 orderCode: readString(keyData, "orderCode"),
+                maxCaptains: 0,
+                activeCaptainsCount: 0,
+                remainingCaptains: 0,
+                planId: 0,
+                planName: "",
+                subscriptionVersion: 1,
               };
             }
 
@@ -518,6 +527,9 @@ export const merchantCreateOrder = onCall(
               maxCaptains,
               activeCaptainsCount: activeOrderCount + 1,
               remainingCaptains: Math.max(0, maxCaptains - activeOrderCount - 1),
+              planId: readNumber(subscription, "planId") ?? readNumber(merchant, "planId") ?? 0,
+              planName: readString(subscription, "planName", "name") || readString(merchant, "planName"),
+              subscriptionVersion: readNumber(subscription, "subscriptionVersion") ?? 1,
             };
           });
 
@@ -531,6 +543,9 @@ export const merchantCreateOrder = onCall(
             captainLimit: result.maxCaptains,
             activeCaptainsCount: result.activeCaptainsCount,
             remainingCaptains: result.remainingCaptains,
+            planId: result.planId,
+            planName: result.planName,
+            subscriptionVersion: result.subscriptionVersion,
             isReplay: result.replay,
           };
         } catch (err) {
@@ -1142,6 +1157,8 @@ export const onOrderUpdatedDispatch = onDocumentUpdated(
     const afterOffered = String(after.offeredCaptainId ?? "").trim();
 
     if (
+      after.dispatchAuthority === "dashboard_functions" &&
+      after.createdByServerFunction === "merchantCreateOrder" &&
       (afterStatus === "pending" || afterStatus === "searching") &&
       afterDispatch === "searching" &&
       beforeDispatch !== "searching" &&
