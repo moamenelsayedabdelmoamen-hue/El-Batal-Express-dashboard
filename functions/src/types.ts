@@ -97,6 +97,7 @@ export interface OfferFcmPayload {
   orderId: string;
   orderNumber: string;
   orderCode: string;
+  merchantId: string;
   storeName: string;
   storePhone: string;
   storeImage: string;
