@@ -26,9 +26,9 @@ service cloud.firestore {
 
     function isAdmin() {
       return isSignedIn() && (
-        request.auth.token.role == 'admin' ||
-        request.auth.token.admin == true ||
-        (request.auth.token.email_verified == true && request.auth.token.email in ['moamen.elsayed.abdelmoamen@gmail.com', 'admin@elbatalexpress.com']) ||
+        request.auth.token.get('role', '') == 'admin' ||
+        request.auth.token.get('admin', false) == true ||
+        (request.auth.token.get('email_verified', false) == true && request.auth.token.get('email', '') in ['moamen.elsayed.abdelmoamen@gmail.com', 'admin@elbatalexpress.com']) ||
         exists(/databases/$(database)/documents/admins/$(request.auth.uid))
       );
     }
@@ -169,8 +169,8 @@ service cloud.firestore {
             && !isMerchantAccount()
             && ('accountType' in incoming() && incoming().accountType == 'captain')
             && (!('role' in incoming()) || incoming().role == 'captain')
-            && (!('emailVerified' in incoming()) || incoming().emailVerified == false || request.auth.token.email_verified == true)
-            && (!('isEmailVerified' in incoming()) || incoming().isEmailVerified == false || request.auth.token.email_verified == true)
+            && (!('emailVerified' in incoming()) || incoming().emailVerified == false || request.auth.token.get('email_verified', false) == true)
+            && (!('isEmailVerified' in incoming()) || incoming().isEmailVerified == false || request.auth.token.get('email_verified', false) == true)
             && isValidCaptainProfileShape(incoming(), captainId)
             && hasSafeInitialCaptainFinancialAndAdminFields(incoming())
           )
@@ -185,8 +185,8 @@ service cloud.firestore {
             && !isMerchantAccount()
             && (!('accountType' in existing()) || existing().accountType == 'captain')
             && !('accountType' in incoming().diff(existing()).affectedKeys())
-            && (!('emailVerified' in incoming().diff(existing()).affectedKeys()) || incoming().emailVerified == false || request.auth.token.email_verified == true)
-            && (!('isEmailVerified' in incoming().diff(existing()).affectedKeys()) || incoming().isEmailVerified == false || request.auth.token.email_verified == true)
+            && (!('emailVerified' in incoming().diff(existing()).affectedKeys()) || incoming().emailVerified == false || request.auth.token.get('email_verified', false) == true)
+            && (!('isEmailVerified' in incoming().diff(existing()).affectedKeys()) || incoming().isEmailVerified == false || request.auth.token.get('email_verified', false) == true)
             && isValidCaptainProfileShape(incoming(), captainId)
             && isAllowedCaptainSelfUpdateKeys()
           )
@@ -336,7 +336,7 @@ service cloud.firestore {
             && isAllowedMerchantSelfUpdateKeys()
             && (!('emailVerified' in incoming().diff(existing()).affectedKeys())
               || incoming().emailVerified == false
-              || request.auth.token.email_verified == true)
+              || request.auth.token.get('email_verified', false) == true)
           )
         );
 
