@@ -472,6 +472,22 @@ export function requireValidOrderId(raw: unknown): string {
 }
 
 /**
+ * Resolve the merchant package captain capacity from canonical fields.
+ * Explicit captainLimit/maxCaptains always wins; legacy plan IDs map to 2/4/6/8.
+ */
+export function resolveMerchantCaptainLimit(
+  subscription: Record<string, unknown> | undefined,
+  merchant: Record<string, unknown> | undefined
+): number {
+  const explicit = readNumber(subscription, "captainLimit", "maxCaptains") ??
+    readNumber(merchant, "captainLimit", "maxCaptains");
+  if (explicit !== null && [2, 4, 6, 8].includes(explicit)) return explicit;
+  const planId = readNumber(subscription, "planId") ?? readNumber(merchant, "planId");
+  const legacyLimits: Record<number, number> = {1: 2, 2: 4, 3: 6, 4: 8};
+  return planId === null ? 0 : (legacyLimits[planId] ?? 0);
+}
+
+/**
  * Validates merchant account status and active non-expired subscription.
  * @param {string} merchantId Merchant document ID.
  * @param {Record<string, unknown> | undefined} merchantData Merchant document data.
