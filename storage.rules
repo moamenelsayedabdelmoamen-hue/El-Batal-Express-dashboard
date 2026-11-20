@@ -222,7 +222,12 @@ service firebase.storage {
       allow create: if isAuthenticated()
         && isMerchantAccount()
         && request.auth.uid == merchantId
-        && fileName.matches('^[A-Za-z0-9_\\-]{6,120}\\.(jpg|jpeg|png|webp)
+        && fileName.matches('^[A-Za-z0-9_\\-]{6,120}\\.(jpg|jpeg|png|webp)$')
+        && isValidImageUpload();
+      allow update, delete: if isAdmin();
+    }
+
+    match /restaurants/{merchantId}/{allFiles=**} {
       allow read: if isAuthenticated();
       allow create, update: if isAuthenticated()
         && (request.auth.uid == merchantId || isAdmin())
