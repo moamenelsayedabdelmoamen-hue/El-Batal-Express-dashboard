@@ -191,9 +191,22 @@ export const onCaptainAvailabilityChanged = onDocumentUpdated(
     if (!before || !after) return;
 
     const nowMs = Date.now();
-    const wasEligible = isCaptainCandidateBaseEligible(before, nowMs);
-    const isEligible = isCaptainCandidateBaseEligible(after, nowMs);
-    if (wasEligible || !isEligible) return;
+    const isQueueReady = (data: Record<string, unknown>): boolean => {
+      const presence = String(data.presenceStatus ?? data.availabilityStatus ?? "").trim().toLowerCase();
+      const hasActiveOrder = Boolean(
+        String(data.currentOrderId ?? data.activeOrderId ?? "").trim()
+      );
+      const isBusy = data.isBusy === true ||
+        hasActiveOrder ||
+        ["busy", "on_trip", "on_trip", "in_trip"].includes(presence);
+      return data.isOnline === true &&
+        !isBusy &&
+        !["offline", "busy", "on_trip", "in_trip"].includes(presence) &&
+        isCaptainCandidateBaseEligible(data, nowMs);
+    };
+    const wasQueueReady = isQueueReady(before);
+    const isQueueReadyNow = isQueueReady(after);
+    if (wasQueueReady || !isQueueReadyNow) return;
 
     try {
       const waiting = await getFirestore()
