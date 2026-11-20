@@ -117,7 +117,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         auth,
         async (firebaseUser: FirebaseUser | null) => {
           if (firebaseUser) {
-            let hasAdminClaim = isSuperAdminEmail(firebaseUser.email);
+            let hasAdminClaim = firebaseUser.emailVerified && isSuperAdminEmail(firebaseUser.email);
             let userClaims: Record<string, any> = {};
 
             try {
@@ -256,7 +256,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     const cred = await signInWithEmailAndPassword(auth, email, pass);
-    let hasAdminClaim = isSuperAdminEmail(cred.user.email);
+    let hasAdminClaim = cred.user.emailVerified && isSuperAdminEmail(cred.user.email);
     let userClaims: Record<string, any> = {};
 
     try {
