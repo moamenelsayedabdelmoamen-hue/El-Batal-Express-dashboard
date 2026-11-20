@@ -871,10 +871,26 @@ export class OrderServerService {
     const existingOfferedUid = readString(preOrder, "offeredCaptainId");
     const existingExpiryMs = parseTimestampMs(preOrder.offerExpiresAt);
     if (existingOfferedUid && existingExpiryMs > nowMs) {
+      // A prior trigger attempt may have committed the offer but failed while
+      // enqueueing its Cloud Task. Re-enqueue the same generation's watchdog.
+      // Duplicate tasks are safe because the worker checks captain + generation
+      // transactionally before rotating an offer.
+      const existingGeneration = Number(preOrder.offerGeneration ?? 0) || 0;
+      if (existingGeneration > 0) {
+        await this.effects.enqueueReassignTask(
+          {
+            orderId,
+            expectedCaptainId: existingOfferedUid,
+            expectedOfferGeneration: existingGeneration,
+          },
+          Math.max(5, Math.ceil((existingExpiryMs - nowMs) / 1000))
+        );
+      }
       return {
         status: "ignored_already_active",
         orderId,
         offeredCaptainId: existingOfferedUid,
+        offerGeneration: existingGeneration,
         offerExpiresAtMs: existingExpiryMs,
       };
     }
@@ -1652,17 +1668,25 @@ export class OrderServerService {
       "مطعم غير محدد";
     const s = this.effects.sentinels;
 
-    await this.db.collection("notifications").add({
-      type: "captain_assignment_failed",
-      targetRole: "admin",
-      title: `تعذر تعيين كابتن للطلب #${orderNumber}`,
-      message: `${reason} — ${restaurantName}`,
-      orderId,
-      orderNumber,
-      restaurantName,
-      reason,
-      isRead: false,
-      createdAt: s.serverTimestamp(),
+    // Stable notification ID makes duplicate Firestore event delivery harmless
+    // and avoids producing several admin alerts for the same unresolved order.
+    const notificationRef = this.db.collection("notifications")
+      .doc(`captain_assignment_failed_${orderId}`);
+    await this.db.runTransaction(async (tx) => {
+      const existing = await tx.get(notificationRef);
+      if (existing.exists) return;
+      tx.set(notificationRef, {
+        type: "captain_assignment_failed",
+        targetRole: "admin",
+        title: `تعذر تعيين كابتن للطلب #${orderNumber}`,
+        message: `${reason} — ${restaurantName}`,
+        orderId,
+        orderNumber,
+        restaurantName,
+        reason,
+        isRead: false,
+        createdAt: s.serverTimestamp(),
+      });
     });
   }
 }
