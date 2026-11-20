@@ -6,9 +6,20 @@ service firebase.storage {
       return request.auth != null;
     }
 
+    function isEmailVerified() {
+      return isAuthenticated()
+        && 'email_verified' in request.auth.token
+        && request.auth.token.email_verified == true;
+    }
+
+    function isCaptainAccount() {
+      return isEmailVerified()
+        && firestore.exists(/databases/(default)/documents/captains/$(request.auth.uid));
+    }
+
     // Trusted DB-backed or token-verified admin check (matches firestore.rules)
     function isAdmin() {
-      return isAuthenticated() && (
+      return isEmailVerified() && (
         firestore.exists(/databases/(default)/documents/admins/$(request.auth.uid)) ||
         (
           'email' in request.auth.token &&
@@ -24,7 +35,7 @@ service firebase.storage {
 
     // Trusted DB-backed merchant account check
     function isMerchantAccount() {
-      return isAuthenticated() &&
+      return isEmailVerified() &&
         firestore.exists(/databases/(default)/documents/merchants/$(request.auth.uid));
     }
 
@@ -36,7 +47,7 @@ service firebase.storage {
     }
 
     function isAssignedCaptainOfOrder(orderData) {
-      return isAuthenticated() && (
+      return isCaptainAccount() && (
         ('captainId' in orderData && orderData.captainId == request.auth.uid) ||
         ('driverId' in orderData && orderData.driverId == request.auth.uid) ||
         ('captainUid' in orderData && orderData.captainUid == request.auth.uid) ||
