@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {OrderServerService} from "../lib/ordersService.js";
 import {DomainHttpsError} from "../lib/types.js";
 import {getCairoTimeContext} from "../lib/shifts.js";
+import {isTerminalMerchantOrderStatus} from "../lib/validators.js";
 
 /**
  * Stateful in-memory transactional Firestore engine with optimistic version checks,
@@ -635,5 +636,46 @@ describe("El-Batal Cloud Functions Order Server Service", () => {
     const notFound = await service.resolveCaptainEmailByPhone({phone: "01077778888"});
     assert.equal(notFound.found, false);
     assert.equal(notFound.email, null);
+  });
+});
+
+describe("Merchant package capacity terminal-state classification", () => {
+  it("keeps active delivery phases counted against the captain package", () => {
+    for (const status of [
+      "pending",
+      "searching",
+      "offered",
+      "accepted",
+      "picked_up",
+      "awaiting_merchant_confirmation",
+      "merchant_rejected",
+      "en_route",
+      "out_for_delivery",
+      "delivering",
+      "on_the_way",
+    ]) {
+      assert.equal(isTerminalMerchantOrderStatus(status), false, status);
+    }
+  });
+
+  it("releases capacity only for terminal delivered/cancelled states", () => {
+    for (const status of [
+      "delivered",
+      "completed",
+      "complete",
+      "done",
+      "cancelled",
+      "canceled",
+      "expired",
+      "failed",
+      "declined",
+      "rejected",
+      "تم التسليم",
+      "تم التوصيل",
+      "تم الإلغاء",
+      "ملغي",
+    ]) {
+      assert.equal(isTerminalMerchantOrderStatus(status), true, status);
+    }
   });
 });
