@@ -4,7 +4,7 @@ on:
     paths:
       - "firestore.rules"
       - "storage.rules"
-      - "security_rules.test.js"
+      - "security_rules.test.cjs"
       - "firebase.json"
       - ".github/workflows/firebase-rules.yml"
   push:
@@ -14,7 +14,7 @@ on:
     paths:
       - "firestore.rules"
       - "storage.rules"
-      - "security_rules.test.js"
+      - "security_rules.test.cjs"
       - "firebase.json"
       - ".github/workflows/firebase-rules.yml"
 
@@ -37,4 +37,4 @@ jobs:
       - name: Install Firebase CLI
         run: npm install --global firebase-tools
       - name: Run Firestore and Storage security assertions
-        run: firebase emulators:exec --only firestore,storage --project el-batal-express-956ae "node --test security_rules.test.js"
+        run: firebase emulators:exec --only firestore,storage --project el-batal-express-956ae "node --test security_rules.test.cjs"
