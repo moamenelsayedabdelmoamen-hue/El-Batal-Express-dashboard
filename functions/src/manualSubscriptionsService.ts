@@ -435,6 +435,16 @@ export class ManualSubscriptionsServerService {
           resubmissionTargetDocId = docSnap.id;
           continue;
         }
+        // A repeated network submission with the same requestId + idempotency key is handled
+        // inside the transaction as a safe no-op. Different keys remain rejected.
+        if (
+          ACTIVE_PENDING_STATUSES.has(st) &&
+          idempotencyKey &&
+          readString(d, "idempotencyKey") === idempotencyKey
+        ) {
+          resubmissionTargetDocId = docSnap.id;
+          continue;
+        }
         throw new DomainHttpsError(
           "already-exists",
           "هذا الطلب موجود بالفعل ولا يقبل إعادة الإرسال في حالته الحالية."
