@@ -437,9 +437,17 @@ describe("Manual Vodafone Cash Subscriptions Server Service (Full 14-Scenario Su
     assert.equal(submitted.receiverWalletNumber, "01099887766");
     assert.equal(submitted.isResubmission, false);
 
-    // MUST NOT activate subscription or create payment on submission
-    assert.equal(db.getDocData("subscriptions/merchant_1"), undefined);
-    assert.equal(db.getDocData("merchants/merchant_1").isSubscribed, false);
+    // Pending review state must be synchronized to both documents consumed by the Merchant App.
+    const pendingSub = db.getDocData("subscriptions/merchant_1");
+    const pendingMerchant = db.getDocData("merchants/merchant_1");
+    assert.equal(pendingSub.status, "pending_review");
+    assert.equal(pendingSub.subscriptionStatus, "pending_review");
+    assert.equal(pendingSub.pendingRequestId, "req_e2e_1");
+    assert.equal(pendingSub.paymentMethod, "vodafone_cash_manual");
+    assert.equal(pendingSub.isSubscribed, false);
+    assert.equal(pendingMerchant.subscriptionStatus, "pending_review");
+    assert.equal(pendingMerchant.pendingRequestId, "req_e2e_1");
+    assert.equal(pendingMerchant.isSubscribed, false);
     assert.equal(db.listCollection("payments").length, 0);
 
     // Trigger fires admin notification
@@ -912,7 +920,12 @@ describe("Manual Vodafone Cash Subscriptions Server Service (Full 14-Scenario Su
 
     assert.equal(resub.success, true);
     assert.equal(resub.status, "resubmission_required");
-    assert.equal(db.getDocData("subscriptions/merchant_1"), undefined);
+    const resubPendingSub = db.getDocData("subscriptions/merchant_1");
+    const resubPendingMerchant = db.getDocData("merchants/merchant_1");
+    assert.equal(resubPendingSub.status, "resubmission_required");
+    assert.equal(resubPendingSub.pendingRequestId, "req_resub_1");
+    assert.equal(resubPendingMerchant.subscriptionStatus, "resubmission_required");
+    assert.equal(resubPendingMerchant.pendingRequestId, "req_resub_1");
     assert.equal(db.listCollection("payments").length, 0);
     assert.equal(merchantPushes.length, 1);
     assert.equal(merchantPushes[0].eventType, "subscription_resubmission_requested");
@@ -942,6 +955,9 @@ describe("Manual Vodafone Cash Subscriptions Server Service (Full 14-Scenario Su
     assert.equal(resubmitted.success, true);
     assert.equal(resubmitted.isResubmission, true);
     assert.equal(resubmitted.status, "pending_review");
+    assert.equal(db.getDocData("subscriptions/merchant_1").status, "pending_review");
+    assert.equal(db.getDocData("subscriptions/merchant_1").pendingRequestId, "req_resub_1");
+    assert.equal(db.getDocData("merchants/merchant_1").pendingRequestId, "req_resub_1");
 
     // Admin now approves cleanly
     advanceMs(60_000);
@@ -952,6 +968,8 @@ describe("Manual Vodafone Cash Subscriptions Server Service (Full 14-Scenario Su
     assert.equal(approved.success, true);
     const finalReq = db.getDocData("manual_subscription_requests/req_resub_1");
     assert.equal(finalReq.status, "approved");
+    assert.equal(db.getDocData("subscriptions/merchant_1").pendingRequestId, null);
+    assert.equal(db.getDocData("merchants/merchant_1").pendingRequestId, null);
     assert.equal(finalReq.reviewHistory.length, 3); // resubmission_required + resubmitted + approved
     assert.ok(finalReq.previousReceipts.length >= 1);
 
@@ -1071,5 +1089,44 @@ describe("Manual Vodafone Cash Subscriptions Server Service (Full 14-Scenario Su
       }),
       (err) => err instanceof DomainHttpsError && err.code === "invalid-argument"
     );
+  }); 
+  it("15. submitManualSubscriptionRequest refuses to replace an active paid subscription", async () => {
+    const now = Date.UTC(2026, 10, 20, 10, 0, 0);
+    const {db, service, storageFiles} = createHarness(now);
+    seedMerchant(db, {
+      merchantId: "merchant_1",
+      merchantOverrides: {
+        subscriptionStatus: "active",
+        isActive: true,
+        isSubscribed: true,
+        subscriptionExpiresAt: now + 10 * 24 * 60 * 60 * 1000,
+      },
+    });
+    db.seed("subscriptions/merchant_1", {
+      status: "active",
+      subscriptionStatus: "active",
+      isActive: true,
+      isSubscribed: true,
+      expiresAt: now + 10 * 24 * 60 * 60 * 1000,
+      subscriptionVersion: 7,
+    });
+    const receiptPath = "subscription_receipts/merchant_1/active_guard.jpg";
+    storageFiles.add(receiptPath);
+
+    await assert.rejects(
+      () => service.submitManualSubscriptionRequest(MERCHANT_AUTH, {
+        requestId: "req_active_guard",
+        planId: "plan_2_captains",
+        senderPhone: "01055556666",
+        transactionReference: "VF-ACTIVE-GUARD",
+        receiptImagePath: receiptPath,
+      }),
+      (err) => err instanceof DomainHttpsError && err.code === "failed-precondition"
+    );
+    assert.equal(db.getDocData("subscriptions/merchant_1").status, "active");
+    assert.equal(db.getDocData("merchants/merchant_1").subscriptionStatus, "active");
+    assert.equal(db.getDocData("manual_subscription_requests/req_active_guard"), undefined);
+    assert.equal(db.listCollection("payments").length, 0);
   });
+
 });
