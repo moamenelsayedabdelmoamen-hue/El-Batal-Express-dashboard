@@ -611,6 +611,7 @@ export const merchantCreateOrder = onCall(
               capacitySnap,
             ] = await Promise.all([
               tx.get(merchantRef),
+              tx.get(restaurantRef),
               tx.get(subscriptionRef),
               tx.get(codeRef),
               tx.get(idempotencyRef),
@@ -1173,6 +1174,7 @@ export const adminCreateOrder = onCall(
       }
 
       const merchantRef = db.collection("merchants").doc(merchantId);
+      const restaurantRef = db.collection("restaurants").doc(merchantId);
       const subscriptionRef = db.collection("subscriptions").doc(merchantId);
       const capacityRef = merchantRef.collection("capacity").doc("current");
       const ordersRef = db.collection("orders");
@@ -1238,6 +1240,7 @@ export const adminCreateOrder = onCall(
           await db.runTransaction(async (tx) => {
             const [
               currentMerchantSnap,
+              currentRestaurantSnap,
               currentSubscriptionSnap,
               codeSnap,
               keySnap,
@@ -1256,10 +1259,12 @@ export const adminCreateOrder = onCall(
               tx.get(capacityRef),
             ]);
             if (keySnap.exists) return;
-            if (!currentMerchantSnap.exists || !currentSubscriptionSnap.exists) {
+            if ((!currentMerchantSnap.exists && !currentRestaurantSnap.exists) || !currentSubscriptionSnap.exists) {
               throw new HttpsError("failed-precondition", "ملف التاجر أو الاشتراك غير موجود.");
             }
-            const currentMerchant = currentMerchantSnap.data() ?? {};
+            const currentMerchant = currentMerchantSnap.exists
+              ? currentMerchantSnap.data() ?? {}
+              : currentRestaurantSnap.data() ?? {};
             const currentSubscription = currentSubscriptionSnap.data() ?? {};
             assertMerchantAndSubscriptionValid(merchantId, currentMerchant, currentSubscription, Date.now());
             if (codeSnap.exists) throw new Error("ORDER_CODE_COLLISION");
@@ -1827,7 +1832,6 @@ export const retryNoCaptainOrdersWhenCaptainAvailable = onDocumentUpdated(
 
     const queued = await getFirestore()
       .collection("orders")
-      .where("dispatchAuthority", "==", "dashboard_functions")
       .where("dispatchStatus", "==", "no_captains_available")
       .limit(50)
       .get();
@@ -1841,7 +1845,10 @@ export const retryNoCaptainOrdersWhenCaptainAvailable = onDocumentUpdated(
       return 0;
     };
     const pending = queued.docs
-      .filter((doc) => ["pending", "searching"].includes(readNormalizedOrderStatus(doc.data() ?? {})))
+      .filter((doc) =>
+        doc.get("dispatchAuthority") === "dashboard_functions" &&
+        ["pending", "searching"].includes(readNormalizedOrderStatus(doc.data() ?? {}))
+      )
       .sort((a, b) => toMillis(a.get("createdAt")) - toMillis(b.get("createdAt")));
 
     for (const orderDoc of pending) {
