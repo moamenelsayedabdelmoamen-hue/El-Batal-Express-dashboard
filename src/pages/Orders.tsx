@@ -358,10 +358,12 @@ export const OrdersPage: React.FC = () => {
           o.id === orderId
             ? {
                 ...o,
-                captainId,
-                captainName,
+                offeredCaptainId: result.offeredCaptainId,
+                offeredCaptainName: result.offeredCaptainName,
+                offerExpiresAt: result.offerExpiresAt,
+                offerGeneration: result.offerGeneration,
+                dispatchStatus: 'offered',
                 status: result.status,
-                assignedAt: result.assignedAt,
                 captainSearchDuration: result.captainSearchDuration,
                 captainSearchSeconds: result.captainSearchSeconds,
                 distanceToMerchantKm: result.distanceToMerchantKm,
@@ -374,10 +376,12 @@ export const OrdersPage: React.FC = () => {
           prev
             ? {
                 ...prev,
-                captainId,
-                captainName,
+                offeredCaptainId: result.offeredCaptainId,
+                offeredCaptainName: result.offeredCaptainName,
+                offerExpiresAt: result.offerExpiresAt,
+                offerGeneration: result.offerGeneration,
+                dispatchStatus: 'offered',
                 status: result.status,
-                assignedAt: result.assignedAt,
                 captainSearchDuration: result.captainSearchDuration,
                 captainSearchSeconds: result.captainSearchSeconds,
                 distanceToMerchantKm: result.distanceToMerchantKm,
@@ -385,7 +389,7 @@ export const OrdersPage: React.FC = () => {
             : null
         );
       }
-      success(`تم تعيين الكابتن "${captainName}" للطلب بنجاح!`);
+      success(`تم إرسال عرض الطلب إلى الكابتن "${captainName}" لمدة 60 ثانية.`);
     } catch (err) {
       toastError('فشل تعيين الكابتن للطلب في قاعدة البيانات');
     }
