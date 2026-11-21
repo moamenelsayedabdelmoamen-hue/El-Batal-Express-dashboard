@@ -2085,11 +2085,16 @@ export class ManualSubscriptionsServerService {
           planKey = readString(selectedPlan, "planId");
           planName = readString(selectedPlan, "planName", "label", "name") || planName;
           price = readNumber(selectedPlan, "price") ?? price;
-          durationDays = 30;
+          durationDays = Math.round(
+            readNumber(selectedPlan, "durationDays") ??
+            readNumber(settings, "durationDays") ??
+            30
+          );
           const oldEndMs = parseEnd(endDate);
           const baseMs = oldEndMs !== null && oldEndMs > nowMs ? oldEndMs + 1 : nowMs;
-          startDate = startDate || formatYmdUtc(nowMs);
-          endDate = formatYmdUtc(baseMs + 30 * 86_400_000 - 1);
+          // Renewal starts immediately after the current paid-through date (or today if expired).
+          startDate = formatYmdUtc(baseMs);
+          endDate = formatYmdUtc(baseMs + durationDays * 86_400_000 - 1);
           requestedStatus = "active";
         }
         if (durationDays < 1 || durationDays > 365) throw new DomainHttpsError("failed-precondition", "مدة الباقة الرسمية غير صالحة.");
