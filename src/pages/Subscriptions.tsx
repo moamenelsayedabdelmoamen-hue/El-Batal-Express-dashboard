@@ -65,12 +65,19 @@ export const SubscriptionsPage: React.FC = () => {
   const fetchSubscriptions = async () => {
     setLoading(true);
     try {
-      const [subRes, restRes] = await Promise.all([
+      const [subRes, restRes, settings] = await Promise.all([
         SubscriptionService.getAll(),
         RestaurantService.getAll(),
+        ManualSubscriptionService.getSettings(),
       ]);
       setSubscriptions(subRes.data);
       setMerchants(restRes.data);
+      setOfficialPackages(settings.plans.filter((plan) => plan.isActive !== false).map((plan) => ({
+        planId: plan.planId,
+        captainsCount: plan.maxCaptains,
+        price: plan.price,
+        label: plan.planName,
+      })));
     } catch (err) {
       console.error('Failed to load subscriptions:', err);
       toastError('فشل تحميل بيانات اشتراكات التجار من قاعدة البيانات');
@@ -98,7 +105,15 @@ export const SubscriptionsPage: React.FC = () => {
     });
   }, [subscriptions, searchQuery, statusFilter]);
 
-  const eligibleMerchants = useMemo(() => merchants.filter((merchant) =>\n    merchant.raw?.accountType === 'merchant' && (!merchant.raw?.uid || merchant.raw.uid === merchant.id)\n  ), [merchants]);\n\n  const handleSelectPackage = (pkg: SubscriptionPackageOption) => {
+  const eligibleMerchants = useMemo(
+    () => merchants.filter((merchant) =>
+      merchant.raw?.accountType === 'merchant' &&
+      (!merchant.raw?.uid || merchant.raw.uid === merchant.id)
+    ),
+    [merchants]
+  );
+
+  const handleSelectPackage = (pkg: SubscriptionPackageOption) => {
     setFormData((prev) => ({
       ...prev,
       captainsCount: pkg.captainsCount,
@@ -126,12 +141,17 @@ export const SubscriptionsPage: React.FC = () => {
   };
 
   const handleOpenAddModal = () => {
+    if (officialPackages.length === 0) {
+      toastError('لا توجد باقات نشطة مضبوطة في إعدادات الاشتراك الرسمية.');
+      return;
+    }
+    const firstPlan = officialPackages[0];
     setFormData({
       restaurantId: '',
       restaurantName: '',
-      captainsCount: 2,
-      price: 400,
-      plan: '2 كابتن - 400 جنيه',
+      captainsCount: firstPlan.captainsCount,
+      price: firstPlan.price,
+      plan: firstPlan.label,
       startDate: todayYMD,
       endDate: defaultEndYMD,
       status: 'Active',
@@ -763,7 +783,7 @@ export const SubscriptionsPage: React.FC = () => {
               <div>
                 <label className="block font-bold text-zinc-300 mb-1.5">اختر الباقة الشهرية</label>
                 <div className="grid grid-cols-2 gap-2.5">
-                  {OFFICIAL_PACKAGES.map((pkg) => {
+                  {officialPackages.map((pkg) => {
                     const isSelected = formData.captainsCount === pkg.captainsCount;
                     return (
                       <button
