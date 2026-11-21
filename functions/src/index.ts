@@ -21,6 +21,8 @@ import {OrderServerService} from "./ordersService.js";
 import {DomainHttpsError, ReassignTaskPayload} from "./types.js";
 import {
   assertMerchantAndSubscriptionValid,
+  MAX_LOCATION_AGE_MS,
+  parseTimestampMs,
   extractCoordinates,
   extractOrderCaptainUid,
   readNormalizedOrderStatus,
@@ -1944,19 +1946,16 @@ export const retryNoCaptainOrdersWhenCaptainAvailable = onDocumentUpdated(
       if (typeof value === "string") return Date.parse(value) || 0;
       return 0;
     };
-    const beforeLocationTime = toMillis(
-      before?.lastLocationUpdate ?? before?.locationUpdatedAt ?? before?.updatedAt
-    );
-    const afterLocationTime = toMillis(
-      after.lastLocationUpdate ?? after.locationUpdatedAt ?? after.updatedAt
-    );
-    const locationChanged = !!afterCoordinates && (
-      !beforeCoordinates ||
-      beforeCoordinates.lat !== afterCoordinates.lat ||
-      beforeCoordinates.lng !== afterCoordinates.lng ||
-      afterLocationTime > beforeLocationTime
-    );
-    if (!becameAvailable && !locationChanged) return;
+    const beforeLocationTime = before ? parseTimestampMs(before.lastLocationUpdate) : 0;
+    const afterLocationTime = parseTimestampMs(after.lastLocationUpdate);
+    const nowMs = Date.now();
+    const wasLocationFresh =
+      beforeLocationTime > 0 && nowMs - beforeLocationTime <= MAX_LOCATION_AGE_MS;
+    const isLocationFresh =
+      afterLocationTime > 0 && nowMs - afterLocationTime <= MAX_LOCATION_AGE_MS;
+    const locationBecameFresh =
+      !!afterCoordinates && isLocationFresh && (!beforeCoordinates || !wasLocationFresh);
+    if (!becameAvailable && !locationBecameFresh) return;
 
     const captainId = event.params.captainId;
     if (!await allowCaptainDispatchRetry(captainId)) return;
