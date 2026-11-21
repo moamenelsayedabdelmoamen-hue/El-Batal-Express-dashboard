@@ -76,7 +76,7 @@ export const SubscriptionsPage: React.FC = () => {
         planId: plan.planId,
         captainsCount: plan.maxCaptains,
         price: plan.price,
-        durationDays: plan.durationDays || settings.durationDays || 30,
+        durationDays: 30,
         label: plan.planName,
       })));
     } catch (err) {
@@ -119,7 +119,7 @@ export const SubscriptionsPage: React.FC = () => {
 
   const handleSelectPackage = (pkg: SubscriptionPackageOption) => {
     const start = new Date(formData.startDate + 'T00:00:00.000Z');
-    start.setUTCDate(start.getUTCDate() + pkg.durationDays);
+    start.setUTCDate(start.getUTCDate() + 30);
     const endDate = start.toISOString().split('T')[0];
     setFormData((prev) => ({
       ...prev,
@@ -136,7 +136,7 @@ export const SubscriptionsPage: React.FC = () => {
       const d = new Date(newStart + 'T00:00:00.000Z');
       if (!isNaN(d.getTime())) {
         const selectedPlan = officialPackages.find((plan) => plan.captainsCount === formData.captainsCount);
-        d.setUTCDate(d.getUTCDate() + (selectedPlan?.durationDays || 30));
+        d.setUTCDate(d.getUTCDate() + 30);
         nextEnd = d.toISOString().split('T')[0];
       }
     } catch {
@@ -156,7 +156,7 @@ export const SubscriptionsPage: React.FC = () => {
     }
     const firstPlan = officialPackages[0];
     const firstPlanEnd = new Date(todayYMD + 'T00:00:00.000Z');
-    firstPlanEnd.setUTCDate(firstPlanEnd.getUTCDate() + firstPlan.durationDays);
+    firstPlanEnd.setUTCDate(firstPlanEnd.getUTCDate() + 30);
     setFormData({
       restaurantId: '',
       restaurantName: '',
