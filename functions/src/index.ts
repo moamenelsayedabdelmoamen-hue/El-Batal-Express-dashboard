@@ -224,7 +224,6 @@ export const resolveCaptainEmailByPhone = onCall(
 );
 
 
-
 const ADMIN_EMAIL_ALLOWLIST = new Set([
   "moamen.elsayed.abdelmoamen@gmail.com",
   "admin@elbatalexpress.com",
@@ -1330,7 +1329,15 @@ export const adminCreateOrder = onCall(
               readString(currentSubscription, "planName", "plan", "subscriptionPlan") ||
               readString(currentMerchant, "planName", "plan", "subscriptionPlan")
             ).toLowerCase();
-            const planNameLimit = /8/.test(planName) ? 8 : /6/.test(planName) ? 6 : /4/.test(planName) ? 4 : /2/.test(planName) ? 2 : 0;
+            const planNameLimit = /8/.test(planName)
+              ? 8
+              : /6/.test(planName)
+                ? 6
+                : /4/.test(planName)
+                  ? 4
+                  : /2/.test(planName)
+                    ? 2
+                    : 0;
             const maxCaptains =
               readNumber(currentSubscription, "captainsCount", "captainLimit", "maxCaptains", "allowedCaptains") ??
               readNumber(currentMerchant, "captainsCount", "captainLimit", "maxCaptains", "allowedCaptains") ??
