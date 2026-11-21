@@ -122,9 +122,9 @@ function normalizeStatus(rawStatus: any, endDateYMD?: string, isActiveMerchant?:
   if (s === 'Expired' || s === 'expired' || s === 'منتهي') return 'Expired';
   if (s === 'Suspended' || s === 'suspended' || s === 'موقوف' || s === 'inactive') return 'Suspended';
 
-  if (isActiveMerchant === false) return 'Suspended';
   if (endDateYMD && endDateYMD < new Date().toISOString().split('T')[0]) return 'Expired';
-  return 'Active';
+  if (isActiveMerchant === true) return 'Active';
+  return 'Suspended';
 }
 
 function mapDocToSubscription(
@@ -203,10 +203,14 @@ function mapDocToSubscription(
     mData.subscriptionStatus ||
     mSubObj.status;
 
-  const isActiveMerchant =
-    typeof mData.isActive === 'boolean' ? mData.isActive : undefined;
+  const hasActiveSubscription =
+    data.isSubscribed === true ||
+    data.isActive === true ||
+    subObj.isActive === true ||
+    mData.isSubscribed === true ||
+    mSubObj.isSubscribed === true;
 
-  const status = normalizeStatus(rawStatus, endDate, isActiveMerchant);
+  const status = normalizeStatus(rawStatus, endDate, hasActiveSubscription);
 
   return {
     id,
@@ -313,18 +317,8 @@ export const SubscriptionService = {
         list.push(mapDocToSubscription(docSnap.id, subData, matchedMerchant));
       });
 
-      // 2. Also include every registered merchant that doesn't have a separate doc in `subscriptions`
-      merchantsById.forEach((mData, merchantId) => {
-        if (!coveredMerchantIds.has(merchantId)) {
-          list.push(
-            mapDocToSubscription(merchantId, mData, {
-              id: merchantId,
-              data: mData,
-            })
-          );
-        }
-      });
-
+      // Merchant accounts without a canonical subscriptions/{uid} record are not subscriptions.
+      // They remain selectable in the Add Subscription form through RestaurantService.
       // Sort newest startDate first
       list.sort((a, b) => (b.startDate || '').localeCompare(a.startDate || ''));
 
