@@ -657,6 +657,43 @@ export const OrderService = {
     return timestampIso;
   },
 
+  async dispatchOrder(orderId: string): Promise<{
+    offeredCaptainId: string;
+    offerExpiresAt: string;
+    offerGeneration: number;
+  }> {
+    if (!isFirebaseConfigured) {
+      throw new Error('لا يمكن بدء توزيع الطلب دون اتصال Firebase مباشر.');
+    }
+    const dispatch = httpsCallable(functions, 'adminDispatchOrder');
+    const response = await dispatch({ orderId });
+    const result = response.data as {
+      offeredCaptainId?: string;
+      offerExpiresAtMs?: number;
+      offerGeneration?: number;
+    };
+    if (!result?.offeredCaptainId || !result.offerExpiresAtMs) {
+      throw new Error('لم يرجع الخادم عرض كابتن صالحًا.');
+    }
+    const offerExpiresAt = new Date(result.offerExpiresAtMs).toISOString();
+    localOrdersCache = localOrdersCache.map((order) =>
+      order.id === orderId
+        ? {
+            ...order,
+            offeredCaptainId: result.offeredCaptainId,
+            offerExpiresAt,
+            offerGeneration: result.offerGeneration || 0,
+            dispatchStatus: 'offered',
+          }
+        : order
+    );
+    return {
+      offeredCaptainId: result.offeredCaptainId,
+      offerExpiresAt,
+      offerGeneration: result.offerGeneration || 0,
+    };
+  },
+
   async assignCaptain(
     orderId: string,
     captainId: string,
