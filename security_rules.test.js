@@ -48,6 +48,14 @@ async function seedBaseEcosystem() {
     await setDoc(doc(adminDb, 'admins', 'admin_1'), {
       role: 'admin',
       email: 'admin@elbatal.com',
+      emailVerified: true,
+      status: 'active',
+    });
+    await setDoc(doc(adminDb, 'admins', 'admin_suspended'), {
+      role: 'admin',
+      email: 'suspended@elbatal.com',
+      emailVerified: true,
+      status: 'suspended',
     });
 
   // Provision two canonical Merchant accounts
@@ -458,18 +466,20 @@ describe('El-Batal Express Real Firebase Emulator Security Audit (Firestore + St
       })
     );
 
-    // Captain 1 CAN run scoped queries for eligible pending orders and own assigned orders,
-    // CANNOT read another captain's order, and CANNOT mutate ANY order directly in Firestore!
+    // Captain 1 can query only orders offered specifically to this UID and own assigned orders.
+    // The legacy eligibleCaptainIds array is not an authorization grant and cannot expose another offer.
     const pendingSnap = await assertSucceeds(
       getDocs(
         query(
           collection(cap1Db, 'orders'),
           where('status', '==', 'pending'),
-          where('eligibleCaptainIds', 'array-contains', 'captain_1')
+          where('offeredCaptainId', '==', 'captain_1')
         )
       )
     );
     assert.equal(pendingSnap.size, 1);
+    // Captain 2 is listed in the legacy candidate array but must not read Captain 1's private offer.
+    await assertFails(getDoc(doc(cap2Db, 'orders', 'order_pending_open')));
 
     const ownOrdersSnap = await assertSucceeds(
       getDocs(query(collection(cap1Db, 'orders'), where('captainId', '==', 'captain_1')))
@@ -511,7 +521,9 @@ describe('El-Batal Express Real Firebase Emulator Security Audit (Firestore + St
   });
 
   test('6. Admin account has verified management access across Storage and Firestore', async () => {
-    const adminCtx = testEnv.authenticatedContext('admin_1', { role: 'admin' });
+    const adminCtx = testEnv.authenticatedContext('admin_1', { role: 'admin', email_verified: true });
+    const suspendedAdminDb = testEnv.authenticatedContext('admin_suspended', { email_verified: true }).firestore();
+    await assertFails(updateDoc(doc(suspendedAdminDb, 'captains', 'captain_1'), { status: 'blocked' }));
     const adminDb = adminCtx.firestore();
     const adminStorage = adminCtx.storage(BUCKET_URL);
 
@@ -552,10 +564,10 @@ describe('El-Batal Express Real Firebase Emulator Security Audit (Firestore + St
     const anonDb = testEnv.unauthenticatedContext().firestore();
     const merch1Db = testEnv.authenticatedContext('merchant_1').firestore();
     const merch2Db = testEnv.authenticatedContext('merchant_2').firestore();
-    const adminDb = testEnv.authenticatedContext('admin_1').firestore();
+    const adminDb = testEnv.authenticatedContext('admin_1', { email_verified: true }).firestore();
     const merch1Storage = testEnv.authenticatedContext('merchant_1').storage(BUCKET_URL);
     const merch2Storage = testEnv.authenticatedContext('merchant_2').storage(BUCKET_URL);
-    const adminStorage = testEnv.authenticatedContext('admin_1').storage(BUCKET_URL);
+    const adminStorage = testEnv.authenticatedContext('admin_1', { email_verified: true }).storage(BUCKET_URL);
 
     // Seed official config & an existing request via rules-disabled Admin context
     await testEnv.withSecurityRulesDisabled(async (ctx) => {
