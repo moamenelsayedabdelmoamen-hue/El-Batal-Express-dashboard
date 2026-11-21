@@ -6,6 +6,7 @@ import * as logger from "firebase-functions/logger";
 import {
   onDocumentCreated,
   onDocumentUpdated,
+  onDocumentWritten,
 } from "firebase-functions/v2/firestore";
 import {HttpsError, onCall} from "firebase-functions/v2/https";
 import {onTaskDispatched} from "firebase-functions/v2/tasks";
@@ -1875,42 +1876,89 @@ export const onOrderUpdatedDispatch = onDocumentUpdated(
   }
 );
 
+async function allowCaptainDispatchRetry(captainId: string): Promise<boolean> {
+  const ref = getFirestore().collection("dispatch_retry_cooldowns").doc(captainId);
+  const nowMs = Date.now();
+  return getFirestore().runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const lastAttemptAtMs = readNumber(snap.data() ?? {}, "lastAttemptAtMs") ?? 0;
+    if (nowMs - lastAttemptAtMs < 30_000) return false;
+    tx.set(ref, {
+      lastAttemptAtMs: nowMs,
+      updatedAt: FieldValue.serverTimestamp(),
+    }, {merge: true});
+    return true;
+  });
+}
+
+async function retryQueuedDashboardOrders(): Promise<void> {
+  const queued = await getFirestore()
+    .collection("orders")
+    .where("dispatchStatus", "==", "no_captains_available")
+    .limit(50)
+    .get();
+  const toMillis = (value: unknown): number => {
+    if (value && typeof value === "object" && "toMillis" in value &&
+      typeof (value as {toMillis?: unknown}).toMillis === "function") {
+      return (value as {toMillis: () => number}).toMillis();
+    }
+    if (typeof value === "string") return Date.parse(value) || 0;
+    if (typeof value === "number") return value;
+    return 0;
+  };
+  const pending = queued.docs
+    .filter((doc) =>
+      doc.get("dispatchAuthority") === "dashboard_functions" &&
+      ["pending", "searching"].includes(readNormalizedOrderStatus(doc.data() ?? {}))
+    )
+    .sort((a, b) => toMillis(a.get("createdAt")) - toMillis(b.get("createdAt")));
+
+  for (const orderDoc of pending) {
+    const outcome = await service.dispatchNewOrSearchingOrder(orderDoc.id);
+    if (outcome.status === "offered") break;
+  }
+}
+
 /**
- * When a captain becomes online and available, retry the oldest dashboard-owned
- * orders that are waiting because no eligible captain was available.
+ * Retry queued orders when a captain becomes available or receives a fresh GPS location.
+ * GPS updates are throttled per captain to avoid repeatedly scanning the queue.
  */
 export const retryNoCaptainOrdersWhenCaptainAvailable = onDocumentUpdated(
   {document: "captains/{captainId}", region: "us-central1", retry: true},
   async (event) => {
     const before = event.data?.before.data() as Record<string, unknown> | undefined;
     const after = event.data?.after.data() as Record<string, unknown> | undefined;
-    if (!after || isCaptainReadyForDispatch(before) || !isCaptainReadyForDispatch(after)) return;
+    if (!after || !isCaptainReadyForDispatch(after)) return;
 
-    const queued = await getFirestore()
-      .collection("orders")
-      .where("dispatchStatus", "==", "no_captains_available")
-      .limit(50)
-      .get();
-    const toMillis = (value: unknown): number => {
-      if (value && typeof value === "object" && "toMillis" in value &&
-        typeof (value as {toMillis?: unknown}).toMillis === "function") {
-        return (value as {toMillis: () => number}).toMillis();
-      }
-      if (typeof value === "string") return Date.parse(value) || 0;
-      if (typeof value === "number") return value;
-      return 0;
-    };
-    const pending = queued.docs
-      .filter((doc) =>
-        doc.get("dispatchAuthority") === "dashboard_functions" &&
-        ["pending", "searching"].includes(readNormalizedOrderStatus(doc.data() ?? {}))
-      )
-      .sort((a, b) => toMillis(a.get("createdAt")) - toMillis(b.get("createdAt")));
+    const becameAvailable = !isCaptainReadyForDispatch(before);
+    const beforeCoordinates = before ? extractCoordinates(before) : null;
+    const afterCoordinates = extractCoordinates(after);
+    const locationChanged = !!afterCoordinates && (
+      !beforeCoordinates ||
+      beforeCoordinates.lat !== afterCoordinates.lat ||
+      beforeCoordinates.lng !== afterCoordinates.lng
+    );
+    if (!becameAvailable && !locationChanged) return;
 
-    for (const orderDoc of pending) {
-      const outcome = await service.dispatchNewOrSearchingOrder(orderDoc.id);
-      if (outcome.status === "offered") break;
-    }
+    const captainId = event.params.captainId;
+    if (!await allowCaptainDispatchRetry(captainId)) return;
+    await retryQueuedDashboardOrders();
+  }
+);
+
+/**
+ * A captain can become eligible by entering an active scheduled shift even when
+ * their online/presence fields did not change. Re-check the queue on schedule writes.
+ */
+export const retryNoCaptainOrdersWhenCaptainScheduleChanges = onDocumentWritten(
+  {document: "captain_schedules/{captainId}", region: "us-central1", retry: true},
+  async (event) => {
+    if (!event.data?.after.exists) return;
+    const captainId = event.params.captainId;
+    const captainSnap = await getFirestore().collection("captains").doc(captainId).get();
+    if (!isCaptainReadyForDispatch(captainSnap.data() as Record<string, unknown> | undefined)) return;
+    if (!await allowCaptainDispatchRetry(captainId)) return;
+    await retryQueuedDashboardOrders();
   }
 );
 
