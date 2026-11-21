@@ -107,10 +107,13 @@ export const SubscriptionsPage: React.FC = () => {
   }, [subscriptions, searchQuery, statusFilter]);
 
   const eligibleMerchants = useMemo(
-    () => merchants.filter((merchant) =>
-      merchant.raw?.accountType === 'merchant' &&
-      (!merchant.raw?.uid || merchant.raw.uid === merchant.id)
-    ),
+    () => merchants.filter((merchant) => {
+      const accountStatus = String(merchant.raw?.status || '').toLowerCase();
+      const isApproved = accountStatus === 'active' || accountStatus === 'approved' || merchant.raw?.isApproved === true;
+      return merchant.raw?.accountType === 'merchant' &&
+        isApproved &&
+        (!merchant.raw?.uid || merchant.raw.uid === merchant.id);
+    }),
     [merchants]
   );
 
