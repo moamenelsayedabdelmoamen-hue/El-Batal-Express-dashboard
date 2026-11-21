@@ -2,12 +2,9 @@ import {
   collection,
   doc,
   getDocs,
-  setDoc,
-  updateDoc,
-  deleteDoc,
-  serverTimestamp,
 } from 'firebase/firestore';
-import { db, isFirebaseConfigured, handleFirestoreError, OperationType } from '../firebase/config';
+import { db, functions, isFirebaseConfigured, handleFirestoreError, OperationType } from '../firebase/config';
+import { httpsCallable } from 'firebase/functions';
 import { COLLECTIONS, SUBSCRIPTION_PLANS } from './collections';
 import { Subscription, SubscriptionStatus } from '../types';
 
@@ -125,9 +122,9 @@ function normalizeStatus(rawStatus: any, endDateYMD?: string, isActiveMerchant?:
   if (s === 'Expired' || s === 'expired' || s === 'منتهي') return 'Expired';
   if (s === 'Suspended' || s === 'suspended' || s === 'موقوف' || s === 'inactive') return 'Suspended';
 
-  if (isActiveMerchant === false) return 'Suspended';
   if (endDateYMD && endDateYMD < new Date().toISOString().split('T')[0]) return 'Expired';
-  return 'Active';
+  if (isActiveMerchant === true) return 'Active';
+  return 'Suspended';
 }
 
 function mapDocToSubscription(
@@ -206,10 +203,14 @@ function mapDocToSubscription(
     mData.subscriptionStatus ||
     mSubObj.status;
 
-  const isActiveMerchant =
-    typeof mData.isActive === 'boolean' ? mData.isActive : undefined;
+  const hasActiveSubscription =
+    data.isSubscribed === true ||
+    data.isActive === true ||
+    subObj.isActive === true ||
+    mData.isSubscribed === true ||
+    mSubObj.isSubscribed === true;
 
-  const status = normalizeStatus(rawStatus, endDate, isActiveMerchant);
+  const status = normalizeStatus(rawStatus, endDate, hasActiveSubscription);
 
   return {
     id,
@@ -226,6 +227,19 @@ function mapDocToSubscription(
     status,
     raw: data,
   };
+}
+
+
+async function callAdminSubscription(payload: Record<string, unknown>): Promise<unknown> {
+  if (!isFirebaseConfigured || !functions) {
+    throw new Error("خدمة الاشتراكات الإدارية غير متاحة حالياً.");
+  }
+  const callable = httpsCallable<Record<string, unknown>, unknown>(
+    functions,
+    "adminManageMerchantSubscription"
+  );
+  const response = await callable(payload);
+  return response.data;
 }
 
 export const SubscriptionService = {
@@ -276,6 +290,10 @@ export const SubscriptionService = {
       // 1. Map existing subscription documents
       subsSnap.forEach((docSnap) => {
         const subData = docSnap.data();
+        if (typeof subData.migratedToMerchantId === 'string' && subData.migratedToMerchantId) {
+          coveredMerchantIds.add(subData.migratedToMerchantId);
+          return;
+        }
         const restId = subData.restaurantId || subData.merchantId || subData.restaurant?.id || '';
         const restNameKey = String(subData.restaurantName || subData.merchantName || '')
           .trim()
@@ -299,18 +317,8 @@ export const SubscriptionService = {
         list.push(mapDocToSubscription(docSnap.id, subData, matchedMerchant));
       });
 
-      // 2. Also include every registered merchant that doesn't have a separate doc in `subscriptions`
-      merchantsById.forEach((mData, merchantId) => {
-        if (!coveredMerchantIds.has(merchantId)) {
-          list.push(
-            mapDocToSubscription(merchantId, mData, {
-              id: merchantId,
-              data: mData,
-            })
-          );
-        }
-      });
-
+      // Merchant accounts without a canonical subscriptions/{uid} record are not subscriptions.
+      // They remain selectable in the Add Subscription form through RestaurantService.
       // Sort newest startDate first
       list.sort((a, b) => (b.startDate || '').localeCompare(a.startDate || ''));
 
@@ -322,84 +330,22 @@ export const SubscriptionService = {
     }
   },
 
-  async syncMerchantDocument(
-    restaurantId: string,
-    updates: {
-      status?: SubscriptionStatus;
-      plan?: string;
-      captainsCount?: number;
-      price?: number;
-      startDate?: string;
-      endDate?: string;
-    }
-  ): Promise<void> {
-    if (!isFirebaseConfigured || !restaurantId) return;
-    try {
-      const restRef = doc(db, COLLECTIONS.RESTAURANTS, restaurantId);
-      const payload: Record<string, any> = {
-        updatedAt: serverTimestamp(),
-      };
-      if (updates.status !== undefined) {
-        payload.subscriptionStatus = updates.status;
-      }
-      if (updates.plan !== undefined) {
-        payload.subscriptionPlan = updates.plan;
-      }
-      if (updates.captainsCount !== undefined) {
-        payload.captainsCount = updates.captainsCount;
-      }
-      if (updates.price !== undefined) {
-        payload.subscriptionPrice = updates.price;
-      }
-      if (updates.startDate !== undefined) {
-        payload.subscriptionStartDate = updates.startDate;
-        payload.startDate = updates.startDate;
-      }
-      if (updates.endDate !== undefined) {
-        payload.subscriptionEndDate = updates.endDate;
-        payload.endDate = updates.endDate;
-      }
-      await updateDoc(restRef, payload);
-    } catch {
-      // Ignore if restaurantId doc doesn't exist in restaurants collection
-    }
-  },
-
   async updateStatus(id: string, status: SubscriptionStatus, restaurantId?: string): Promise<void> {
-    const targetSub = localSubscriptionsCache.find((s) => s.id === id);
-    const targetRestId = restaurantId || targetSub?.restaurantId || id;
-
-    localSubscriptionsCache = localSubscriptionsCache.map((sub) =>
-      sub.id === id ? { ...sub, status } : sub
-    );
-
-    if (isFirebaseConfigured) {
-      try {
-        const docRef = doc(db, COLLECTIONS.SUBSCRIPTIONS, id);
-        await setDoc(
-          docRef,
-          {
-            ...(targetSub
-              ? {
-                  restaurantId: targetSub.restaurantId,
-                  restaurantName: targetSub.restaurantName,
-                  plan: targetSub.plan,
-                  captainsCount: targetSub.captainsCount || 2,
-                  price: targetSub.price || 400,
-                  startDate: targetSub.startDate,
-                  endDate: targetSub.endDate,
-                }
-              : {}),
-            status,
-            updatedAt: serverTimestamp(),
-          },
-          { merge: true }
-        );
-        await this.syncMerchantDocument(targetRestId, { status });
-      } catch (error) {
-        handleFirestoreError(error, OperationType.UPDATE, `${COLLECTIONS.SUBSCRIPTIONS}/${id}`);
-        throw error;
-      }
+    const targetSub = localSubscriptionsCache.find((sub) => sub.id === id);
+    const merchantId = restaurantId || targetSub?.restaurantId || id;
+    try {
+      await callAdminSubscription({
+        operation: "status",
+        merchantId,
+        legacySubscriptionId: id !== merchantId ? id : undefined,
+        status,
+      });
+      localSubscriptionsCache = localSubscriptionsCache.map((sub) =>
+        sub.id === id || sub.restaurantId === merchantId ? { ...sub, status } : sub
+      );
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `${COLLECTIONS.SUBSCRIPTIONS}/${merchantId}`);
+      throw error;
     }
   },
 
@@ -416,166 +362,93 @@ export const SubscriptionService = {
       status: SubscriptionStatus;
     }
   ): Promise<void> {
-    const existing = localSubscriptionsCache.find((s) => s.id === id);
-    const targetRestId = updates.restaurantId || existing?.restaurantId || id;
-
-    localSubscriptionsCache = localSubscriptionsCache.map((sub) =>
-      sub.id === id ? { ...sub, ...updates } : sub
-    );
-
-    if (isFirebaseConfigured) {
-      try {
-        const docRef = doc(db, COLLECTIONS.SUBSCRIPTIONS, id);
-        await setDoc(
-          docRef,
-          {
-            restaurantId: targetRestId,
-            restaurantName: updates.restaurantName || existing?.restaurantName || '',
-            captainsCount: updates.captainsCount,
-            price: updates.price,
-            plan: updates.plan,
-            startDate: updates.startDate,
-            endDate: updates.endDate,
-            status: updates.status,
-            updatedAt: serverTimestamp(),
-          },
-          { merge: true }
-        );
-
-        await this.syncMerchantDocument(targetRestId, {
-          status: updates.status,
-          plan: updates.plan,
-          captainsCount: updates.captainsCount,
-          price: updates.price,
-          startDate: updates.startDate,
-          endDate: updates.endDate,
-        });
-      } catch (error) {
-        handleFirestoreError(error, OperationType.UPDATE, `${COLLECTIONS.SUBSCRIPTIONS}/${id}`);
-        throw error;
-      }
+    const existing = localSubscriptionsCache.find((sub) => sub.id === id);
+    const merchantId = updates.restaurantId || existing?.restaurantId || id;
+    try {
+      await callAdminSubscription({
+        operation: "upsert",
+        merchantId,
+        legacySubscriptionId: id !== merchantId ? id : undefined,
+        maxCaptains: updates.captainsCount,
+        price: updates.price,
+        startDate: updates.startDate,
+        endDate: updates.endDate,
+        status: updates.status,
+      });
+      localSubscriptionsCache = localSubscriptionsCache.map((sub) =>
+        sub.id === id || sub.restaurantId === merchantId
+          ? { ...sub, ...updates, id: merchantId, restaurantId: merchantId }
+          : sub
+      );
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `${COLLECTIONS.SUBSCRIPTIONS}/${merchantId}`);
+      throw error;
     }
   },
 
   async create(data: Omit<Subscription, 'id'>): Promise<Subscription> {
-    // If a subscription for this restaurantId already exists in cache, update it instead of duplicating
-    const existing = localSubscriptionsCache.find(
-      (s) => s.restaurantId && s.restaurantId === data.restaurantId
-    );
-    const subId = existing ? existing.id : data.restaurantId || `sub_${Date.now()}`;
-
-    const newSub: Subscription = {
-      ...data,
-      id: subId,
-    };
-
-    if (existing) {
-      localSubscriptionsCache = localSubscriptionsCache.map((s) =>
-        s.id === subId ? newSub : s
-      );
-    } else {
-      localSubscriptionsCache = [newSub, ...localSubscriptionsCache];
+    const merchantId = String(data.restaurantId || "").trim();
+    if (!merchantId) throw new Error("يجب اختيار حساب تاجر مسجل قبل إنشاء الاشتراك.");
+    try {
+      await callAdminSubscription({
+        operation: "upsert",
+        merchantId,
+        maxCaptains: data.captainsCount,
+        price: data.price,
+        startDate: data.startDate,
+        endDate: data.endDate,
+        status: data.status,
+      });
+      const newSub: Subscription = { ...data, id: merchantId, restaurantId: merchantId };
+      localSubscriptionsCache = [
+        newSub,
+        ...localSubscriptionsCache.filter((sub) => sub.id !== merchantId && sub.restaurantId !== merchantId),
+      ];
+      return newSub;
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, `${COLLECTIONS.SUBSCRIPTIONS}/${merchantId}`);
+      throw error;
     }
-
-    if (isFirebaseConfigured) {
-      try {
-        const docRef = doc(db, COLLECTIONS.SUBSCRIPTIONS, subId);
-        await setDoc(
-          docRef,
-          {
-            restaurantId: data.restaurantId,
-            restaurantName: data.restaurantName,
-            plan: data.plan,
-            captainsCount: data.captainsCount || 2,
-            price: data.price,
-            startDate: data.startDate,
-            endDate: data.endDate,
-            status: data.status,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          },
-          { merge: true }
-        );
-
-        if (data.restaurantId) {
-          await this.syncMerchantDocument(data.restaurantId, {
-            status: data.status,
-            plan: data.plan,
-            captainsCount: data.captainsCount || 2,
-            price: data.price,
-            startDate: data.startDate,
-            endDate: data.endDate,
-          });
-        }
-      } catch (error) {
-        handleFirestoreError(error, OperationType.CREATE, `${COLLECTIONS.SUBSCRIPTIONS}/${subId}`);
-        throw error;
-      }
-    }
-
-    return newSub;
   },
 
   async renew(id: string, days: number = 30): Promise<string> {
-    const existing = localSubscriptionsCache.find((s) => s.id === id);
-    const todayYMD = new Date().toISOString().split('T')[0];
-    // If current endDate is in the future, extend from endDate; otherwise extend from today
-    const baseDate =
-      existing?.endDate && existing.endDate > todayYMD ? existing.endDate : todayYMD;
-    const formattedEndDate = addDaysToYMD(baseDate, days);
-    const startDate = existing?.startDate || todayYMD;
-
-    localSubscriptionsCache = localSubscriptionsCache.map((sub) =>
-      sub.id === id ? { ...sub, status: 'Active', endDate: formattedEndDate } : sub
-    );
-
-    if (isFirebaseConfigured) {
-      try {
-        const docRef = doc(db, COLLECTIONS.SUBSCRIPTIONS, id);
-        await setDoc(
-          docRef,
-          {
-            ...(existing
-              ? {
-                  restaurantId: existing.restaurantId,
-                  restaurantName: existing.restaurantName,
-                  plan: existing.plan,
-                  captainsCount: existing.captainsCount || 2,
-                  price: existing.price || 400,
-                  startDate,
-                }
-              : {}),
-            status: 'Active',
-            endDate: formattedEndDate,
-            updatedAt: serverTimestamp(),
-          },
-          { merge: true }
-        );
-
-        if (existing?.restaurantId) {
-          await this.syncMerchantDocument(existing.restaurantId, {
-            status: 'Active',
-            startDate,
-            endDate: formattedEndDate,
-          });
-        }
-      } catch (error) {
-        handleFirestoreError(error, OperationType.UPDATE, `${COLLECTIONS.SUBSCRIPTIONS}/${id}`);
-        throw error;
-      }
+    const existing = localSubscriptionsCache.find((sub) => sub.id === id);
+    const merchantId = existing?.restaurantId || id;
+    if (days !== 30) throw new Error("التجديد من لوحة التحكم متاح لمدة 30 يوماً في الوقت الحالي.");
+    try {
+      const result = await callAdminSubscription({
+        operation: "renew",
+        merchantId,
+        legacySubscriptionId: id !== merchantId ? id : undefined,
+      });
+      const endDate = String((result as any)?.endDate || "");
+      localSubscriptionsCache = localSubscriptionsCache.map((sub) =>
+        sub.id === id || sub.restaurantId === merchantId
+          ? { ...sub, id: merchantId, restaurantId: merchantId, status: "Active", endDate }
+          : sub
+      );
+      return endDate;
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `${COLLECTIONS.SUBSCRIPTIONS}/${merchantId}`);
+      throw error;
     }
-
-    return formattedEndDate;
   },
 
   async delete(id: string): Promise<void> {
-    localSubscriptionsCache = localSubscriptionsCache.filter((s) => s.id !== id);
-    if (isFirebaseConfigured) {
-      try {
-        await deleteDoc(doc(db, COLLECTIONS.SUBSCRIPTIONS, id));
-      } catch (error) {
-        handleFirestoreError(error, OperationType.DELETE, `${COLLECTIONS.SUBSCRIPTIONS}/${id}`);
-      }
+    const existing = localSubscriptionsCache.find((sub) => sub.id === id);
+    const merchantId = existing?.restaurantId || id;
+    try {
+      await callAdminSubscription({
+        operation: "delete",
+        merchantId,
+        legacySubscriptionId: id !== merchantId ? id : undefined,
+      });
+      localSubscriptionsCache = localSubscriptionsCache.map((sub) =>
+        sub.id === id || sub.restaurantId === merchantId ? { ...sub, status: "Suspended" } : sub
+      );
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, `${COLLECTIONS.SUBSCRIPTIONS}/${merchantId}`);
+      throw error;
     }
   },
 };

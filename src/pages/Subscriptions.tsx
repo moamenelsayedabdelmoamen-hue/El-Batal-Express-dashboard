@@ -14,7 +14,8 @@ import {
   Building2,
 } from 'lucide-react';
 import { Subscription, SubscriptionStatus, Restaurant } from '../types';
-import { SubscriptionService, OFFICIAL_PACKAGES } from '../services/subscriptionService';
+import { SubscriptionService } from '../services/subscriptionService';
+import { ManualSubscriptionService } from '../services/manualSubscriptionService';
 import { RestaurantService } from '../services/restaurantService';
 import { StatusBadge } from '../components/common/StatusBadge';
 import { ConfirmationModal } from '../components/common/ConfirmationModal';
@@ -24,11 +25,14 @@ import { ExportButton } from '../components/common/ExportButton';
 import { exportSubscriptions } from '../utils/exportUtils';
 import { useToast } from '../contexts/ToastContext';
 
+type SubscriptionPackageOption = { planId: string; captainsCount: number; price: number; durationDays: number; label: string };
+
 export const SubscriptionsPage: React.FC = () => {
   const { success, error: toastError } = useToast();
 
   const [subscriptions, setSubscriptions] = useState<Subscription[]>([]);
   const [merchants, setMerchants] = useState<Restaurant[]>([]);
+  const [officialPackages, setOfficialPackages] = useState<SubscriptionPackageOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
@@ -61,12 +65,20 @@ export const SubscriptionsPage: React.FC = () => {
   const fetchSubscriptions = async () => {
     setLoading(true);
     try {
-      const [subRes, restRes] = await Promise.all([
+      const [subRes, restRes, settings] = await Promise.all([
         SubscriptionService.getAll(),
         RestaurantService.getAll(),
+        ManualSubscriptionService.getSettings(),
       ]);
       setSubscriptions(subRes.data);
       setMerchants(restRes.data);
+      setOfficialPackages(settings.plans.filter((plan) => plan.isActive !== false).map((plan) => ({
+        planId: plan.planId,
+        captainsCount: plan.maxCaptains,
+        price: plan.price,
+        durationDays: 30,
+        label: plan.planName,
+      })));
     } catch (err) {
       console.error('Failed to load subscriptions:', err);
       toastError('فشل تحميل بيانات اشتراكات التجار من قاعدة البيانات');
@@ -94,21 +106,37 @@ export const SubscriptionsPage: React.FC = () => {
     });
   }, [subscriptions, searchQuery, statusFilter]);
 
-  const handleSelectPackage = (pkg: { captainsCount: number; price: number; label: string }) => {
+  const eligibleMerchants = useMemo(
+    () => merchants.filter((merchant) => {
+      const accountStatus = String(merchant.raw?.status || '').toLowerCase();
+      const isApproved = accountStatus === 'active' || accountStatus === 'approved' || merchant.raw?.isApproved === true;
+      return merchant.raw?.accountType === 'merchant' &&
+        isApproved &&
+        (!merchant.raw?.uid || merchant.raw.uid === merchant.id);
+    }),
+    [merchants]
+  );
+
+  const handleSelectPackage = (pkg: SubscriptionPackageOption) => {
+    const start = new Date(formData.startDate + 'T00:00:00.000Z');
+    start.setUTCDate(start.getUTCDate() + 30);
+    const endDate = start.toISOString().split('T')[0];
     setFormData((prev) => ({
       ...prev,
       captainsCount: pkg.captainsCount,
       price: pkg.price,
       plan: pkg.label,
+      endDate,
     }));
   };
 
   const handleStartDateChange = (newStart: string) => {
     let nextEnd = formData.endDate;
     try {
-      const d = new Date(newStart);
+      const d = new Date(newStart + 'T00:00:00.000Z');
       if (!isNaN(d.getTime())) {
-        d.setDate(d.getDate() + 30);
+        const selectedPlan = officialPackages.find((plan) => plan.captainsCount === formData.captainsCount);
+        d.setUTCDate(d.getUTCDate() + 30);
         nextEnd = d.toISOString().split('T')[0];
       }
     } catch {
@@ -122,14 +150,21 @@ export const SubscriptionsPage: React.FC = () => {
   };
 
   const handleOpenAddModal = () => {
+    if (officialPackages.length === 0) {
+      toastError('لا توجد باقات نشطة مضبوطة في إعدادات الاشتراك الرسمية.');
+      return;
+    }
+    const firstPlan = officialPackages[0];
+    const firstPlanEnd = new Date(todayYMD + 'T00:00:00.000Z');
+    firstPlanEnd.setUTCDate(firstPlanEnd.getUTCDate() + 30);
     setFormData({
       restaurantId: '',
       restaurantName: '',
-      captainsCount: 2,
-      price: 400,
-      plan: '2 كابتن - 400 جنيه',
+      captainsCount: firstPlan.captainsCount,
+      price: firstPlan.price,
+      plan: firstPlan.label,
       startDate: todayYMD,
-      endDate: defaultEndYMD,
+      endDate: firstPlanEnd.toISOString().split('T')[0],
       status: 'Active',
     });
     setIsAddModalOpen(true);
@@ -151,15 +186,18 @@ export const SubscriptionsPage: React.FC = () => {
 
   const handleCreateSubscription = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!formData.restaurantName) {
-      toastError('يرجى اختيار التاجر المسجل');
+    if (
+      !formData.restaurantId ||
+      !eligibleMerchants.some((merchant) => merchant.id === formData.restaurantId)
+    ) {
+      toastError('يرجى اختيار حساب تاجر معتمد وحقيقي من القائمة.');
       return;
     }
 
     setActionLoading(true);
     try {
       await SubscriptionService.create({
-        restaurantId: formData.restaurantId || `rest_${Date.now()}`,
+        restaurantId: formData.restaurantId,
         restaurantName: formData.restaurantName,
         plan: formData.plan,
         captainsCount: formData.captainsCount,
@@ -334,7 +372,7 @@ export const SubscriptionsPage: React.FC = () => {
 
       {/* Current Official Package Plans Banner: 2/400, 4/800, 6/1200, 8/1600 */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {OFFICIAL_PACKAGES.map((pkg, index) => {
+        {officialPackages.map((pkg, index) => {
           const isPopular = pkg.captainsCount === 4 || pkg.captainsCount === 6;
           const activeCountForPlan = subscriptions.filter(
             (s) => s.captainsCount === pkg.captainsCount || s.price === pkg.price
@@ -360,7 +398,7 @@ export const SubscriptionsPage: React.FC = () => {
                     <Users className="w-3.5 h-3.5" />
                     <span>{pkg.captainsCount} كابتن</span>
                   </span>
-                  <span className="text-[11px] font-bold text-zinc-500">باقة شهرية</span>
+                  <span className="text-[11px] font-bold text-zinc-500">باقة اشتراك</span>
                 </div>
 
                 <div className="text-2xl sm:text-3xl font-black text-white font-['Outfit',sans-serif] mb-1">
@@ -629,11 +667,11 @@ export const SubscriptionsPage: React.FC = () => {
             <form onSubmit={handleCreateSubscription} className="space-y-4 text-xs">
               <div>
                 <label className="block font-bold text-zinc-300 mb-1.5">اختر التاجر المسجل *</label>
-                {merchants.length > 0 ? (
+                {eligibleMerchants.length > 0 ? (
                   <select
                     value={formData.restaurantId}
                     onChange={(e) => {
-                      const selected = merchants.find((r) => r.id === e.target.value);
+                      const selected = eligibleMerchants.find((r) => r.id === e.target.value);
                       setFormData({
                         ...formData,
                         restaurantId: e.target.value,
@@ -644,28 +682,23 @@ export const SubscriptionsPage: React.FC = () => {
                     required
                   >
                     <option value="">-- اختر من قائمة التجار المسجلين --</option>
-                    {merchants.map((r) => (
+                    {eligibleMerchants.map((r) => (
                       <option key={r.id} value={r.id}>
                         {r.name}
                       </option>
                     ))}
                   </select>
                 ) : (
-                  <input
-                    type="text"
-                    placeholder="اسم التاجر"
-                    value={formData.restaurantName}
-                    onChange={(e) => setFormData({ ...formData, restaurantName: e.target.value })}
-                    className="w-full bg-[#0a0c12] border border-zinc-800 rounded-xl px-3.5 py-2.5 text-zinc-100 focus:outline-none focus:border-amber-500"
-                    required
-                  />
+                  <p className="text-amber-400 text-xs p-3 rounded-xl border border-amber-500/20 bg-amber-500/5">
+                    لا توجد حسابات تجار معتمدة في مجموعة merchants. لا يمكن إنشاء اشتراك باسم حر أو بمعرّف غير مرتبط بحساب دخول.
+                  </p>
                 )}
               </div>
 
               <div>
                 <label className="block font-bold text-zinc-300 mb-1.5">اختر الباقة الشهرية</label>
                 <div className="grid grid-cols-2 gap-2.5">
-                  {OFFICIAL_PACKAGES.map((pkg) => {
+                  {officialPackages.map((pkg) => {
                     const isSelected = formData.captainsCount === pkg.captainsCount;
                     return (
                       <button
@@ -764,7 +797,7 @@ export const SubscriptionsPage: React.FC = () => {
               <div>
                 <label className="block font-bold text-zinc-300 mb-1.5">اختر الباقة الشهرية</label>
                 <div className="grid grid-cols-2 gap-2.5">
-                  {OFFICIAL_PACKAGES.map((pkg) => {
+                  {officialPackages.map((pkg) => {
                     const isSelected = formData.captainsCount === pkg.captainsCount;
                     return (
                       <button

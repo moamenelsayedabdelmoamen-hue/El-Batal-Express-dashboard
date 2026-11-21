@@ -689,13 +689,8 @@ export class ManualSubscriptionsServerService {
         readNumber(matchedPlan, "maxCaptains", "captainsCount") ?? 0
       );
       const officialPrice = readNumber(matchedPlan, "price") ?? 0;
-      const planDuration = readNumber(matchedPlan, "durationDays");
-      const defaultDuration = readNumber(settingsData, "durationDays") ?? 30;
-      const officialDurationDays = Math.round(
-        planDuration && planDuration >= 1 && planDuration <= 365
-          ? planDuration
-          : defaultDuration
-      );
+      // Business rule: every subscription package lasts exactly one month (30 days).
+      const officialDurationDays = 30;
 
       if (officialMaxCaptains < 1 || officialPrice <= 0) {
         throw new DomainHttpsError(
@@ -1181,17 +1176,8 @@ export class ManualSubscriptionsServerService {
         );
       }
 
-      const planDuration = readNumber(matchedPlan, "durationDays");
-      const configuredDuration = readNumber(settingsData, "durationDays");
-      const requestDuration = readNumber(reqData, "durationDays");
-      const durationDays =
-        planDuration && planDuration >= 1 && planDuration <= 365
-          ? Math.round(planDuration)
-          : configuredDuration && configuredDuration >= 1 && configuredDuration <= 365
-            ? Math.round(configuredDuration)
-            : requestDuration && requestDuration >= 1 && requestDuration <= 365
-              ? Math.round(requestDuration)
-              : 30;
+      // Never extend a paid subscription beyond the fixed one-month package term.
+      const durationDays = 30;
 
       const maxCaptains =
         readNumber(matchedPlan, "maxCaptains", "captainsCount") ??
@@ -1967,6 +1953,240 @@ export class ManualSubscriptionsServerService {
   }
 
   /**
+   * Admin-only canonical subscription management for the general dashboard.
+   * Writes subscriptions/{uid} and merchants/{uid} atomically using official server package settings.
+   */
+  async manageMerchantSubscription(
+    authContext: CallableAuthContext | undefined,
+    data: Record<string, unknown>
+  ): Promise<{success: boolean; merchantId: string; status: string; maxCaptains: number; startDate: string; endDate: string; subscriptionVersion: number; message: string}> {
+    const admin = await this.requireAdmin(authContext);
+    const operation = readString(data, "operation").toLowerCase() || "upsert";
+    const merchantId = readString(data, "merchantId", "restaurantId");
+    const legacySubscriptionId = readString(data, "legacySubscriptionId");
+    if (!isValidDocId(merchantId)) throw new DomainHttpsError("invalid-argument", "معرّف حساب التاجر غير صالح.");
+    if (legacySubscriptionId && !isValidDocId(legacySubscriptionId)) {
+      throw new DomainHttpsError("invalid-argument", "معرّف سجل الاشتراك القديم غير صالح.");
+    }
+    if (!["upsert", "status", "renew", "delete"].includes(operation)) {
+      throw new DomainHttpsError("invalid-argument", "نوع عملية الاشتراك غير مدعوم.");
+    }
+
+    const nowMs = this.effects.now();
+    const sentinels = this.effects.sentinels;
+    const merchantRef = this.db.collection("merchants").doc(merchantId);
+    const subscriptionRef = this.db.collection("subscriptions").doc(merchantId);
+    const settingsRef = this.db.collection("settings").doc("manual_subscription_config");
+    const restaurantRef = this.db.collection("restaurants").doc(merchantId);
+    const legacyRef = legacySubscriptionId && legacySubscriptionId !== merchantId
+      ? this.db.collection("subscriptions").doc(legacySubscriptionId) : null;
+    const merchantAuditKey = createHash("sha256").update(merchantId).digest("hex").slice(0, 20);
+    const auditRef = this.db.collection("operation_logs").doc("admin_subscription_" + merchantAuditKey + "_" + nowMs);
+
+    return this.db.runTransaction(async (tx) => {
+      const [merchantSnap, subscriptionSnap, settingsSnap, restaurantSnap, legacySnap] = await Promise.all([
+        tx.get(merchantRef), tx.get(subscriptionRef), tx.get(settingsRef), tx.get(restaurantRef),
+        legacyRef ? tx.get(legacyRef) : Promise.resolve(null),
+      ]);
+      if (!merchantSnap.exists) {
+        throw new DomainHttpsError("not-found", "حساب التاجر غير موجود في مجموعة merchants؛ لا يمكن ربط الاشتراك بحساب دخول.");
+      }
+      const merchant = merchantSnap.data() ?? {};
+      if (readString(merchant, "accountType").toLowerCase() !== "merchant") {
+        throw new DomainHttpsError("failed-precondition", "المستند المحدد ليس حساب تاجر.");
+      }
+      const merchantAccountStatus = readString(merchant, "status").toLowerCase();
+      if (!["active", "approved"].includes(merchantAccountStatus) && merchant.isApproved !== true) {
+        throw new DomainHttpsError("failed-precondition", "حساب التاجر لم يحصل على موافقة الإدارة بعد.");
+      }
+      if (merchant.isBlocked === true || merchant.isSuspended === true ||
+          ["blocked", "banned", "suspended", "disabled", "inactive"].includes(readString(merchant, "status").toLowerCase())) {
+        throw new DomainHttpsError("failed-precondition", "حساب التاجر موقوف ولا يمكن إدارة اشتراكه.");
+      }
+      const merchantUid = readString(merchant, "uid");
+      if (merchantUid && merchantUid !== merchantId) {
+        throw new DomainHttpsError("permission-denied", "UID حساب التاجر غير مطابق لمعرّف المستند.");
+      }
+
+      const currentSub = subscriptionSnap.exists ? subscriptionSnap.data() ?? {} : {};
+      if (legacySnap?.exists) {
+        const legacyMerchantId = readString(legacySnap.data(), "merchantId", "restaurantId");
+        if (legacyMerchantId && legacyMerchantId !== merchantId) {
+          throw new DomainHttpsError("permission-denied", "سجل الاشتراك القديم لا يخص هذا التاجر.");
+        }
+      }
+      let maxCaptains = readNumber(currentSub, "maxCaptains", "captainLimit", "captainsCount") ??
+        readNumber(merchant, "maxCaptains", "captainLimit", "captainsCount") ?? 0;
+      let planName = readString(currentSub, "planName", "plan", "subscriptionPlan") ||
+        readString(merchant, "planName", "plan", "subscriptionPlan");
+      let planKey = readString(currentSub, "planKey");
+      let price = readNumber(currentSub, "price", "amount") ?? readNumber(merchant, "price") ?? 0;
+      let startDate = readString(currentSub, "startDate", "subscriptionStartDate") || readString(merchant, "subscriptionStartDate");
+      let endDate = readString(currentSub, "endDate", "subscriptionEndDate") || readString(merchant, "subscriptionEndDate");
+      let durationDays = readNumber(currentSub, "durationDays") ?? 30;
+      let requestedStatus = readString(data, "status").toLowerCase();
+
+      const parseStart = (value: string): number | null => {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+        const ms = Date.parse(value + "T00:00:00.000Z");
+        return Number.isFinite(ms) && new Date(ms).toISOString().slice(0, 10) === value ? ms : null;
+      };
+      const parseEnd = (value: string): number | null => {
+        const start = parseStart(value);
+        return start === null ? null : start + 86_400_000 - 1;
+      };
+
+      if (operation === "upsert" || operation === "renew") {
+        if (!settingsSnap.exists) throw new DomainHttpsError("failed-precondition", "إعدادات الباقات الرسمية غير موجودة.");
+        const settings = settingsSnap.data() ?? {};
+        const plans = Array.isArray(settings.plans) ? settings.plans as Record<string, unknown>[] : [];
+        const activePlan = (cap: number) => plans.find((p) =>
+          Math.round(readNumber(p, "maxCaptains", "captainsCount") ?? 0) === cap && p.isActive !== false
+        );
+
+        if (operation === "upsert") {
+          maxCaptains = Math.round(readNumber(data, "maxCaptains", "captainsCount") ?? 0);
+          const selectedPlan = activePlan(maxCaptains);
+          if (!selectedPlan || ![2, 4, 6, 8].includes(maxCaptains)) {
+            throw new DomainHttpsError("failed-precondition", "الباقة المختارة غير موجودة أو غير مفعلة في إعدادات الإدارة.");
+          }
+          planKey = readString(selectedPlan, "planId");
+          planName = readString(selectedPlan, "planName", "label", "name") || (maxCaptains + " كابتن");
+          const officialPrice = readNumber(selectedPlan, "price") ?? 0;
+          const suppliedPrice = readNumber(data, "price");
+          if (officialPrice <= 0 || (suppliedPrice !== null && Math.abs(suppliedPrice - officialPrice) > 0.01)) {
+            throw new DomainHttpsError("failed-precondition", "السعر المرسل لا يطابق السعر الرسمي للباقة.");
+          }
+          price = officialPrice;
+          durationDays = 30;
+          startDate = readString(data, "startDate");
+          endDate = readString(data, "endDate");
+          requestedStatus = requestedStatus || "active";
+        } else {
+          if (!subscriptionSnap.exists || maxCaptains <= 0) {
+            throw new DomainHttpsError("failed-precondition", "لا يوجد اشتراك حالي صالح للتجديد.");
+          }
+          const selectedPlan = activePlan(maxCaptains);
+          if (!selectedPlan) throw new DomainHttpsError("failed-precondition", "الباقة الحالية غير موجودة أو غير مفعلة.");
+          planKey = readString(selectedPlan, "planId");
+          planName = readString(selectedPlan, "planName", "label", "name") || planName;
+          price = readNumber(selectedPlan, "price") ?? price;
+          durationDays = 30;
+          const oldEndMs = parseEnd(endDate);
+          const baseMs = oldEndMs !== null && oldEndMs > nowMs ? oldEndMs + 1 : nowMs;
+          // Renewal starts immediately after the current paid-through date (or today if expired).
+          startDate = formatYmdUtc(baseMs);
+          endDate = formatYmdUtc(baseMs + durationDays * 86_400_000 - 1);
+          requestedStatus = "active";
+        }
+        if (durationDays < 1 || durationDays > 365) throw new DomainHttpsError("failed-precondition", "مدة الباقة الرسمية غير صالحة.");
+      } else if (!subscriptionSnap.exists) {
+        throw new DomainHttpsError("not-found", "لا يوجد سجل اشتراك لتغيير حالته.");
+      }
+
+      const statuses: Record<string, string> = {
+        active: "active", approved: "active", "ساري": "active", "نشط": "active",
+        pending: "pending", "معلق": "pending",
+        suspended: "suspended", inactive: "suspended", "موقوف": "suspended",
+        expired: "expired", "منتهي": "expired",
+        cancelled: "cancelled", canceled: "cancelled",
+      };
+      const nextStatus = operation === "delete" ? "cancelled" : statuses[requestedStatus];
+      if (!nextStatus) throw new DomainHttpsError("invalid-argument", "حالة الاشتراك المطلوبة غير صالحة.");
+      if (operation === "status" && nextStatus === "active") {
+        const existingEnd = parseEnd(endDate);
+        if (existingEnd !== null && existingEnd <= nowMs) {
+          throw new DomainHttpsError("failed-precondition", "انتهى الاشتراك؛ استخدم التجديد بدلاً من إعادة التفعيل.");
+        }
+      }
+      const startMs = parseStart(startDate);
+      const endMs = parseEnd(endDate);
+      if (operation === "upsert" && startMs !== null && endMs !== null &&
+          endDate !== formatYmdUtc(startMs + durationDays * 86_400_000)) {
+        throw new DomainHttpsError("invalid-argument", "تاريخ انتهاء الاشتراك لا يطابق مدة الباقة الرسمية.");
+      }
+      const isActive = nextStatus === "active";
+      if (isActive && (startMs === null || endMs === null || endMs <= nowMs)) {
+        throw new DomainHttpsError("invalid-argument", "تاريخ بداية أو نهاية الاشتراك غير صالح أو منتهي.");
+      }
+      if (maxCaptains <= 0 || ![2, 4, 6, 8].includes(maxCaptains) || price <= 0) {
+        throw new DomainHttpsError("failed-precondition", "بيانات الباقة الحالية غير مكتملة.");
+      }
+
+      const planId = ({2: 1, 4: 2, 6: 3, 8: 4} as Record<number, number>)[maxCaptains];
+      const version = Math.max(readNumber(currentSub, "subscriptionVersion") ?? 0,
+        readNumber(merchant, "subscriptionVersion") ?? 0) + 1;
+      const merchantName = readString(merchant, "name", "merchantName", "restaurantName") || "تاجر مسجل";
+      const common = {
+        merchantId, restaurantId: merchantId, merchantName, restaurantName: merchantName,
+        status: nextStatus, subscriptionStatus: nextStatus, isActive, isSubscribed: isActive,
+        planId, planKey: planKey || ("plan_" + maxCaptains + "_captains"), planName, plan: planName,
+        maxCaptains, captainLimit: maxCaptains, captainsCount: maxCaptains,
+        price, amount: price, durationDays, paymentMethod: "admin_manual",
+        paymentStatus: nextStatus === "pending" ? "pending" : "admin_manual",
+        startDate, subscriptionStartDate: startDate, endDate, subscriptionEndDate: endDate,
+        startDateMs: startMs, endDateMs: endMs, expiresAt: endMs, subscriptionExpiresAt: endMs,
+        activatedAt: isActive ? (startMs ?? nowMs) : null, pendingRequestId: null,
+        suspensionReason: nextStatus === "suspended" ? "تم الإيقاف بواسطة الإدارة" : null,
+        cancellationReason: nextStatus === "cancelled" ? "تم الإلغاء بواسطة الإدارة" : null,
+        subscriptionVersion: version, subscriptionUpdatedAt: sentinels.serverTimestamp(),
+        updatedAt: sentinels.serverTimestamp(), updatedBy: admin.uid, updatedByAdminUid: admin.uid,
+        lastAdminSubscriptionAction: operation,
+      };
+
+      tx.set(subscriptionRef, common, {merge: true});
+      tx.set(merchantRef, {
+        subscriptionStatus: nextStatus, isSubscribed: isActive, planId,
+        planKey: planKey || ("plan_" + maxCaptains + "_captains"), planName,
+        subscriptionPlan: planName, maxCaptains, captainLimit: maxCaptains,
+        captainsCount: maxCaptains, price, paymentMethod: "admin_manual",
+        paymentStatus: nextStatus === "pending" ? "pending" : "admin_manual",
+        subscriptionStartDate: startDate, subscriptionEndDate: endDate,
+        subscriptionExpiresAt: endMs, pendingRequestId: null,
+        suspensionReason: nextStatus === "suspended" ? "تم الإيقاف بواسطة الإدارة" : null,
+        cancellationReason: nextStatus === "cancelled" ? "تم الإلغاء بواسطة الإدارة" : null,
+        subscriptionVersion: version, subscriptionUpdatedAt: sentinels.serverTimestamp(),
+        updatedAt: sentinels.serverTimestamp(), updatedBy: admin.uid, updatedByAdminUid: admin.uid,
+      }, {merge: true});
+      if (restaurantSnap.exists) {
+        tx.set(restaurantRef, {
+          subscriptionStatus: nextStatus, isSubscribed: isActive, subscriptionPlan: planName,
+          planName, maxCaptains, captainLimit: maxCaptains, captainsCount: maxCaptains,
+          subscriptionPrice: price, price, subscriptionStartDate: startDate,
+          subscriptionEndDate: endDate, subscriptionExpiresAt: endMs,
+          subscriptionVersion: version, subscriptionUpdatedAt: sentinels.serverTimestamp(),
+          updatedAt: sentinels.serverTimestamp(),
+        }, {merge: true});
+      }
+      if (legacyRef && legacySnap?.exists) {
+        tx.set(legacyRef, {
+          status: "migrated",
+          subscriptionStatus: "migrated",
+          isActive: false,
+          isSubscribed: false,
+          migratedToMerchantId: merchantId,
+          migratedAt: sentinels.serverTimestamp(),
+          updatedAt: sentinels.serverTimestamp(),
+        }, {merge: true});
+      }
+      tx.set(auditRef, {
+        action: "admin_" + operation + "_merchant_subscription", entityType: "merchant_subscription",
+        merchantId, status: nextStatus, planId, planKey: planKey || ("plan_" + maxCaptains + "_captains"),
+        maxCaptains, amount: price, startDate, endDate, paymentMethod: "admin_manual",
+        adminUid: admin.uid, adminEmail: admin.email, adminName: admin.name,
+        createdAt: sentinels.serverTimestamp(),
+      });
+      return {
+        success: true, merchantId, status: nextStatus, maxCaptains, startDate, endDate,
+        subscriptionVersion: version,
+        message: operation === "renew" ? "تم تجديد الاشتراك ومزامنة بيانات التاجر بنجاح."
+          : isActive ? "تم تفعيل الاشتراك ومزامنة بيانات التاجر وتطبيق التاجر بنجاح."
+          : "تم تحديث حالة الاشتراك ومزامنة بيانات التاجر بنجاح.",
+      };
+    });
+  }
+
+  /**
    * 4. Updates Vodafone Cash & manual subscription settings in Firestore (Master Admin ONLY).
    * Never hardcodes wallet numbers; validates wallet format, pricing, and duration.
    * @param {CallableAuthContext | undefined} authContext Caller auth context.
@@ -1993,9 +2213,8 @@ export class ManualSubscriptionsServerService {
       typeof data?.pauseMessage === "string"
         ? data.pauseMessage.trim().slice(0, 300)
         : "";
-    const durationDaysRaw = readNumber(data, "durationDays");
-    const durationDays =
-      durationDaysRaw !== null ? Math.round(durationDaysRaw) : 30;
+    // Subscription duration is a fixed business rule, not an editable setting.
+    const durationDays = 30;
 
     if (isAcceptingSubscriptions) {
       if (!/^01[0125]\d{8}$/.test(rawWallet)) {
@@ -2033,11 +2252,9 @@ export class ManualSubscriptionsServerService {
       const obj = item as Record<string, unknown>;
       const maxCaptainsRaw = readNumber(obj, "maxCaptains", "captainsCount");
       const priceRaw = readNumber(obj, "price");
-      const planDurationRaw = readNumber(obj, "durationDays");
       const maxCaptains = maxCaptainsRaw !== null ? Math.round(maxCaptainsRaw) : 0;
       const price = priceRaw !== null ? Math.round(priceRaw * 100) / 100 : 0;
-      const planDurationDays =
-        planDurationRaw !== null ? Math.round(planDurationRaw) : durationDays;
+      const planDurationDays = 30;
       const planId =
         readString(obj, "planId") || `plan_${maxCaptains}_captains`;
       const planName =
@@ -2060,12 +2277,6 @@ export class ManualSubscriptionsServerService {
         throw new DomainHttpsError(
           "invalid-argument",
           `سعر الباقة "${planName}" غير صالح.`
-        );
-      }
-      if (planDurationDays < 1 || planDurationDays > 365) {
-        throw new DomainHttpsError(
-          "invalid-argument",
-          `مدة الباقة "${planName}" يجب أن تكون بين 1 و 365 يوماً.`
         );
       }
       seenPlanIds.add(planId);

@@ -145,11 +145,6 @@ export const SettingsPage: React.FC = () => {
       return;
     }
 
-    if (!Number.isInteger(durationDays) || durationDays < 1 || durationDays > 365) {
-      showError('المدة الافتراضية للاشتراك يجب أن تكون بين 1 و 365 يوماً.');
-      return;
-    }
-
     if (plans.length === 0) {
       showError('يرجى إضافة باقة اشتراك واحدة على الأقل مع تحديد سعرها ومدتها.');
       return;
@@ -158,11 +153,6 @@ export const SettingsPage: React.FC = () => {
     for (const p of plans) {
       if (!Number.isFinite(p.price) || p.price <= 0) {
         showError(`يرجى إدخال سعر صحيح أكبر من صفر للباقة "${p.planName || p.planId}".`);
-        return;
-      }
-      const pDur = Number(p.durationDays || durationDays);
-      if (!Number.isInteger(pDur) || pDur < 1 || pDur > 365) {
-        showError(`مدة الباقة "${p.planName || p.planId}" يجب أن تكون بين 1 و 365 يوماً.`);
         return;
       }
     }
@@ -180,7 +170,7 @@ export const SettingsPage: React.FC = () => {
           planName: p.planName.trim() || `باقة ${p.maxCaptains} كابتن`,
           maxCaptains: Number(p.maxCaptains) || 1,
           price: Number(p.price) || 0,
-          durationDays: Number(p.durationDays || durationDays) || durationDays,
+          durationDays: 30,
           isActive: p.isActive !== false,
         })),
       });
@@ -326,20 +316,10 @@ export const SettingsPage: React.FC = () => {
 
               <div>
                 <label className="block font-bold text-zinc-300 mb-1.5">
-                  مدة الاشتراك (بالأيام) <span className="text-rose-400">*</span>
+                  مدة الاشتراك
                 </label>
-                <div className="relative">
-                  <input
-                    type="number"
-                    min={1}
-                    max={365}
-                    value={durationDays}
-                    onChange={(e) => setDurationDays(Number(e.target.value))}
-                    disabled={!isMasterAdmin || savingManualConfig}
-                    className="w-full bg-[#0a0c12] border border-zinc-800 rounded-xl px-3.5 py-2.5 text-zinc-100 focus:outline-none focus:border-amber-500 font-mono tabular-nums disabled:opacity-60"
-                    required
-                  />
-                  <Calendar className="w-4 h-4 text-zinc-500 absolute left-3 top-2.5 pointer-events-none" />
+                <div className="w-full bg-[#0a0c12] border border-zinc-800 rounded-xl px-3.5 py-2.5 text-amber-300 font-bold">
+                  شهر واحد (30 يوماً) لجميع الباقات
                 </div>
               </div>
             </div>
@@ -498,19 +478,8 @@ export const SettingsPage: React.FC = () => {
                             </div>
                           </td>
                           <td className="py-2.5 px-3">
-                            <div className="flex items-center gap-1.5">
-                              <input
-                                type="number"
-                                min={1}
-                                max={365}
-                                value={plan.durationDays || durationDays}
-                                onChange={(e) =>
-                                  handlePlanChange(idx, 'durationDays', Number(e.target.value))
-                                }
-                                disabled={!isMasterAdmin || savingManualConfig}
-                                className="w-20 bg-[#11141c] border border-zinc-800 rounded-lg px-2.5 py-1.5 text-amber-300 font-mono font-bold tabular-nums focus:outline-none focus:border-amber-500 disabled:opacity-60"
-                              />
-                              <span className="text-zinc-500">يوم</span>
+                            <div className="flex items-center gap-1.5 text-amber-300 font-bold">
+                              30 يوم
                             </div>
                           </td>
                           <td className="py-2.5 px-3 text-center">

@@ -514,7 +514,10 @@ async function buildMerchantSubscriptionResponse(merchantId: string, requestedCa
       readNumber(merchant, "subscriptionVersion") ?? 1,
     updatedBy: readString(subscription, "updatedBy", "updatedByAdminUid") ||
       readString(merchant, "updatedBy") || undefined,
-    paymentMethod: readString(subscription, "paymentMethod") || undefined,
+    paymentStatus: readString(subscription, "paymentStatus") ||
+      readString(merchant, "paymentStatus") || (isActive ? "paid" : "unpaid"),
+    paymentMethod: readString(subscription, "paymentMethod") ||
+      readString(merchant, "paymentMethod") || undefined,
     errorMessage,
     reason: errorMessage,
     serverTimeMs: nowMs,
@@ -2149,6 +2152,27 @@ export const updateManualSubscriptionSettings = onCall(
             uid: request.auth.uid,
             token: request.auth.token as Record<string, unknown>,
           }
+          : undefined,
+        payload
+      );
+    } catch (err) {
+      throw mapError(err);
+    }
+  }
+);
+
+/**
+ * Admin-only callable used by the general Subscriptions dashboard.
+ * Creates, edits, renews, suspends, reactivates or cancels the canonical merchant subscription.
+ */
+export const adminManageMerchantSubscription = onCall(
+  {region: "us-central1"},
+  async (request) => {
+    try {
+      const payload = (request.data ?? {}) as Record<string, unknown>;
+      return await manualSubService.manageMerchantSubscription(
+        request.auth
+          ? {uid: request.auth.uid, token: request.auth.token as Record<string, unknown>}
           : undefined,
         payload
       );

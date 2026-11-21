@@ -326,7 +326,7 @@ function createHarness(initialNowMs = Date.UTC(2026, 10, 20, 10, 0, 0)) {
         planName: "باقة 6 كابتن",
         maxCaptains: 6,
         price: 1200,
-        durationDays: 45,
+        durationDays: 30,
         isActive: true,
       },
     ],
@@ -433,7 +433,7 @@ describe("Manual Vodafone Cash Subscriptions Server Service (Full 14-Scenario Su
     assert.equal(submitted.paymentStatus, "pending_verification");
     assert.equal(submitted.amount, 1200);
     assert.equal(submitted.maxCaptains, 6);
-    assert.equal(submitted.durationDays, 45); // Per-plan durationDays!
+    assert.equal(submitted.durationDays, 30); // All packages have a fixed one-month term.
     assert.equal(submitted.receiverWalletNumber, "01099887766");
     assert.equal(submitted.isResubmission, false);
 
@@ -467,7 +467,7 @@ describe("Manual Vodafone Cash Subscriptions Server Service (Full 14-Scenario Su
     assert.equal(approved.maxCaptains, 6);
     assert.equal(approved.amount, 1200);
     assert.equal(approved.startDate, "2026-11-20");
-    assert.equal(approved.endDate, "2027-01-04"); // 45 days from 2026-11-20
+    assert.equal(approved.endDate, "2026-12-20"); // 30 days from 2026-11-20
 
     // Verify subscriptions/{merchantId}, merchants/{merchantId}, and single payment
     const subDoc = db.getDocData("subscriptions/merchant_1");
@@ -476,8 +476,8 @@ describe("Manual Vodafone Cash Subscriptions Server Service (Full 14-Scenario Su
     assert.equal(subDoc.isSubscribed, true);
     assert.equal(subDoc.maxCaptains, 6);
     assert.equal(subDoc.captainLimit, 6);
-    assert.equal(subDoc.durationDays, 45);
-    assert.equal(subDoc.endDate, "2027-01-04");
+    assert.equal(subDoc.durationDays, 30);
+    assert.equal(subDoc.endDate, "2026-12-20");
 
     const merchantDoc = db.getDocData("merchants/merchant_1");
     assert.equal(merchantDoc.subscriptionStatus, "active");
@@ -1061,7 +1061,7 @@ describe("Manual Vodafone Cash Subscriptions Server Service (Full 14-Scenario Su
           planName: "باقة 8 كابتن",
           maxCaptains: 8,
           price: 1650,
-          durationDays: 60,
+          durationDays: 30,
           isActive: true,
         },
       ],
@@ -1072,7 +1072,7 @@ describe("Manual Vodafone Cash Subscriptions Server Service (Full 14-Scenario Su
       (err) => err instanceof DomainHttpsError && err.code === "permission-denied"
     );
 
-    // Master Admin succeeds with per-plan durationDays
+    // Master Admin saves every package with the fixed 30-day term
     const saved = await service.updateManualSubscriptionSettings(
       MASTER_ADMIN_AUTH,
       validSettingsPayload
@@ -1080,12 +1080,12 @@ describe("Manual Vodafone Cash Subscriptions Server Service (Full 14-Scenario Su
     assert.equal(saved.success, true);
     assert.equal(saved.settings.vodafoneCashNumber, "01011223344");
     assert.equal(saved.settings.plans[0].price, 450);
-    assert.equal(saved.settings.plans[1].durationDays, 60);
+    assert.equal(saved.settings.plans[1].durationDays, 30);
 
     const persisted = db.getDocData("settings/manual_subscription_config");
     assert.equal(persisted.vodafoneCashNumber, "01011223344");
     assert.equal(persisted.updatedBy, "master_admin_1");
-    assert.equal(persisted.plans[1].durationDays, 60);
+    assert.equal(persisted.plans[1].durationDays, 30);
 
     // Master Admin invalid Egyptian wallet number rejected
     await assert.rejects(
@@ -1189,6 +1189,157 @@ describe("Manual Vodafone Cash Subscriptions Server Service (Full 14-Scenario Su
     assert.equal(adminPushes.length, 1, "Duplicate event delivery must not resend the admin push");
     assert.equal(db.listCollection("notifications").filter((item) =>
       item.id === `manual_sub_req_${requestId}`).length, 1);
+  });
+
+
+  it("18. General dashboard activation atomically writes the canonical merchant and subscription contract", async () => {
+    const now = Date.UTC(2026, 10, 20, 10, 0, 0);
+    const {db, service} = createHarness(now);
+    seedMerchant(db, {
+      merchantId: "merchant_1",
+      merchantOverrides: {status: "approved"},
+    });
+
+    const result = await service.manageMerchantSubscription(ADMIN_AUTH, {
+      operation: "upsert",
+      merchantId: "merchant_1",
+      maxCaptains: 4,
+      price: 800,
+      startDate: "2026-11-20",
+      endDate: "2026-12-20",
+      status: "Active",
+    });
+
+    const subscription = db.getDocData("subscriptions/merchant_1");
+    const merchant = db.getDocData("merchants/merchant_1");
+    assert.equal(result.status, "active");
+    assert.equal(result.maxCaptains, 4);
+    assert.equal(subscription.status, "active");
+    assert.equal(subscription.planId, 2);
+    assert.equal(subscription.maxCaptains, 4);
+    assert.equal(subscription.paymentStatus, "admin_manual");
+    assert.equal(merchant.subscriptionStatus, "active");
+    assert.equal(merchant.isSubscribed, true);
+    assert.equal(merchant.captainLimit, 4);
+    assert.equal(db.listCollection("payments").length, 0, "Admin-managed activation must not fabricate a payment");
+    assert.equal(db.listCollection("operation_logs").length, 1);
+  });
+
+  it("19. General dashboard activation rejects client-tampered package prices", async () => {
+    const {db, service} = createHarness();
+    seedMerchant(db, {
+      merchantId: "merchant_1",
+      merchantOverrides: {status: "active"},
+    });
+    await assert.rejects(
+      () => service.manageMerchantSubscription(ADMIN_AUTH, {
+        operation: "upsert",
+        merchantId: "merchant_1",
+        maxCaptains: 4,
+        price: 1,
+        startDate: "2026-11-20",
+        endDate: "2026-12-20",
+        status: "Active",
+      }),
+      (err) => err instanceof DomainHttpsError && err.code === "failed-precondition"
+    );
+    assert.equal(db.getDocData("subscriptions/merchant_1"), undefined);
+    assert.equal(db.getDocData("merchants/merchant_1").isSubscribed, false);
+  });
+
+  it("20. General dashboard suspension and reactivation synchronize both canonical documents", async () => {
+    const {db, service} = createHarness();
+    seedMerchant(db, {
+      merchantId: "merchant_1",
+      merchantOverrides: {status: "approved"},
+    });
+    await service.manageMerchantSubscription(ADMIN_AUTH, {
+      operation: "upsert",
+      merchantId: "merchant_1",
+      maxCaptains: 2,
+      price: 400,
+      startDate: "2026-11-20",
+      endDate: "2026-12-20",
+      status: "Active",
+    });
+    await service.manageMerchantSubscription(ADMIN_AUTH, {
+      operation: "status",
+      merchantId: "merchant_1",
+      status: "Suspended",
+    });
+    assert.equal(db.getDocData("subscriptions/merchant_1").status, "suspended");
+    assert.equal(db.getDocData("merchants/merchant_1").isSubscribed, false);
+
+    await service.manageMerchantSubscription(ADMIN_AUTH, {
+      operation: "status",
+      merchantId: "merchant_1",
+      status: "Active",
+    });
+    assert.equal(db.getDocData("subscriptions/merchant_1").status, "active");
+    assert.equal(db.getDocData("merchants/merchant_1").isSubscribed, true);
+  });
+
+  it("21. General dashboard activation migrates an old subscription row without leaving it active", async () => {
+    const {db, service} = createHarness();
+    seedMerchant(db, {
+      merchantId: "merchant_1",
+      merchantOverrides: {status: "approved"},
+    });
+    db.seed("subscriptions/legacy_sub_1", {
+      merchantId: "merchant_1",
+      restaurantId: "merchant_1",
+      status: "Active",
+      maxCaptains: 2,
+      price: 400,
+    });
+
+    await service.manageMerchantSubscription(ADMIN_AUTH, {
+      operation: "upsert",
+      merchantId: "merchant_1",
+      legacySubscriptionId: "legacy_sub_1",
+      maxCaptains: 2,
+      price: 400,
+      startDate: "2026-11-20",
+      endDate: "2026-12-20",
+      status: "Active",
+    });
+
+    const legacy = db.getDocData("subscriptions/legacy_sub_1");
+    assert.equal(legacy.status, "migrated");
+    assert.equal(legacy.migratedToMerchantId, "merchant_1");
+    assert.equal(db.getDocData("subscriptions/merchant_1").status, "active");
+  });
+
+  it("22. Every general-dashboard package and renewal lasts exactly 30 days", async () => {
+    const now = Date.UTC(2026, 10, 20, 10, 0, 0);
+    const {db, service} = createHarness(now);
+    seedMerchant(db, {
+      merchantId: "merchant_1",
+      merchantOverrides: {status: "approved"},
+    });
+
+    await service.manageMerchantSubscription(ADMIN_AUTH, {
+      operation: "upsert",
+      merchantId: "merchant_1",
+      maxCaptains: 6,
+      price: 1200,
+      startDate: "2026-11-20",
+      endDate: "2026-12-20",
+      status: "Active",
+    });
+
+    const result = await service.manageMerchantSubscription(ADMIN_AUTH, {
+      operation: "renew",
+      merchantId: "merchant_1",
+    });
+
+    const subscription = db.getDocData("subscriptions/merchant_1");
+    assert.equal(subscription.durationDays, 30);
+    assert.equal(subscription.startDate, "2026-12-21");
+    assert.equal(subscription.endDate, "2027-01-19");
+    assert.equal(result.startDate, "2026-12-21");
+    assert.equal(result.endDate, "2027-01-19");
+    assert.equal(subscription.paymentStatus, "admin_manual");
   });
 
 });
