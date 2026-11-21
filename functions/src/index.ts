@@ -1934,10 +1934,27 @@ export const retryNoCaptainOrdersWhenCaptainAvailable = onDocumentUpdated(
     const becameAvailable = !isCaptainReadyForDispatch(before);
     const beforeCoordinates = before ? extractCoordinates(before) : null;
     const afterCoordinates = extractCoordinates(after);
+    const toMillis = (value: unknown): number => {
+      if (value instanceof Date) return value.getTime();
+      if (value && typeof value === "object" && "toMillis" in value &&
+        typeof (value as {toMillis?: unknown}).toMillis === "function") {
+        return (value as {toMillis: () => number}).toMillis();
+      }
+      if (typeof value === "number") return value;
+      if (typeof value === "string") return Date.parse(value) || 0;
+      return 0;
+    };
+    const beforeLocationTime = toMillis(
+      before?.lastLocationUpdate ?? before?.locationUpdatedAt ?? before?.updatedAt
+    );
+    const afterLocationTime = toMillis(
+      after.lastLocationUpdate ?? after.locationUpdatedAt ?? after.updatedAt
+    );
     const locationChanged = !!afterCoordinates && (
       !beforeCoordinates ||
       beforeCoordinates.lat !== afterCoordinates.lat ||
-      beforeCoordinates.lng !== afterCoordinates.lng
+      beforeCoordinates.lng !== afterCoordinates.lng ||
+      afterLocationTime > beforeLocationTime
     );
     if (!becameAvailable && !locationChanged) return;
 
