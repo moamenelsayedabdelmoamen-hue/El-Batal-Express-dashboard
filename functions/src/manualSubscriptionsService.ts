@@ -689,13 +689,8 @@ export class ManualSubscriptionsServerService {
         readNumber(matchedPlan, "maxCaptains", "captainsCount") ?? 0
       );
       const officialPrice = readNumber(matchedPlan, "price") ?? 0;
-      const planDuration = readNumber(matchedPlan, "durationDays");
-      const defaultDuration = readNumber(settingsData, "durationDays") ?? 30;
-      const officialDurationDays = Math.round(
-        planDuration && planDuration >= 1 && planDuration <= 365
-          ? planDuration
-          : defaultDuration
-      );
+      // Business rule: every subscription package lasts exactly one month (30 days).
+      const officialDurationDays = 30;
 
       if (officialMaxCaptains < 1 || officialPrice <= 0) {
         throw new DomainHttpsError(
@@ -1181,17 +1176,8 @@ export class ManualSubscriptionsServerService {
         );
       }
 
-      const planDuration = readNumber(matchedPlan, "durationDays");
-      const configuredDuration = readNumber(settingsData, "durationDays");
-      const requestDuration = readNumber(reqData, "durationDays");
-      const durationDays =
-        planDuration && planDuration >= 1 && planDuration <= 365
-          ? Math.round(planDuration)
-          : configuredDuration && configuredDuration >= 1 && configuredDuration <= 365
-            ? Math.round(configuredDuration)
-            : requestDuration && requestDuration >= 1 && requestDuration <= 365
-              ? Math.round(requestDuration)
-              : 30;
+      // Never extend a paid subscription beyond the fixed one-month package term.
+      const durationDays = 30;
 
       const maxCaptains =
         readNumber(matchedPlan, "maxCaptains", "captainsCount") ??
@@ -2072,7 +2058,7 @@ export class ManualSubscriptionsServerService {
             throw new DomainHttpsError("failed-precondition", "السعر المرسل لا يطابق السعر الرسمي للباقة.");
           }
           price = officialPrice;
-          durationDays = Math.round(readNumber(selectedPlan, "durationDays") ?? readNumber(settings, "durationDays") ?? 30);
+          durationDays = 30;
           startDate = readString(data, "startDate");
           endDate = readString(data, "endDate");
           requestedStatus = requestedStatus || "active";
@@ -2085,11 +2071,7 @@ export class ManualSubscriptionsServerService {
           planKey = readString(selectedPlan, "planId");
           planName = readString(selectedPlan, "planName", "label", "name") || planName;
           price = readNumber(selectedPlan, "price") ?? price;
-          durationDays = Math.round(
-            readNumber(selectedPlan, "durationDays") ??
-            readNumber(settings, "durationDays") ??
-            30
-          );
+          durationDays = 30;
           const oldEndMs = parseEnd(endDate);
           const baseMs = oldEndMs !== null && oldEndMs > nowMs ? oldEndMs + 1 : nowMs;
           // Renewal starts immediately after the current paid-through date (or today if expired).
@@ -2231,9 +2213,8 @@ export class ManualSubscriptionsServerService {
       typeof data?.pauseMessage === "string"
         ? data.pauseMessage.trim().slice(0, 300)
         : "";
-    const durationDaysRaw = readNumber(data, "durationDays");
-    const durationDays =
-      durationDaysRaw !== null ? Math.round(durationDaysRaw) : 30;
+    // Subscription duration is a fixed business rule, not an editable setting.
+    const durationDays = 30;
 
     if (isAcceptingSubscriptions) {
       if (!/^01[0125]\d{8}$/.test(rawWallet)) {
@@ -2271,11 +2252,9 @@ export class ManualSubscriptionsServerService {
       const obj = item as Record<string, unknown>;
       const maxCaptainsRaw = readNumber(obj, "maxCaptains", "captainsCount");
       const priceRaw = readNumber(obj, "price");
-      const planDurationRaw = readNumber(obj, "durationDays");
       const maxCaptains = maxCaptainsRaw !== null ? Math.round(maxCaptainsRaw) : 0;
       const price = priceRaw !== null ? Math.round(priceRaw * 100) / 100 : 0;
-      const planDurationDays =
-        planDurationRaw !== null ? Math.round(planDurationRaw) : durationDays;
+      const planDurationDays = 30;
       const planId =
         readString(obj, "planId") || `plan_${maxCaptains}_captains`;
       const planName =
@@ -2298,12 +2277,6 @@ export class ManualSubscriptionsServerService {
         throw new DomainHttpsError(
           "invalid-argument",
           `سعر الباقة "${planName}" غير صالح.`
-        );
-      }
-      if (planDurationDays < 1 || planDurationDays > 365) {
-        throw new DomainHttpsError(
-          "invalid-argument",
-          `مدة الباقة "${planName}" يجب أن تكون بين 1 و 365 يوماً.`
         );
       }
       seenPlanIds.add(planId);
