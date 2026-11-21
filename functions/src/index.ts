@@ -197,18 +197,24 @@ async function requireAdminUid(
   }
 
   const adminDoc = await getFirestore().collection("admins").doc(cleanUid).get();
+  const adminData = adminDoc.data() ?? {};
   const email = typeof claims.email === "string"
     ? claims.email.trim().toLowerCase()
     : "";
   const verifiedAllowlistedEmail =
     claims.email_verified === true && ADMIN_EMAIL_ALLOWLIST.has(email);
-  const trustedClaims =
-    claims.role === "admin" || claims.admin === true;
+  const activeAdminDocument =
+    adminDoc.exists &&
+    adminData.role === "admin" &&
+    adminData.emailVerified === true &&
+    ["active", "approved"].includes(
+      typeof adminData.status === "string" ? adminData.status.toLowerCase() : ""
+    );
 
-  if (!adminDoc.exists && !verifiedAllowlistedEmail && !trustedClaims) {
+  if (!activeAdminDocument && !verifiedAllowlistedEmail) {
     throw new HttpsError(
       "permission-denied",
-      "هذا الحساب لا يمتلك صلاحية تنفيذ عمليات إدارة الطلبات."
+      "هذا الحساب لا يمتلك صلاحية مدير نشطة ومعتمدة لتنفيذ عمليات الإدارة."
     );
   }
   return cleanUid;
