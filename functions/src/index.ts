@@ -70,7 +70,8 @@ function isCaptainReadyForDispatch(data: Record<string, unknown> | undefined): b
     data.isSuspended !== true &&
     !unavailable.has(presence) &&
     !unavailable.has(availability) &&
-    !readString(data, "currentOrderId");
+    !readString(data, "currentOrderId") &&
+    !readString(data, "activeOfferOrderId");
 }
 
 async function enforceCaptainEmailLookupRateLimit(ipAddress: string, phone: string): Promise<void> {
