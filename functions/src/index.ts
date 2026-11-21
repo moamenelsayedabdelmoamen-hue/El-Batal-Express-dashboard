@@ -617,7 +617,6 @@ export const merchantCreateOrder = onCall(
               capacitySnap,
             ] = await Promise.all([
               tx.get(merchantRef),
-              tx.get(restaurantRef),
               tx.get(subscriptionRef),
               tx.get(codeRef),
               tx.get(idempotencyRef),
@@ -1256,6 +1255,7 @@ export const adminCreateOrder = onCall(
               capacitySnap,
             ] = await Promise.all([
               tx.get(merchantRef),
+              tx.get(restaurantRef),
               tx.get(subscriptionRef),
               tx.get(codeRef),
               tx.get(idempotencyRef),
