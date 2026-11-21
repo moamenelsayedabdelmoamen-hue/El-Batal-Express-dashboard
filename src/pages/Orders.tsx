@@ -1067,17 +1067,15 @@ export const OrdersPage: React.FC = () => {
                       {/* الإجراءات */}
                       <td className="py-4 px-3.5 text-left whitespace-nowrap">
                         <div className="flex items-center justify-end gap-1.5">
-                          <select
-                            value={order.status}
-                            onChange={(e) => handleUpdateStatus(order.id, e.target.value as OrderStatus)}
-                            className="bg-[#0a0c12] border border-zinc-800 text-[11px] font-bold text-zinc-300 rounded-lg px-2 py-1 focus:outline-none focus:border-amber-500 cursor-pointer"
+                          <button
+                            type="button"
+                            onClick={() => handleUpdateStatus(order.id, 'Cancelled')}
+                            disabled={['Delivered', 'Cancelled'].includes(order.status)}
+                            className="bg-[#0a0c12] border border-red-900/70 text-[11px] font-bold text-red-300 rounded-lg px-2 py-1 hover:bg-red-950/40 disabled:opacity-40 disabled:cursor-not-allowed"
+                            title="الإدارة يمكنها الإلغاء فقط؛ مراحل التنفيذ يحدّثها التاجر والكابتن عبر الخادم"
                           >
-                            {ORDER_STATUSES.map((st) => (
-                              <option key={st} value={st}>
-                                {st}
-                              </option>
-                            ))}
-                          </select>
+                            إلغاء الطلب
+                          </button>
 
                           <button
                             onClick={() => setViewingOrder(order)}
@@ -1339,20 +1337,18 @@ export const OrdersPage: React.FC = () => {
               <span className="font-mono text-amber-400 font-black text-base">{viewingOrder.deliveryFee} ج.م</span>
             </div>
 
-            {/* Status changer in modal */}
             <div className="flex items-center justify-between gap-3 pt-3 border-t border-zinc-800/80">
-              <label className="text-xs font-bold text-zinc-400">تغيير حالة الطلب:</label>
-              <select
-                value={viewingOrder.status}
-                onChange={(e) => handleUpdateStatus(viewingOrder.id, e.target.value as OrderStatus)}
-                className="bg-[#0a0c12] border border-zinc-700 text-xs font-bold text-amber-400 rounded-xl px-3 py-2 focus:outline-none focus:border-amber-500"
+              <span className="text-xs font-bold text-zinc-400">
+                مراحل الطلب يحدّثها التاجر والكابتن؛ الإدارة مسؤولة عن الإلغاء فقط.
+              </span>
+              <button
+                type="button"
+                onClick={() => handleUpdateStatus(viewingOrder.id, 'Cancelled')}
+                disabled={['Delivered', 'Cancelled'].includes(viewingOrder.status)}
+                className="bg-red-950/30 border border-red-900/70 text-xs font-bold text-red-300 rounded-xl px-3 py-2 disabled:opacity-40 disabled:cursor-not-allowed"
               >
-                {ORDER_STATUSES.map((st) => (
-                  <option key={st} value={st}>
-                    {st}
-                  </option>
-                ))}
-              </select>
+                إلغاء الطلب
+              </button>
             </div>
           </div>
         </div>
