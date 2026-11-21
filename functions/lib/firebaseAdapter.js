@@ -196,9 +196,11 @@ function createAdminServerEffects() {
                         orderId: payload.orderId,
                         orderNumber: payload.orderNumber,
                         orderCode: payload.orderCode,
+                        merchantId: payload.merchantId,
                         storeName: payload.storeName,
                         storePhone: payload.storePhone,
                         storeImage: payload.storeImage,
+                        storeImagePath: payload.storeImagePath,
                         storeLocationUrl: payload.storeLocationUrl,
                         pickupAddress: payload.pickupAddress,
                         deliveryAddress: payload.deliveryAddress,
@@ -235,6 +237,7 @@ function createAdminServerEffects() {
                     expectedCaptainId: payload.expectedCaptainId,
                     error: err instanceof Error ? err.message : String(err),
                 });
+                throw err;
             }
         },
     };

@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ManualSubscriptionsServerService = void 0;
 exports.isSafeMerchantReceipt = isSafeMerchantReceipt;
+const node_crypto_1 = require("node:crypto");
 const types_js_1 = require("./types.js");
 const validators_js_1 = require("./validators.js");
 const MASTER_ADMIN_EMAILS = new Set([
@@ -30,11 +31,52 @@ const RESUBMISSION_STATUSES = new Set([
 function isValidDocId(id) {
     return id.length >= 1 && id.length <= 128 && /^[a-zA-Z0-9_-]+$/.test(id);
 }
+/**
+ * Creates a deterministic, collision-resistant document ID for a Vodafone Cash transaction reference.
+ * @param {string} reference Raw transaction reference.
+ * @return {string} SHA-256 lock document ID.
+ */
+function createTransactionReferenceLockId(reference) {
+    return (0, node_crypto_1.createHash)("sha256")
+        .update(reference.trim().toUpperCase(), "utf8")
+        .digest("hex");
+}
 function formatYmdUtc(ms) {
     return new Date(ms).toISOString().split("T")[0];
 }
 function normalizeStatus(raw) {
     return typeof raw === "string" ? raw.trim().toLowerCase() : "";
+}
+function isSubscriptionCurrentlyActive(merchantData, subscriptionData, nowMs) {
+    const statuses = [
+        normalizeStatus(subscriptionData.status),
+        normalizeStatus(subscriptionData.subscriptionStatus),
+        normalizeStatus(merchantData.subscriptionStatus),
+    ];
+    // merchantData.status / isActive are account-level fields in legacy documents,
+    // so only explicit subscription fields can block a new subscription request.
+    const activeFlag = subscriptionData.isActive === true ||
+        subscriptionData.isSubscribed === true ||
+        merchantData.isSubscribed === true;
+    const activeStatus = statuses.some((status) => ["active", "approved", "trial", "enabled", "valid", "subscribed"].includes(status));
+    if (!activeFlag && !activeStatus)
+        return false;
+    const expiryMs = Math.max((0, validators_js_1.parseTimestampMs)(subscriptionData.expiresAt), (0, validators_js_1.parseTimestampMs)(subscriptionData.endDate), (0, validators_js_1.parseTimestampMs)(subscriptionData.subscriptionEndDate), (0, validators_js_1.parseTimestampMs)(merchantData.subscriptionExpiresAt), (0, validators_js_1.parseTimestampMs)(merchantData.subscriptionEndDate), (0, validators_js_1.parseTimestampMs)(merchantData.endDate));
+    if (expiryMs === 0)
+        return true;
+    const expiryDate = new Date(expiryMs);
+    const isDateOnlyTimestamp = expiryDate.getUTCHours() === 0 &&
+        expiryDate.getUTCMinutes() === 0 &&
+        expiryDate.getUTCSeconds() === 0 &&
+        expiryDate.getUTCMilliseconds() === 0;
+    const effectiveExpiryMs = isDateOnlyTimestamp
+        ? expiryMs + 24 * 60 * 60 * 1000 - 1
+        : expiryMs;
+    return nowMs <= effectiveExpiryMs;
+}
+function legacyPlanIdForCaptainLimit(maxCaptains) {
+    var _a;
+    return (_a = { 2: 1, 4: 2, 6: 3, 8: 4 }[maxCaptains]) !== null && _a !== void 0 ? _a : 0;
 }
 function normalizePhoneDigits(raw) {
     return raw.replace(/[^\d+]/g, "").trim();
@@ -59,7 +101,7 @@ function isSafeMerchantReceipt(merchantId, receiptPath, receiptUrl) {
         const allowedPrefixes = [
             `subscription_receipts/${merchantId}/`,
             `manual_subscription_receipts/${merchantId}/`,
-            `merchants/${merchantId}/`,
+            `merchants/${merchantId}/subscription_receipts/`,
         ];
         if (!cleanPath.startsWith("https://") &&
             !cleanPath.startsWith("gs://") &&
@@ -80,7 +122,7 @@ function isSafeMerchantReceipt(merchantId, receiptPath, receiptUrl) {
         const allowedPrefixes = [
             `subscription_receipts/${merchantId}/`,
             `manual_subscription_receipts/${merchantId}/`,
-            `merchants/${merchantId}/`,
+            `merchants/${merchantId}/subscription_receipts/`,
         ];
         if (!allowedPrefixes.some((p) => cleanUrl.startsWith(p))) {
             return false;
@@ -180,7 +222,7 @@ class ManualSubscriptionsServerService {
      * @return {Promise<SubmitManualSubscriptionResult>} Created/resubmitted request summary.
      */
     async submitManualSubscriptionRequest(authContext, data) {
-        var _a, _b, _c;
+        var _a, _b;
         const uid = typeof (authContext === null || authContext === void 0 ? void 0 : authContext.uid) === "string" ? authContext.uid.trim() : "";
         if (!uid || !isValidDocId(uid)) {
             throw new types_js_1.DomainHttpsError("unauthenticated", "يجب تسجيل الدخول بحساب التاجر أولاً لتقديم طلب الاشتراك.");
@@ -189,18 +231,34 @@ class ManualSubscriptionsServerService {
         if (claimedMerchantId && claimedMerchantId !== uid) {
             throw new types_js_1.DomainHttpsError("permission-denied", "غير مصرح بتقديم طلب اشتراك نيابة عن تاجر آخر.");
         }
-        const requestedPlanId = (0, validators_js_1.readString)(data, "planId");
-        const requestedNumericPlanId = (0, validators_js_1.readNumber)(data, "planId");
-        const requestedMaxCaptains = (_a = (0, validators_js_1.readNumber)(data, "maxCaptains", "captainLimit", "captainsCount")) !== null && _a !== void 0 ? _a : 0;
-        const claimedAmount = (0, validators_js_1.readNumber)(data, "amount", "price", "requiredAmount");
+        const requestedPlanId = (0, validators_js_1.readString)(data, "planId", "packageId");
+        const requestedNumericPlanId = (0, validators_js_1.readNumber)(data, "planId", "packageId");
+        const claimedCaptainLimits = [
+            (0, validators_js_1.readNumber)(data, "maxCaptains"),
+            (0, validators_js_1.readNumber)(data, "captainLimit"),
+            (0, validators_js_1.readNumber)(data, "captainsCount"),
+        ].filter((value) => value !== null);
+        const requestedMaxCaptains = (_a = claimedCaptainLimits[0]) !== null && _a !== void 0 ? _a : 0;
+        const claimedAmounts = [
+            (0, validators_js_1.readNumber)(data, "amount"),
+            (0, validators_js_1.readNumber)(data, "expectedAmount"),
+            (0, validators_js_1.readNumber)(data, "price"),
+            (0, validators_js_1.readNumber)(data, "requiredAmount"),
+        ].filter((value) => value !== null);
         const senderPhone = normalizePhoneDigits((0, validators_js_1.readString)(data, "senderPhone", "fromWalletNumber", "transferPhone"));
         const transactionReference = (0, validators_js_1.readString)(data, "transactionReference", "referenceNumber", "transferReference").slice(0, 120);
-        const receiptImagePath = (0, validators_js_1.readString)(data, "receiptImagePath", "receiptPath");
+        const receiptImagePath = (0, validators_js_1.readString)(data, "receiptImagePath", "receiptStoragePath", "receiptPath");
         const receiptImageUrl = (0, validators_js_1.readString)(data, "receiptImageUrl", "receiptUrl");
-        const merchantNote = typeof (data === null || data === void 0 ? void 0 : data.merchantNote) === "string"
-            ? data.merchantNote.trim().slice(0, 400)
-            : "";
-        const providedRequestId = (0, validators_js_1.readString)(data, "requestId");
+        const merchantNote = (0, validators_js_1.readString)(data, "merchantNote", "notes").slice(0, 400);
+        const providedIdempotencyKey = (0, validators_js_1.readString)(data, "idempotencyKey").trim();
+        if (providedIdempotencyKey.length > 160) {
+            throw new types_js_1.DomainHttpsError("invalid-argument", "مفتاح منع التكرار أطول من الحد المسموح.");
+        }
+        const providedRequestId = (0, validators_js_1.readString)(data, "requestId") ||
+            (providedIdempotencyKey
+                ? `idem_${(0, node_crypto_1.createHash)("sha256").update(providedIdempotencyKey).digest("hex").slice(0, 48)}`
+                : "");
+        const idempotencyKey = providedIdempotencyKey || providedRequestId;
         if (providedRequestId && !isValidDocId(providedRequestId)) {
             throw new types_js_1.DomainHttpsError("invalid-argument", "معرّف الطلب غير صالح.");
         }
@@ -234,26 +292,30 @@ class ManualSubscriptionsServerService {
                     resubmissionTargetDocId = docSnap.id;
                     continue;
                 }
+                // A repeated network submission with the same requestId + idempotency key is handled
+                // inside the transaction as a safe no-op. Different keys remain rejected.
+                if (ACTIVE_PENDING_STATUSES.has(st) &&
+                    idempotencyKey &&
+                    (0, validators_js_1.readString)(d, "idempotencyKey") === idempotencyKey) {
+                    resubmissionTargetDocId = docSnap.id;
+                    continue;
+                }
                 throw new types_js_1.DomainHttpsError("already-exists", "هذا الطلب موجود بالفعل ولا يقبل إعادة الإرسال في حالته الحالية.");
             }
-            if (ACTIVE_PENDING_STATUSES.has(st)) {
-                throw new types_js_1.DomainHttpsError("already-exists", "لديك طلب اشتراك قيد المراجعة بالفعل. يرجى انتظار مراجعة الإدارة قبل إرسال طلب جديد.");
+            if (ACTIVE_PENDING_STATUSES.has(st) || RESUBMISSION_STATUSES.has(st)) {
+                throw new types_js_1.DomainHttpsError("already-exists", "لديك طلب اشتراك قيد المراجعة أو يحتاج إلى إعادة إرسال بالفعل. يرجى متابعة الطلب الحالي.");
             }
         }
         if (transactionReference) {
             const dupRefSnap = await this.db
                 .collection("manual_subscription_requests")
                 .where("transactionReference", "==", transactionReference)
-                .limit(5)
                 .get();
             for (const dSnap of dupRefSnap.docs) {
                 if (resubmissionTargetDocId && dSnap.id === resubmissionTargetDocId) {
                     continue;
                 }
-                const st = normalizeStatus((_c = dSnap.data()) === null || _c === void 0 ? void 0 : _c.status);
-                if (st !== "rejected") {
-                    throw new types_js_1.DomainHttpsError("already-exists", "رقم العملية المرجعي مستخدم في طلب اشتراك آخر بالفعل.");
-                }
+                throw new types_js_1.DomainHttpsError("already-exists", "رقم العملية المرجعي مستخدم في طلب اشتراك آخر بالفعل ولا يمكن إعادة استخدامه.");
             }
         }
         const requestId = resubmissionTargetDocId || providedRequestId || `subreq_${uid.slice(0, 8)}_${nowMs}`;
@@ -261,23 +323,35 @@ class ManualSubscriptionsServerService {
             .collection("manual_subscription_requests")
             .doc(requestId);
         const merchantRef = this.db.collection("merchants").doc(uid);
+        const subscriptionRef = this.db.collection("subscriptions").doc(uid);
         const settingsRef = this.db
             .collection("settings")
             .doc("manual_subscription_config");
         const opLogRef = this.db
             .collection("operation_logs")
             .doc(`submit_manual_sub_${requestId}_${nowMs}`);
+        // Admin-SDK-only reservation documents. Client Firestore rules keep this collection closed.
+        const referenceLockRef = transactionReference
+            ? this.db.collection("manual_subscription_reference_locks")
+                .doc(createTransactionReferenceLockId(transactionReference))
+            : null;
         return this.db.runTransaction(async (tx) => {
-            var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m;
-            const [merchantSnap, settingsSnap, existingReqSnap] = await Promise.all([
+            var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s, _t, _u, _v, _w;
+            const [merchantSnap, subscriptionSnap, settingsSnap, existingReqSnap, referenceLockSnap] = await Promise.all([
                 tx.get(merchantRef),
+                tx.get(subscriptionRef),
                 tx.get(settingsRef),
                 tx.get(requestRef),
+                referenceLockRef ? tx.get(referenceLockRef) : Promise.resolve(null),
             ]);
             if (!merchantSnap.exists) {
                 throw new types_js_1.DomainHttpsError("not-found", "حساب التاجر غير مسجل في النظام.");
             }
             const merchantData = (_a = merchantSnap.data()) !== null && _a !== void 0 ? _a : {};
+            const subscriptionData = subscriptionSnap.exists ? (_b = subscriptionSnap.data()) !== null && _b !== void 0 ? _b : {} : {};
+            if (isSubscriptionCurrentlyActive(merchantData, subscriptionData, nowMs)) {
+                throw new types_js_1.DomainHttpsError("failed-precondition", "لديك باقة اشتراك نشطة حالياً. لا يمكن إرسال طلب تجديد جديد قبل انتهاء صلاحيتها.");
+            }
             const accountType = (0, validators_js_1.readString)(merchantData, "accountType").toLowerCase();
             const role = (0, validators_js_1.readString)(merchantData, "role").toLowerCase();
             if ((accountType && accountType !== "merchant") ||
@@ -288,10 +362,31 @@ class ManualSubscriptionsServerService {
             if (merchantDocUid && merchantDocUid !== uid) {
                 throw new types_js_1.DomainHttpsError("permission-denied", "عدم تطابق ملكية حساب التاجر.");
             }
+            // Serialize active requests for the same merchant through merchants/{uid}.
+            // A conflicting transaction retries and then observes the first request's lock.
+            const activeRequestId = (0, validators_js_1.readString)(merchantData, "activeManualSubscriptionRequestId");
+            if (activeRequestId && activeRequestId !== requestId) {
+                const activeRequestSnap = await tx.get(this.db.collection("manual_subscription_requests").doc(activeRequestId));
+                const activeStatus = normalizeStatus((_c = activeRequestSnap.data()) === null || _c === void 0 ? void 0 : _c.status);
+                if (activeRequestSnap.exists &&
+                    (ACTIVE_PENDING_STATUSES.has(activeStatus) || RESUBMISSION_STATUSES.has(activeStatus))) {
+                    throw new types_js_1.DomainHttpsError("already-exists", "لديك طلب اشتراك آخر قيد المراجعة بالفعل. يرجى انتظار قرار الإدارة.");
+                }
+            }
+            // Deterministic transfer-reference reservation prevents the same reference being used
+            // by two merchants in concurrent submissions. This lock is never released for replay.
+            if (referenceLockSnap === null || referenceLockSnap === void 0 ? void 0 : referenceLockSnap.exists) {
+                const referenceLock = (_d = referenceLockSnap.data()) !== null && _d !== void 0 ? _d : {};
+                const lockRequestId = (0, validators_js_1.readString)(referenceLock, "requestId");
+                const lockMerchantId = (0, validators_js_1.readString)(referenceLock, "merchantId");
+                if (lockRequestId !== requestId || lockMerchantId !== uid) {
+                    throw new types_js_1.DomainHttpsError("already-exists", "رقم العملية المرجعي مرتبط بطلب اشتراك آخر ولا يمكن استخدامه مرة أخرى.");
+                }
+            }
             if (!settingsSnap.exists) {
                 throw new types_js_1.DomainHttpsError("failed-precondition", "إعدادات اشتراكات فودافون كاش غير مهيأة حالياً من الإدارة.");
             }
-            const settingsData = (_b = settingsSnap.data()) !== null && _b !== void 0 ? _b : {};
+            const settingsData = (_e = settingsSnap.data()) !== null && _e !== void 0 ? _e : {};
             if (settingsData.isAcceptingSubscriptions === false) {
                 const pauseMsg = (0, validators_js_1.readString)(settingsData, "pauseMessage");
                 throw new types_js_1.DomainHttpsError("failed-precondition", pauseMsg || "استقبال طلبات الاشتراك متوقف مؤقتاً من الإدارة.");
@@ -314,7 +409,7 @@ class ManualSubscriptionsServerService {
                 : /^\d+$/.test(requestedPlanId)
                     ? Number(requestedPlanId)
                     : null;
-            const legacyMappedCaptains = numericPlanKey !== null ? (_c = legacyNumericPlanToCaptains[numericPlanKey]) !== null && _c !== void 0 ? _c : 0 : 0;
+            const legacyMappedCaptains = numericPlanKey !== null ? (_f = legacyNumericPlanToCaptains[numericPlanKey]) !== null && _f !== void 0 ? _f : 0 : 0;
             const matchedPlan = configuredPlans.find((p) => {
                 var _a;
                 const pId = (0, validators_js_1.readString)(p, "planId");
@@ -336,34 +431,93 @@ class ManualSubscriptionsServerService {
             }
             const officialPlanId = (0, validators_js_1.readString)(matchedPlan, "planId");
             const officialPlanName = (0, validators_js_1.readString)(matchedPlan, "planName", "label", "name") || officialPlanId;
-            const officialMaxCaptains = Math.round((_d = (0, validators_js_1.readNumber)(matchedPlan, "maxCaptains", "captainsCount")) !== null && _d !== void 0 ? _d : 0);
-            const officialPrice = (_e = (0, validators_js_1.readNumber)(matchedPlan, "price")) !== null && _e !== void 0 ? _e : 0;
+            const officialMaxCaptains = Math.round((_g = (0, validators_js_1.readNumber)(matchedPlan, "maxCaptains", "captainsCount")) !== null && _g !== void 0 ? _g : 0);
+            const officialPrice = (_h = (0, validators_js_1.readNumber)(matchedPlan, "price")) !== null && _h !== void 0 ? _h : 0;
             const planDuration = (0, validators_js_1.readNumber)(matchedPlan, "durationDays");
-            const defaultDuration = (_f = (0, validators_js_1.readNumber)(settingsData, "durationDays")) !== null && _f !== void 0 ? _f : 30;
+            const defaultDuration = (_j = (0, validators_js_1.readNumber)(settingsData, "durationDays")) !== null && _j !== void 0 ? _j : 30;
             const officialDurationDays = Math.round(planDuration && planDuration >= 1 && planDuration <= 365
                 ? planDuration
                 : defaultDuration);
             if (officialMaxCaptains < 1 || officialPrice <= 0) {
                 throw new types_js_1.DomainHttpsError("failed-precondition", "إعدادات الباقة الرسمية على السيرفر غير مكتملة.");
             }
-            // Reject client price tampering if caller supplied a forged amount
-            if (claimedAmount !== null && Math.abs(claimedAmount - officialPrice) > 0.01) {
+            // Validate every client-supplied amount alias independently; one correct alias must not
+            // hide a second tampered price field.
+            if (claimedAmounts.some((claimedAmount) => Math.abs(claimedAmount - officialPrice) > 0.01)) {
                 throw new types_js_1.DomainHttpsError("invalid-argument", "قيمة الاشتراك المرسلة لا تطابق السعر الرسمي للباقة على السيرفر.");
             }
-            // Reject client captainLimit tampering if caller supplied a forged captain limit
-            if (requestedMaxCaptains > 0 && requestedMaxCaptains !== officialMaxCaptains) {
+            // Validate every supplied captain-limit alias independently.
+            if (claimedCaptainLimits.some((claimedLimit) => Math.round(claimedLimit) !== officialMaxCaptains)) {
                 throw new types_js_1.DomainHttpsError("invalid-argument", "عدد الكباتن المرسل لا يطابق الحد الرسمي للباقة على السيرفر.");
             }
             const merchantName = (0, validators_js_1.readString)(merchantData, "name", "merchantName", "restaurantName") ||
                 "تاجر مسجل";
             const merchantPhone = (0, validators_js_1.readString)(merchantData, "phone", "phoneNumber");
             const merchantEmail = (0, validators_js_1.readString)(merchantData, "email", "ownerEmail") ||
-                (typeof ((_g = authContext === null || authContext === void 0 ? void 0 : authContext.token) === null || _g === void 0 ? void 0 : _g.email) === "string"
+                (typeof ((_k = authContext === null || authContext === void 0 ? void 0 : authContext.token) === null || _k === void 0 ? void 0 : _k.email) === "string"
                     ? authContext.token.email.trim()
                     : "");
+            const nextSubscriptionVersion = Math.max((_l = (0, validators_js_1.readNumber)(subscriptionData, "subscriptionVersion")) !== null && _l !== void 0 ? _l : 0, (_m = (0, validators_js_1.readNumber)(merchantData, "subscriptionVersion")) !== null && _m !== void 0 ? _m : 0) + 1;
+            const localPlanId = legacyPlanIdForCaptainLimit(officialMaxCaptains);
+            const pendingSubscriptionState = {
+                merchantId: uid,
+                restaurantId: uid,
+                status: "pending_review",
+                subscriptionStatus: "pending_review",
+                isActive: false,
+                isSubscribed: false,
+                planId: localPlanId,
+                planName: officialPlanName,
+                maxCaptains: officialMaxCaptains,
+                captainLimit: officialMaxCaptains,
+                captainsCount: officialMaxCaptains,
+                price: officialPrice,
+                amount: officialPrice,
+                durationDays: officialDurationDays,
+                paymentStatus: "pending_verification",
+                paymentMethod: "vodafone_cash_manual",
+                pendingRequestId: requestId,
+                senderPhone,
+                transactionReference,
+                receiptStoragePath: receiptImagePath,
+                resubmissionReason: null,
+                rejectionReason: null,
+                subscriptionVersion: nextSubscriptionVersion,
+                subscriptionUpdatedAt: s.serverTimestamp(),
+                updatedAt: s.serverTimestamp(),
+                updatedBy: uid,
+            };
+            // Idempotent retry: a repeated request with the same requestId/key returns the existing
+            // pending result instead of producing a second write or a misleading error.
+            if (existingReqSnap.exists) {
+                const existingRequest = (_o = existingReqSnap.data()) !== null && _o !== void 0 ? _o : {};
+                const existingMerchantId = (0, validators_js_1.readString)(existingRequest, "merchantId", "restaurantId", "uid");
+                const existingStatus = normalizeStatus(existingRequest.status);
+                if (existingMerchantId === uid &&
+                    idempotencyKey &&
+                    (0, validators_js_1.readString)(existingRequest, "idempotencyKey") === idempotencyKey &&
+                    ACTIVE_PENDING_STATUSES.has(existingStatus)) {
+                    return {
+                        success: true,
+                        requestId,
+                        requestNumber: (0, validators_js_1.readString)(existingRequest, "requestNumber") || `SUB-${requestId.slice(0, 8).toUpperCase()}`,
+                        merchantId: uid,
+                        planId: (0, validators_js_1.readString)(existingRequest, "planId") || officialPlanId,
+                        planName: (0, validators_js_1.readString)(existingRequest, "planName") || officialPlanName,
+                        maxCaptains: (_p = (0, validators_js_1.readNumber)(existingRequest, "maxCaptains")) !== null && _p !== void 0 ? _p : officialMaxCaptains,
+                        amount: (_q = (0, validators_js_1.readNumber)(existingRequest, "amount")) !== null && _q !== void 0 ? _q : officialPrice,
+                        durationDays: (_r = (0, validators_js_1.readNumber)(existingRequest, "durationDays")) !== null && _r !== void 0 ? _r : officialDurationDays,
+                        receiverWalletNumber: (0, validators_js_1.readString)(existingRequest, "receiverWalletNumber") || receiverWalletNumber,
+                        status: "pending_review",
+                        paymentStatus: "pending_verification",
+                        isResubmission: false,
+                        message: "تم تسجيل الطلب مسبقاً؛ لا حاجة لإرساله مرة أخرى.",
+                    };
+                }
+            }
             // Handle resubmission of an existing resubmission_required request
             if (existingReqSnap.exists) {
-                const prev = (_h = existingReqSnap.data()) !== null && _h !== void 0 ? _h : {};
+                const prev = (_s = existingReqSnap.data()) !== null && _s !== void 0 ? _s : {};
                 const prevMerchantId = (0, validators_js_1.readString)(prev, "merchantId", "restaurantId", "uid");
                 const prevStatus = normalizeStatus(prev.status);
                 if (prevMerchantId !== uid || !RESUBMISSION_STATUSES.has(prevStatus)) {
@@ -397,6 +551,7 @@ class ManualSubscriptionsServerService {
                     receiptImagePath,
                     receiptImageUrl,
                     merchantNote,
+                    idempotencyKey,
                     status: "pending_review",
                     paymentStatus: "pending_verification",
                     resubmittedAt: s.serverTimestamp(),
@@ -415,13 +570,24 @@ class ManualSubscriptionsServerService {
                     });
                 }
                 tx.update(requestRef, resubmissionUpdate);
+                tx.set(subscriptionRef, pendingSubscriptionState, { merge: true });
+                tx.set(merchantRef, Object.assign(Object.assign({}, pendingSubscriptionState), { activeManualSubscriptionRequestId: requestId, manualSubscriptionRequestUpdatedAt: s.serverTimestamp() }), { merge: true });
+                if (referenceLockRef) {
+                    tx.set(referenceLockRef, {
+                        requestId,
+                        merchantId: uid,
+                        transactionReference,
+                        createdAt: s.serverTimestamp(),
+                        updatedAt: s.serverTimestamp(),
+                    }, { merge: true });
+                }
                 tx.set(opLogRef, {
                     action: "resubmit_manual_subscription_request",
                     entityType: "manual_subscription_request",
                     requestId,
                     merchantId: uid,
                     planId: (0, validators_js_1.readString)(prev, "planId") || officialPlanId,
-                    amount: (_j = (0, validators_js_1.readNumber)(prev, "amount")) !== null && _j !== void 0 ? _j : officialPrice,
+                    amount: (_t = (0, validators_js_1.readNumber)(prev, "amount")) !== null && _t !== void 0 ? _t : officialPrice,
                     receiptImagePath,
                     createdAt: s.serverTimestamp(),
                 });
@@ -432,9 +598,9 @@ class ManualSubscriptionsServerService {
                     merchantId: uid,
                     planId: (0, validators_js_1.readString)(prev, "planId") || officialPlanId,
                     planName: (0, validators_js_1.readString)(prev, "planName") || officialPlanName,
-                    maxCaptains: (_k = (0, validators_js_1.readNumber)(prev, "maxCaptains")) !== null && _k !== void 0 ? _k : officialMaxCaptains,
-                    amount: (_l = (0, validators_js_1.readNumber)(prev, "amount")) !== null && _l !== void 0 ? _l : officialPrice,
-                    durationDays: (_m = (0, validators_js_1.readNumber)(prev, "durationDays")) !== null && _m !== void 0 ? _m : officialDurationDays,
+                    maxCaptains: (_u = (0, validators_js_1.readNumber)(prev, "maxCaptains")) !== null && _u !== void 0 ? _u : officialMaxCaptains,
+                    amount: (_v = (0, validators_js_1.readNumber)(prev, "amount")) !== null && _v !== void 0 ? _v : officialPrice,
+                    durationDays: (_w = (0, validators_js_1.readNumber)(prev, "durationDays")) !== null && _w !== void 0 ? _w : officialDurationDays,
                     receiverWalletNumber: (0, validators_js_1.readString)(prev, "receiverWalletNumber") || receiverWalletNumber,
                     status: "pending_review",
                     paymentStatus: "pending_verification",
@@ -470,6 +636,7 @@ class ManualSubscriptionsServerService {
                 receiptImagePath,
                 receiptImageUrl,
                 merchantNote,
+                idempotencyKey,
                 status: "pending_review",
                 paymentStatus: "pending_verification",
                 previousReceipts: [],
@@ -478,6 +645,17 @@ class ManualSubscriptionsServerService {
                 createdAt: s.serverTimestamp(),
                 updatedAt: s.serverTimestamp(),
             });
+            tx.set(subscriptionRef, pendingSubscriptionState, { merge: true });
+            tx.set(merchantRef, Object.assign(Object.assign({}, pendingSubscriptionState), { activeManualSubscriptionRequestId: requestId, manualSubscriptionRequestUpdatedAt: s.serverTimestamp() }), { merge: true });
+            if (referenceLockRef) {
+                tx.set(referenceLockRef, {
+                    requestId,
+                    merchantId: uid,
+                    transactionReference,
+                    createdAt: s.serverTimestamp(),
+                    updatedAt: s.serverTimestamp(),
+                }, { merge: true });
+            }
             tx.set(opLogRef, {
                 action: "submit_manual_subscription_request",
                 entityType: "manual_subscription_request",
@@ -725,6 +903,7 @@ class ManualSubscriptionsServerService {
                 paymentMethod: "vodafone_cash",
                 lastPaymentId: paymentDocId,
                 lastRequestId: requestId,
+                pendingRequestId: null,
                 startDate: startDateYmd,
                 endDate: endDateYmd,
                 startDateMs,
@@ -744,35 +923,13 @@ class ManualSubscriptionsServerService {
                 updatedAt: s.serverTimestamp(),
             }, { merge: true });
             // 3. Sync merchants/{merchantId} (fully compatible with Merchant App SubscriptionSyncResolver)
-            tx.set(merchantRef, {
-                subscriptionStatus: "active",
-                isSubscribed: true,
-                isActive: true,
-                planId,
-                planName,
-                subscriptionPlan: planName,
-                maxCaptains,
-                captainLimit: maxCaptains,
-                captainsCount: maxCaptains,
-                price: amount,
-                paymentStatus: "paid",
-                subscriptionStartDate: startDateYmd,
-                subscriptionEndDate: endDateYmd,
-                subscriptionExpiresAt: endDateMs,
-                startDate: startDateYmd,
-                endDate: endDateYmd,
-                expiresAt: endDateMs,
-                activatedAt: s.serverTimestamp(),
-                suspensionReason: null,
-                cancellationReason: null,
-                lastApprovedRequestId: requestId,
-                lastPaymentId: paymentDocId,
-                updatedBy: admin.uid,
-                updatedByAdminUid: admin.uid,
-                subscriptionVersion: nextVersion,
-                subscriptionUpdatedAt: s.serverTimestamp(),
-                updatedAt: s.serverTimestamp(),
-            }, { merge: true });
+            tx.set(merchantRef, Object.assign(Object.assign({ subscriptionStatus: "active", isSubscribed: true, isActive: true, planId,
+                planName, subscriptionPlan: planName, maxCaptains, captainLimit: maxCaptains, captainsCount: maxCaptains, price: amount, paymentStatus: "paid", subscriptionStartDate: startDateYmd, subscriptionEndDate: endDateYmd, subscriptionExpiresAt: endDateMs, startDate: startDateYmd, endDate: endDateYmd, expiresAt: endDateMs, activatedAt: s.serverTimestamp(), suspensionReason: null, cancellationReason: null, lastApprovedRequestId: requestId, pendingRequestId: null, lastPaymentId: paymentDocId }, ((0, validators_js_1.readString)(merchantData, "activeManualSubscriptionRequestId") === requestId
+                ? {
+                    activeManualSubscriptionRequestId: null,
+                    manualSubscriptionRequestUpdatedAt: s.serverTimestamp(),
+                }
+                : {})), { updatedBy: admin.uid, updatedByAdminUid: admin.uid, subscriptionVersion: nextVersion, subscriptionUpdatedAt: s.serverTimestamp(), updatedAt: s.serverTimestamp() }), { merge: true });
             // 4. Create single deterministic financial payment transaction
             tx.set(paymentRef, {
                 id: paymentDocId,
@@ -918,7 +1075,7 @@ class ManualSubscriptionsServerService {
         let merchantFcmToken = "";
         let planName = "";
         const result = await this.db.runTransaction(async (tx) => {
-            var _a, _b;
+            var _a, _b, _c, _d, _e, _f, _g, _h, _j;
             const reqSnap = await tx.get(requestRef);
             if (!reqSnap.exists) {
                 throw new types_js_1.DomainHttpsError("not-found", "طلب الاشتراك غير موجود أو تم حذفه.");
@@ -935,8 +1092,14 @@ class ManualSubscriptionsServerService {
             if (!merchantId || !isValidDocId(merchantId)) {
                 throw new types_js_1.DomainHttpsError("failed-precondition", "طلب الاشتراك لا يحتوي على معرّف تاجر صالح.");
             }
-            const merchantSnap = await tx.get(this.db.collection("merchants").doc(merchantId));
+            const merchantRef = this.db.collection("merchants").doc(merchantId);
+            const subscriptionRef = this.db.collection("subscriptions").doc(merchantId);
+            const [merchantSnap, subscriptionSnap] = await Promise.all([
+                tx.get(merchantRef),
+                tx.get(subscriptionRef),
+            ]);
             const merchantData = merchantSnap.exists ? (_b = merchantSnap.data()) !== null && _b !== void 0 ? _b : {} : {};
+            const subscriptionData = subscriptionSnap.exists ? (_c = subscriptionSnap.data()) !== null && _c !== void 0 ? _c : {} : {};
             merchantFcmToken = (0, validators_js_1.readString)(merchantData, "fcmToken");
             planName = (0, validators_js_1.readString)(reqData, "planName", "plan") || "باقة الاشتراك";
             const reviewEntry = {
@@ -961,6 +1124,29 @@ class ManualSubscriptionsServerService {
                 reviewHistory: s.arrayUnion(reviewEntry),
                 updatedAt: s.serverTimestamp(),
             });
+            const rejectedState = {
+                status: "rejected",
+                subscriptionStatus: "rejected",
+                isActive: false,
+                isSubscribed: false,
+                paymentStatus: "rejected",
+                paymentMethod: "vodafone_cash_manual",
+                pendingRequestId: null,
+                rejectionReason: cleanReason,
+                planId: legacyPlanIdForCaptainLimit((_d = (0, validators_js_1.readNumber)(reqData, "maxCaptains")) !== null && _d !== void 0 ? _d : 0),
+                planName,
+                maxCaptains: (_e = (0, validators_js_1.readNumber)(reqData, "maxCaptains")) !== null && _e !== void 0 ? _e : 0,
+                captainLimit: (_f = (0, validators_js_1.readNumber)(reqData, "maxCaptains")) !== null && _f !== void 0 ? _f : 0,
+                price: (_g = (0, validators_js_1.readNumber)(reqData, "amount")) !== null && _g !== void 0 ? _g : 0,
+                subscriptionVersion: Math.max((_h = (0, validators_js_1.readNumber)(subscriptionData, "subscriptionVersion")) !== null && _h !== void 0 ? _h : 0, (_j = (0, validators_js_1.readNumber)(merchantData, "subscriptionVersion")) !== null && _j !== void 0 ? _j : 0) + 1,
+                subscriptionUpdatedAt: s.serverTimestamp(),
+                updatedAt: s.serverTimestamp(),
+                updatedBy: admin.uid,
+            };
+            tx.set(subscriptionRef, rejectedState, { merge: true });
+            tx.set(merchantRef, Object.assign(Object.assign(Object.assign({}, rejectedState), ((0, validators_js_1.readString)(merchantData, "activeManualSubscriptionRequestId") === requestId
+                ? { activeManualSubscriptionRequestId: null }
+                : {})), { manualSubscriptionRequestUpdatedAt: s.serverTimestamp() }), { merge: true });
             tx.set(opLogRef, {
                 action: "reject_manual_subscription_request",
                 entityType: "manual_subscription_request",
@@ -1043,7 +1229,7 @@ class ManualSubscriptionsServerService {
         let merchantFcmToken = "";
         let planName = "";
         const result = await this.db.runTransaction(async (tx) => {
-            var _a, _b;
+            var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o;
             const reqSnap = await tx.get(requestRef);
             if (!reqSnap.exists) {
                 throw new types_js_1.DomainHttpsError("not-found", "طلب الاشتراك غير موجود أو تم حذفه.");
@@ -1060,8 +1246,23 @@ class ManualSubscriptionsServerService {
             if (!merchantId || !isValidDocId(merchantId)) {
                 throw new types_js_1.DomainHttpsError("failed-precondition", "طلب الاشتراك لا يحتوي على معرّف تاجر صالح.");
             }
-            const merchantSnap = await tx.get(this.db.collection("merchants").doc(merchantId));
+            const merchantRef = this.db.collection("merchants").doc(merchantId);
+            const subscriptionRef = this.db.collection("subscriptions").doc(merchantId);
+            const [merchantSnap, subscriptionSnap] = await Promise.all([
+                tx.get(merchantRef),
+                tx.get(subscriptionRef),
+            ]);
             const merchantData = merchantSnap.exists ? (_b = merchantSnap.data()) !== null && _b !== void 0 ? _b : {} : {};
+            const subscriptionData = subscriptionSnap.exists ? (_c = subscriptionSnap.data()) !== null && _c !== void 0 ? _c : {} : {};
+            const activeRequestId = (0, validators_js_1.readString)(merchantData, "activeManualSubscriptionRequestId");
+            if (activeRequestId && activeRequestId !== requestId) {
+                const activeRequestSnap = await tx.get(this.db.collection("manual_subscription_requests").doc(activeRequestId));
+                const activeStatus = normalizeStatus((_d = activeRequestSnap.data()) === null || _d === void 0 ? void 0 : _d.status);
+                if (activeRequestSnap.exists &&
+                    (ACTIVE_PENDING_STATUSES.has(activeStatus) || RESUBMISSION_STATUSES.has(activeStatus))) {
+                    throw new types_js_1.DomainHttpsError("already-exists", "لدى التاجر طلب اشتراك آخر قيد المراجعة ولا يمكن فتح مراجعة ثانية.");
+                }
+            }
             merchantFcmToken = (0, validators_js_1.readString)(merchantData, "fcmToken");
             planName = (0, validators_js_1.readString)(reqData, "planName", "plan") || "باقة الاشتراك";
             const reviewEntry = {
@@ -1100,7 +1301,36 @@ class ManualSubscriptionsServerService {
                     flaggedAtIso: new Date(nowMs).toISOString(),
                 });
             }
+            const resubmissionState = {
+                merchantId,
+                restaurantId: merchantId,
+                status: "resubmission_required",
+                subscriptionStatus: "resubmission_required",
+                isActive: false,
+                isSubscribed: false,
+                planId: legacyPlanIdForCaptainLimit((_e = (0, validators_js_1.readNumber)(reqData, "maxCaptains")) !== null && _e !== void 0 ? _e : 0),
+                planName,
+                maxCaptains: (_f = (0, validators_js_1.readNumber)(reqData, "maxCaptains")) !== null && _f !== void 0 ? _f : 0,
+                captainLimit: (_g = (0, validators_js_1.readNumber)(reqData, "maxCaptains")) !== null && _g !== void 0 ? _g : 0,
+                captainsCount: (_h = (0, validators_js_1.readNumber)(reqData, "maxCaptains")) !== null && _h !== void 0 ? _h : 0,
+                price: (_j = (0, validators_js_1.readNumber)(reqData, "amount")) !== null && _j !== void 0 ? _j : 0,
+                amount: (_k = (0, validators_js_1.readNumber)(reqData, "amount")) !== null && _k !== void 0 ? _k : 0,
+                durationDays: (_l = (0, validators_js_1.readNumber)(reqData, "durationDays")) !== null && _l !== void 0 ? _l : 30,
+                paymentStatus: "resubmission_required",
+                paymentMethod: "vodafone_cash_manual",
+                pendingRequestId: requestId,
+                senderPhone: (0, validators_js_1.readString)(reqData, "senderPhone"),
+                transactionReference: (0, validators_js_1.readString)(reqData, "transactionReference"),
+                receiptStoragePath: existingReceiptPath,
+                resubmissionReason: cleanNote,
+                subscriptionVersion: Math.max((_m = (0, validators_js_1.readNumber)(subscriptionData, "subscriptionVersion")) !== null && _m !== void 0 ? _m : 0, (_o = (0, validators_js_1.readNumber)(merchantData, "subscriptionVersion")) !== null && _o !== void 0 ? _o : 0) + 1,
+                subscriptionUpdatedAt: s.serverTimestamp(),
+                updatedAt: s.serverTimestamp(),
+                updatedBy: admin.uid,
+            };
             tx.update(requestRef, updatePatch);
+            tx.set(subscriptionRef, resubmissionState, { merge: true });
+            tx.set(merchantRef, Object.assign(Object.assign({}, resubmissionState), { activeManualSubscriptionRequestId: requestId, manualSubscriptionRequestUpdatedAt: s.serverTimestamp() }), { merge: true });
             tx.set(opLogRef, {
                 action: "request_subscription_receipt_resubmission",
                 entityType: "manual_subscription_request",
@@ -1291,23 +1521,35 @@ class ManualSubscriptionsServerService {
         const merchantName = (0, validators_js_1.readString)(reqData, "merchantName", "restaurantName") || "تاجر مسجل";
         const planName = (0, validators_js_1.readString)(reqData, "planName", "plan") || "باقة اشتراك";
         const amount = (_a = (0, validators_js_1.readNumber)(reqData, "amount", "price")) !== null && _a !== void 0 ? _a : 0;
-        await this.db
+        // Use a deterministic document and create it only once. A retried
+        // Firestore event must not reset isRead after an admin has opened the alert.
+        const notificationRef = this.db
             .collection("notifications")
-            .doc(`manual_sub_req_${requestId}`)
-            .set({
-            type: "manual_subscription_request",
-            targetRole: "admin",
-            title: `طلب اشتراك فودافون كاش جديد — ${merchantName}`,
-            message: `أرسل التاجر "${merchantName}" إيصال تحويل بمبلغ ${amount} ج.م للباقة "${planName}" بانتظار المراجعة.`,
-            body: `أرسل التاجر "${merchantName}" إيصال تحويل بمبلغ ${amount} ج.م للباقة "${planName}" بانتظار المراجعة.`,
-            requestId,
-            merchantId,
-            restaurantName: merchantName,
-            planName,
-            amount,
-            isRead: false,
-            createdAt: s.serverTimestamp(),
-        }, { merge: true });
+            .doc(`manual_sub_req_${requestId}`);
+        const notificationCreated = await this.db.runTransaction(async (tx) => {
+            const existing = await tx.get(notificationRef);
+            if (existing.exists)
+                return false;
+            tx.set(notificationRef, {
+                type: "manual_subscription_request",
+                targetRole: "admin",
+                title: `طلب اشتراك فودافون كاش جديد — ${merchantName}`,
+                message: `أرسل التاجر "${merchantName}" إيصال تحويل بمبلغ ${amount} ج.م للباقة "${planName}" بانتظار المراجعة.`,
+                body: `أرسل التاجر "${merchantName}" إيصال تحويل بمبلغ ${amount} ج.م للباقة "${planName}" بانتظار المراجعة.`,
+                requestId,
+                merchantId,
+                restaurantName: merchantName,
+                planName,
+                amount,
+                isRead: false,
+                createdAt: s.serverTimestamp(),
+            });
+            return true;
+        });
+        // The in-app notification is the durable alert. Send its push only for the
+        // first successful creation so duplicate event deliveries cannot spam admins.
+        if (!notificationCreated)
+            return;
         // Collect admin FCM tokens if registered
         const adminTokens = new Set();
         const adminsSnap = await this.db.collection("admins").limit(20).get();

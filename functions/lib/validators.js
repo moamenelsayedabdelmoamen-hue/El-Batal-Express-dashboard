@@ -13,6 +13,7 @@ exports.isCaptainCandidateBaseEligible = isCaptainCandidateBaseEligible;
 exports.extractOrderCaptainUid = extractOrderCaptainUid;
 exports.readStringList = readStringList;
 exports.readNormalizedOrderStatus = readNormalizedOrderStatus;
+exports.isTerminalMerchantOrderStatus = isTerminalMerchantOrderStatus;
 exports.resolveEffectiveOrderStatus = resolveEffectiveOrderStatus;
 exports.isTruthyFlag = isTruthyFlag;
 exports.isOrderStatusOpenForAccept = isOrderStatusOpenForAccept;
@@ -329,6 +330,19 @@ function readNormalizedOrderStatus(order) {
         .toLowerCase();
 }
 /**
+ * Returns true only for terminal order states that release merchant package capacity.
+ * In particular, "out_for_delivery" and "delivering" are active states, not terminal.
+ */
+function isTerminalMerchantOrderStatus(status) {
+    const value = status.trim().toLowerCase();
+    return [
+        "delivered", "completed", "complete", "done", "cancelled", "canceled",
+        "expired", "failed", "declined", "rejected",
+        "ملغي", "ملغى", "تم الإلغاء", "تم الالغاء", "تم التسليم", "تم التوصيل",
+        "مكتمل", "مكتملة", "انتهى", "منتهي", "منتهية",
+    ].includes(value);
+}
+/**
  * Resolves effective normalized status accounting for merchantConfirmed flag.
  * @param {Record<string, unknown>} order Order document fields.
  * @return {string} Canonical lowercase status key.
@@ -396,6 +410,7 @@ function requireValidOrderId(raw) {
  * @param {number} nowMs Current epoch milliseconds.
  */
 function assertMerchantAndSubscriptionValid(merchantId, merchantData, subData, nowMs) {
+    var _a, _b;
     if (!merchantId)
         return;
     if (merchantData) {
@@ -405,14 +420,28 @@ function assertMerchantAndSubscriptionValid(merchantId, merchantData, subData, n
             ["banned", "suspended", "disabled", "blocked", "inactive"].includes(mStatus)) {
             throw new types_js_1.DomainHttpsError("failed-precondition", "حساب التاجر موقوف حالياً ولا يمكن قبول هذا الطلب.");
         }
-        const embeddedSubStatus = readString(merchantData, "subscriptionStatus").toLowerCase();
-        if (merchantData.isSubscribed === false ||
-            ["expired", "suspended", "cancelled", "canceled", "inactive"].includes(embeddedSubStatus)) {
-            throw new types_js_1.DomainHttpsError("failed-precondition", "اشتراك التاجر منتهي أو غير نشط حالياً.");
-        }
-        const mSubEnd = Math.max(parseTimestampMs(merchantData.subscriptionEndDate), parseTimestampMs(merchantData.subscriptionExpiresAt));
-        if (mSubEnd > 0 && nowMs > endOfDayMs(mSubEnd)) {
-            throw new types_js_1.DomainHttpsError("failed-precondition", "انتهت صلاحية اشتراك التاجر ولا يمكن قبول الطلب.");
+        // A canonical active subscriptions/{uid} record must not be invalidated by a
+        // stale mirror flag on merchants/{uid}. The mirror wins only when it has a
+        // strictly newer subscriptionVersion (e.g. a direct Admin dashboard update).
+        const canonicalStatus = readString(subData, "status", "subscriptionStatus", "planStatus").toLowerCase();
+        const canonicalVersion = Number((_a = subData === null || subData === void 0 ? void 0 : subData.subscriptionVersion) !== null && _a !== void 0 ? _a : 0);
+        const merchantVersion = Number((_b = merchantData.subscriptionVersion) !== null && _b !== void 0 ? _b : 0);
+        const canonicalActive = [
+            "active", "approved", "trial", "نشط", "نشطة", "ساري", "سارية",
+        ].includes(canonicalStatus);
+        const canonicalSubscriptionWins = Boolean(subData) &&
+            canonicalActive &&
+            canonicalVersion >= merchantVersion;
+        if (!canonicalSubscriptionWins) {
+            const embeddedSubStatus = readString(merchantData, "subscriptionStatus", "planStatus").toLowerCase();
+            if (merchantData.isSubscribed === false ||
+                ["expired", "suspended", "cancelled", "canceled", "inactive"].includes(embeddedSubStatus)) {
+                throw new types_js_1.DomainHttpsError("failed-precondition", "اشتراك التاجر منتهي أو غير نشط حالياً.");
+            }
+            const mSubEnd = Math.max(parseTimestampMs(merchantData.subscriptionEndDate), parseTimestampMs(merchantData.subscriptionExpiresAt));
+            if (mSubEnd > 0 && nowMs > endOfDayMs(mSubEnd)) {
+                throw new types_js_1.DomainHttpsError("failed-precondition", "انتهت صلاحية اشتراك التاجر ولا يمكن قبول الطلب.");
+            }
         }
     }
     if (subData) {

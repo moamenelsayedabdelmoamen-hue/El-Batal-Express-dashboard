@@ -511,7 +511,7 @@ export function assertMerchantAndSubscriptionValid(
     const canonicalVersion = Number(subData?.subscriptionVersion ?? 0);
     const merchantVersion = Number(merchantData.subscriptionVersion ?? 0);
     const canonicalActive = [
-      "active", "approved", "trial", "نشط", "نشطة", "ساري", "سارية"
+      "active", "approved", "trial", "نشط", "نشطة", "ساري", "سارية",
     ].includes(canonicalStatus);
     const canonicalSubscriptionWins = Boolean(subData) &&
       canonicalActive &&
