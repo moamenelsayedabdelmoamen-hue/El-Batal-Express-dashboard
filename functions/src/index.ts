@@ -1,11 +1,12 @@
 import {initializeApp} from "firebase-admin/app";
-import {randomInt} from "node:crypto";
+import {createHash, randomInt} from "node:crypto";
 import {getFirestore, FieldValue, GeoPoint} from "firebase-admin/firestore";
 import {setGlobalOptions} from "firebase-functions";
 import * as logger from "firebase-functions/logger";
 import {
   onDocumentCreated,
   onDocumentUpdated,
+  onDocumentWritten,
 } from "firebase-functions/v2/firestore";
 import {HttpsError, onCall} from "firebase-functions/v2/https";
 import {onTaskDispatched} from "firebase-functions/v2/tasks";
@@ -20,6 +21,8 @@ import {OrderServerService} from "./ordersService.js";
 import {DomainHttpsError, ReassignTaskPayload} from "./types.js";
 import {
   assertMerchantAndSubscriptionValid,
+  MAX_LOCATION_AGE_MS,
+  parseTimestampMs,
   extractCoordinates,
   extractOrderCaptainUid,
   readNormalizedOrderStatus,
@@ -53,6 +56,61 @@ function mapError(err: unknown): HttpsError {
     "internal",
     "حدث خطأ غير متوقع في الخادم أثناء تنفيذ العملية."
   );
+}
+
+function isCaptainReadyForDispatch(data: Record<string, unknown> | undefined): boolean {
+  if (!data || data.isOnline !== true) return false;
+  const status = readString(data, "status").toLowerCase();
+  const presence = (readString(data, "presenceStatus") || "available").toLowerCase();
+  const availability = (readString(data, "availabilityStatus") || "available").toLowerCase();
+  const unavailable = new Set(["offline", "busy", "unavailable", "paused", "on_trip"]);
+  return ["online", "active", "approved"].includes(status) &&
+    data.canReceiveOrders !== false &&
+    data.isReceivingOrders !== false &&
+    data.receiveOrders !== false &&
+    data.isBlocked !== true &&
+    data.isSuspended !== true &&
+    !unavailable.has(presence) &&
+    !unavailable.has(availability) &&
+    !readString(data, "currentOrderId") &&
+    !readString(data, "activeOfferOrderId");
+}
+
+async function enforceCaptainEmailLookupRateLimit(ipAddress: string, phone: string): Promise<void> {
+  const db = getFirestore();
+  const nowMs = Date.now();
+  const windowMs = 15 * 60 * 1000;
+  const normalizedPhone = phone.replace(/[^0-9+]/g, "").slice(0, 32) || "missing";
+  const scopes = [
+    {name: "ip", value: ipAddress || "unknown", maxAttempts: 30},
+    {name: "phone", value: normalizedPhone, maxAttempts: 6},
+  ];
+
+  for (const scope of scopes) {
+    const digest = createHash("sha256").update(scope.value).digest("hex");
+    const ref = db.collection("security_rate_limits")
+      .doc(`captain-email-lookup-${scope.name}-${digest}`);
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      const data = snap.data() ?? {};
+      const windowStartedAtMs = readNumber(data, "windowStartedAtMs") ?? 0;
+      const attempts = readNumber(data, "attempts") ?? 0;
+      const inWindow = nowMs - windowStartedAtMs < windowMs;
+      if (inWindow && attempts >= scope.maxAttempts) {
+        throw new HttpsError(
+          "resource-exhausted",
+          "تم تجاوز عدد محاولات البحث عن الحساب. حاول مرة أخرى بعد 15 دقيقة."
+        );
+      }
+      tx.set(ref, {
+        scope: scope.name,
+        windowStartedAtMs: inWindow ? windowStartedAtMs : nowMs,
+        attempts: inWindow ? attempts + 1 : 1,
+        expiresAt: new Date(nowMs + 24 * 60 * 60 * 1000),
+        updatedAt: FieldValue.serverTimestamp(),
+      }, {merge: true});
+    });
+  }
 }
 
 /**
@@ -156,6 +214,8 @@ export const resolveCaptainEmailByPhone = onCall(
   async (request) => {
     try {
       const payload = (request.data ?? {}) as Record<string, unknown>;
+      const phone = readString(payload, "phone", "phoneNumber", "mobile");
+      await enforceCaptainEmailLookupRateLimit(request.rawRequest.ip || "unknown", phone);
       return await service.resolveCaptainEmailByPhone(payload);
     } catch (err) {
       throw mapError(err);
@@ -180,18 +240,24 @@ async function requireAdminUid(
   }
 
   const adminDoc = await getFirestore().collection("admins").doc(cleanUid).get();
+  const adminData = adminDoc.data() ?? {};
   const email = typeof claims.email === "string"
     ? claims.email.trim().toLowerCase()
     : "";
   const verifiedAllowlistedEmail =
     claims.email_verified === true && ADMIN_EMAIL_ALLOWLIST.has(email);
-  const trustedClaims =
-    claims.role === "admin" || claims.admin === true;
+  const activeAdminDocument =
+    adminDoc.exists &&
+    adminData.role === "admin" &&
+    adminData.emailVerified === true &&
+    ["active", "approved"].includes(
+      typeof adminData.status === "string" ? adminData.status.toLowerCase() : ""
+    );
 
-  if (!adminDoc.exists && !verifiedAllowlistedEmail && !trustedClaims) {
+  if (!activeAdminDocument && !verifiedAllowlistedEmail) {
     throw new HttpsError(
       "permission-denied",
-      "هذا الحساب لا يمتلك صلاحية تنفيذ عمليات إدارة الطلبات."
+      "هذا الحساب لا يمتلك صلاحية مدير نشطة ومعتمدة لتنفيذ عمليات الإدارة."
     );
   }
   return cleanUid;
@@ -924,6 +990,8 @@ export const merchantCancelOrder = onCall(
           const patch: Record<string, unknown> = {};
           if (readString(captain, "currentOrderId") === orderId) {
             patch.currentOrderId = null;
+            patch.activeMerchantId = FieldValue.delete();
+            patch.currentMerchantId = FieldValue.delete();
             if (readString(captain, "presenceStatus") === "on_trip") {
               patch.presenceStatus = "available";
             }
@@ -1153,58 +1221,250 @@ export const adminCreateOrder = onCall(
         throw new HttpsError("invalid-argument", "معرف الكابتن غير صالح.");
       }
 
-      const orderRef = db.collection("orders").doc();
-      const orderNumber = `#ELB-${randomInt(100000, 1000000)}`;
+      const merchantRef = db.collection("merchants").doc(merchantId);
+      const restaurantRef = db.collection("restaurants").doc(merchantId);
+      const subscriptionRef = db.collection("subscriptions").doc(merchantId);
+      const capacityRef = merchantRef.collection("capacity").doc("current");
+      const ordersRef = db.collection("orders");
+      const merchantOrderQueries = [
+        ordersRef.where("merchantId", "==", merchantId),
+        ordersRef.where("restaurantId", "==", merchantId),
+        ordersRef.where("userId", "==", merchantId),
+      ];
       const merchantName = readString(merchantData, "name", "merchantName", "restaurantName");
+      const merchantPhone = readString(merchantData, "phone", "phoneNumber", "mobile");
+      const imageCandidates = [
+        readString(merchantData, "logo"),
+        readString(merchantData, "photoUrl"),
+        readString(merchantData, "logoUrl"),
+        readString(merchantData, "imageUrl"),
+        readString(merchantData, "profileImageUrl"),
+      ];
+      const storeImage = imageCandidates.find((value) =>
+        value.startsWith("https://") || value.startsWith("http://")
+      ) || "";
+      const storeImagePath = [
+        readString(merchantData, "storagePath"),
+        readString(merchantData, "profileImagePath"),
+        readString(merchantData, "logoStoragePath"),
+        ...imageCandidates,
+      ].find((value) =>
+        value.startsWith("gs://") || value.startsWith(`merchants/${merchantId}/`)
+      ) || "";
       const pickupAddress = readString(merchantData, "address", "pickupAddress", "storeAddress");
-      await orderRef.create({
-        orderNumber,
-        orderCode: orderNumber,
-        order_code: orderNumber,
-        order_codes: orderNumber,
-        merchantId,
-        restaurantId: merchantId,
-        merchantName,
-        restaurantName: merchantName,
-        storeName: merchantName,
-        pickupLat: pickup.lat,
-        pickupLng: pickup.lng,
-        restaurantLatitude: pickup.lat,
-        restaurantLongitude: pickup.lng,
-        pickupAddress,
-        storeAddress: pickupAddress,
-        deliveryAddress: deliveryAddress.slice(0, 1000),
-        customerName: readString(data, "customerName").slice(0, 200),
-        customerPhone: readString(data, "customerPhone").slice(0, 40),
-        deliveryFee,
-        delivery_fee: deliveryFee,
-        subtotal,
-        total,
-        items,
-        notes: readString(data, "notes").slice(0, 1000),
-        status: "pending",
-        dispatchStatus: "searching",
-        captainId: null,
-        driverId: null,
-        offeredCaptainId: null,
-        offerGeneration: 0,
-        offerExpiresAt: null,
-        excludedCaptainIds: [],
-        timedOutCaptainIds: [],
-        eligibleCaptainIds: [],
-        requestedCaptainId: requestedCaptainId || null,
-        dispatchedBy: adminUid,
-        createdAt: FieldValue.serverTimestamp(),
-        updatedAt: FieldValue.serverTimestamp(),
-      });
+      if (!merchantName || !merchantPhone || (!storeImage && !storeImagePath)) {
+        throw new HttpsError("failed-precondition", "بيانات اسم التاجر أو هاتفه أو صورة المتجر غير مكتملة.");
+      }
 
-      return {
-        success: true,
-        orderId: orderRef.id,
-        orderNumber,
-        status: "pending",
-        dispatchStatus: "searching",
-      };
+      const idempotencyKey = readString(data, "idempotencyKey");
+      if (!/^[A-Za-z0-9_-]{8,128}$/.test(idempotencyKey)) {
+        throw new HttpsError("invalid-argument", "مفتاح منع التكرار غير صالح.");
+      }
+      const idempotencyRef = db.collection("admin_order_idempotency").doc(idempotencyKey);
+      const previousRequest = await idempotencyRef.get();
+      if (previousRequest.exists) {
+        const previous = previousRequest.data() ?? {};
+        if (readString(previous, "merchantId") !== merchantId) {
+          throw new HttpsError("permission-denied", "مفتاح الطلب مستخدم لحساب آخر.");
+        }
+        const previousCode = readString(previous, "orderCode");
+        return {
+          success: true,
+          orderId: readString(previous, "orderId"),
+          orderCode: previousCode,
+          orderNumber: `#ELB-${previousCode}`,
+          status: "pending",
+          dispatchStatus: "existing",
+          isReplay: true,
+        };
+      }
+
+      const MAX_CODE_ATTEMPTS = 25;
+      for (let attempt = 0; attempt < MAX_CODE_ATTEMPTS; attempt++) {
+        const orderCode = generateDistinctOrderCode();
+        const orderRef = ordersRef.doc();
+        const codeRef = db.collection("order_codes").doc(orderCode);
+        try {
+          await db.runTransaction(async (tx) => {
+            const [
+              currentMerchantSnap,
+              currentRestaurantSnap,
+              currentSubscriptionSnap,
+              codeSnap,
+              keySnap,
+              merchantOrdersSnap,
+              restaurantOrdersSnap,
+              userOrdersSnap,
+              capacitySnap,
+            ] = await Promise.all([
+              tx.get(merchantRef),
+              tx.get(restaurantRef),
+              tx.get(subscriptionRef),
+              tx.get(codeRef),
+              tx.get(idempotencyRef),
+              tx.get(merchantOrderQueries[0]),
+              tx.get(merchantOrderQueries[1]),
+              tx.get(merchantOrderQueries[2]),
+              tx.get(capacityRef),
+            ]);
+            if (keySnap.exists) {
+              const previous = keySnap.data() ?? {};
+              if (readString(previous, "merchantId") !== merchantId) {
+                throw new HttpsError("permission-denied", "مفتاح الطلب مستخدم لحساب آخر.");
+              }
+              return;
+            }
+            if ((!currentMerchantSnap.exists && !currentRestaurantSnap.exists) || !currentSubscriptionSnap.exists) {
+              throw new HttpsError("failed-precondition", "ملف التاجر أو الاشتراك غير موجود.");
+            }
+            const currentMerchant = currentMerchantSnap.exists
+              ? currentMerchantSnap.data() ?? {}
+              : currentRestaurantSnap.data() ?? {};
+            const currentSubscription = currentSubscriptionSnap.data() ?? {};
+            assertMerchantAndSubscriptionValid(merchantId, currentMerchant, currentSubscription, Date.now());
+            if (codeSnap.exists) throw new Error("ORDER_CODE_COLLISION");
+
+            const planId = readNumber(currentSubscription, "planId") ?? readNumber(currentMerchant, "planId") ?? 0;
+            const legacyLimits: Record<number, number> = {1: 2, 2: 4, 3: 6, 4: 8};
+            const planName = (
+              readString(currentSubscription, "planName", "plan", "subscriptionPlan") ||
+              readString(currentMerchant, "planName", "plan", "subscriptionPlan")
+            ).toLowerCase();
+            const planNameLimit = /8/.test(planName) ? 8 : /6/.test(planName) ? 6 : /4/.test(planName) ? 4 : /2/.test(planName) ? 2 : 0;
+            const maxCaptains =
+              readNumber(currentSubscription, "captainsCount", "captainLimit", "maxCaptains", "allowedCaptains") ??
+              readNumber(currentMerchant, "captainsCount", "captainLimit", "maxCaptains", "allowedCaptains") ??
+              legacyLimits[planId] ??
+              planNameLimit;
+            if (![2, 4, 6, 8].includes(maxCaptains)) {
+              throw new HttpsError("failed-precondition", "باقة التاجر لا تحتوي على حد كباتن صالح.");
+            }
+
+            const activeOrderIds = new Set<string>();
+            for (const snapshot of [merchantOrdersSnap, restaurantOrdersSnap, userOrdersSnap]) {
+              for (const orderDoc of snapshot.docs) {
+                if (!isTerminalMerchantOrderStatus(readNormalizedOrderStatus(orderDoc.data() ?? {}))) {
+                  activeOrderIds.add(orderDoc.id);
+                }
+              }
+            }
+            const activeOrderCount = activeOrderIds.size;
+            if (activeOrderCount >= maxCaptains) {
+              throw new HttpsError(
+                "resource-exhausted",
+                `وصل التاجر إلى الحد المتزامن للباقة: ${activeOrderCount} من ${maxCaptains} طلبات نشطة.`
+              );
+            }
+
+            const capacityVersion = readNumber(capacitySnap.data() ?? {}, "capacityVersion") ?? 0;
+            const orderNumber = `#ELB-${orderCode}`;
+            tx.create(codeRef, {
+              code: orderCode,
+              orderCode,
+              orderId: orderRef.id,
+              merchantId,
+              createdAt: FieldValue.serverTimestamp(),
+            });
+            tx.create(idempotencyRef, {
+              idempotencyKey,
+              orderId: orderRef.id,
+              orderCode,
+              merchantId,
+              createdAt: FieldValue.serverTimestamp(),
+            });
+            tx.create(orderRef, {
+              orderNumber,
+              orderCode,
+              order_code: orderCode,
+              order_codes: orderCode,
+              merchantId,
+              restaurantId: merchantId,
+              userId: merchantId,
+              merchantName,
+              restaurantName: merchantName,
+              storeName: merchantName,
+              merchantPhone,
+              storePhone: merchantPhone,
+              merchantLogo: storeImage,
+              merchantImageUrl: storeImage,
+              storeImage,
+              storeImagePath,
+              merchantStoragePath: storeImagePath,
+              pickupLat: pickup.lat,
+              pickupLng: pickup.lng,
+              restaurantLatitude: pickup.lat,
+              restaurantLongitude: pickup.lng,
+              pickupAddress,
+              storeAddress: pickupAddress,
+              deliveryAddress: deliveryAddress.slice(0, 1000),
+              customerName: readString(data, "customerName").slice(0, 200),
+              customerPhone: readString(data, "customerPhone").slice(0, 40),
+              deliveryFee,
+              delivery_fee: deliveryFee,
+              subtotal,
+              total,
+              items,
+              notes: readString(data, "notes").slice(0, 1000),
+              status: "pending",
+              dispatchStatus: "searching",
+              dispatchAuthority: "dashboard_functions",
+              createdByServerFunction: "adminCreateOrder",
+              captainId: null,
+              driverId: null,
+              offeredCaptainId: null,
+              offerGeneration: 0,
+              offerExpiresAt: null,
+              excludedCaptainIds: [],
+              timedOutCaptainIds: [],
+              requestedCaptainId: requestedCaptainId || null,
+              dispatchedBy: adminUid,
+              createdAt: FieldValue.serverTimestamp(),
+              updatedAt: FieldValue.serverTimestamp(),
+            });
+            const reservedOrderIds = [...activeOrderIds, orderRef.id];
+            tx.set(capacityRef, {
+              merchantId,
+              reservedOrderIds,
+              activeReservationsCount: reservedOrderIds.length,
+              captainLimitSnapshot: maxCaptains,
+              capacityVersion: capacityVersion + 1,
+              lastReservedOrderId: orderRef.id,
+              updatedAt: FieldValue.serverTimestamp(),
+            }, {merge: true});
+          });
+          const codeAfter = await codeRef.get();
+          if (!codeAfter.exists) {
+            const replay = await idempotencyRef.get();
+            if (replay.exists) {
+              const previous = replay.data() ?? {};
+              const previousCode = readString(previous, "orderCode");
+              return {
+                success: true,
+                orderId: readString(previous, "orderId"),
+                orderCode: previousCode,
+                orderNumber: `#ELB-${previousCode}`,
+                status: "pending",
+                dispatchStatus: "existing",
+                isReplay: true,
+              };
+            }
+            throw new HttpsError("aborted", "لم يتم حجز الطلب؛ أعد المحاولة.");
+          }
+          return {
+            success: true,
+            orderId: orderRef.id,
+            orderCode,
+            orderNumber: `#ELB-${orderCode}`,
+            status: "pending",
+            dispatchStatus: "searching",
+            isReplay: false,
+          };
+        } catch (err) {
+          if (err instanceof Error && err.message === "ORDER_CODE_COLLISION") continue;
+          throw err;
+        }
+      }
+      throw new HttpsError("resource-exhausted", "تعذر تخصيص كود طلب فريد بعد عدة محاولات.");
     } catch (err) {
       throw mapError(err);
     }
@@ -1328,6 +1588,8 @@ export const adminCancelOrder = onCall(
           const patch: Record<string, unknown> = {};
           if (captain.currentOrderId === orderId) {
             patch.currentOrderId = null;
+            patch.activeMerchantId = FieldValue.delete();
+            patch.currentMerchantId = FieldValue.delete();
             if (captain.presenceStatus === "on_trip") {
               patch.presenceStatus = "available";
             }
@@ -1578,11 +1840,10 @@ export const onOrderCreatedDispatch = onDocumentCreated(
   async (event) => {
     const orderId = event.params.orderId;
     const order = event.data?.data() ?? {};
-    // The Dashboard dispatcher owns only orders created by merchantCreateOrder.
-    // Legacy order paths remain untouched until their callers have migrated.
+    // Dashboard Functions is the only dispatcher for trusted merchant and admin order creation.
     if (
       order.dispatchAuthority !== "dashboard_functions" ||
-      order.createdByServerFunction !== "merchantCreateOrder"
+      !["merchantCreateOrder", "adminCreateOrder"].includes(String(order.createdByServerFunction ?? ""))
     ) {
       return;
     }
@@ -1607,7 +1868,7 @@ export const onOrderUpdatedDispatch = onDocumentUpdated(
 
     if (
       after.dispatchAuthority === "dashboard_functions" &&
-      after.createdByServerFunction === "merchantCreateOrder" &&
+      ["merchantCreateOrder", "adminCreateOrder"].includes(String(after.createdByServerFunction ?? "")) &&
       (afterStatus === "pending" || afterStatus === "searching") &&
       afterDispatch === "searching" &&
       beforeDispatch !== "searching" &&
@@ -1615,6 +1876,97 @@ export const onOrderUpdatedDispatch = onDocumentUpdated(
     ) {
       await dispatchOrderFromEvent(event.params.orderId, "onOrderUpdatedDispatch");
     }
+  }
+);
+
+async function allowCaptainDispatchRetry(captainId: string): Promise<boolean> {
+  const ref = getFirestore().collection("dispatch_retry_cooldowns").doc(captainId);
+  const nowMs = Date.now();
+  return getFirestore().runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const lastAttemptAtMs = readNumber(snap.data() ?? {}, "lastAttemptAtMs") ?? 0;
+    if (nowMs - lastAttemptAtMs < 30_000) return false;
+    tx.set(ref, {
+      lastAttemptAtMs: nowMs,
+      updatedAt: FieldValue.serverTimestamp(),
+    }, {merge: true});
+    return true;
+  });
+}
+
+async function retryQueuedDashboardOrders(): Promise<void> {
+  const queued = await getFirestore()
+    .collection("orders")
+    .where("dispatchStatus", "==", "no_captains_available")
+    .limit(50)
+    .get();
+  const toMillis = (value: unknown): number => {
+    if (value && typeof value === "object" && "toMillis" in value &&
+      typeof (value as {toMillis?: unknown}).toMillis === "function") {
+      return (value as {toMillis: () => number}).toMillis();
+    }
+    if (typeof value === "string") return Date.parse(value) || 0;
+    if (typeof value === "number") return value;
+    return 0;
+  };
+  const pending = queued.docs
+    .filter((doc) =>
+      doc.get("dispatchAuthority") === "dashboard_functions" &&
+      ["pending", "searching"].includes(readNormalizedOrderStatus(doc.data() ?? {}))
+    )
+    .sort((a, b) => toMillis(a.get("createdAt")) - toMillis(b.get("createdAt")));
+
+  for (const orderDoc of pending) {
+    const outcome = await service.dispatchNewOrSearchingOrder(orderDoc.id);
+    // One queue item per trigger prevents notification storms when no eligible captain exists.
+    if (outcome.status === "offered" || outcome.status === "no_captains_available") break;
+  }
+}
+
+/**
+ * Retry queued orders when a captain becomes available or receives a fresh GPS location.
+ * GPS updates are throttled per captain to avoid repeatedly scanning the queue.
+ */
+export const retryNoCaptainOrdersWhenCaptainAvailable = onDocumentUpdated(
+  {document: "captains/{captainId}", region: "us-central1", retry: true},
+  async (event) => {
+    const before = event.data?.before.data() as Record<string, unknown> | undefined;
+    const after = event.data?.after.data() as Record<string, unknown> | undefined;
+    if (!after || !isCaptainReadyForDispatch(after)) return;
+
+    const becameAvailable = !isCaptainReadyForDispatch(before);
+    const beforeCoordinates = before ? extractCoordinates(before) : null;
+    const afterCoordinates = extractCoordinates(after);
+    const beforeLocationTime = before ? parseTimestampMs(before.lastLocationUpdate) : 0;
+    const afterLocationTime = parseTimestampMs(after.lastLocationUpdate);
+    const nowMs = Date.now();
+    const wasLocationFresh =
+      beforeLocationTime > 0 && nowMs - beforeLocationTime <= MAX_LOCATION_AGE_MS;
+    const isLocationFresh =
+      afterLocationTime > 0 && nowMs - afterLocationTime <= MAX_LOCATION_AGE_MS;
+    const locationBecameFresh =
+      !!afterCoordinates && isLocationFresh && (!beforeCoordinates || !wasLocationFresh);
+    if (!becameAvailable && !locationBecameFresh) return;
+
+    const captainId = event.params.captainId;
+    if (!await allowCaptainDispatchRetry(captainId)) return;
+    await retryQueuedDashboardOrders();
+  }
+);
+
+/**
+ * A captain can become eligible by entering an active scheduled shift even when
+ * their online/presence fields did not change. Re-check the queue on schedule writes.
+ */
+export const retryNoCaptainOrdersWhenCaptainScheduleChanges = onDocumentWritten(
+  {document: "captain_schedules/{captainId}", region: "us-central1", retry: true},
+  async (event) => {
+    if (!event.data?.after.exists) return;
+    const captainId = event.params.captainId;
+    const captainSnap = await getFirestore().collection("captains").doc(captainId).get();
+    if (!isCaptainReadyForDispatch(captainSnap.data() as Record<string, unknown> | undefined)) return;
+    if (!await allowCaptainDispatchRetry(captainId)) return;
+    await retryQueuedDashboardOrders();
   }
 );
 

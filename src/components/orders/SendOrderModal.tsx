@@ -20,8 +20,6 @@ import { Restaurant, Captain } from '../../types';
 import { RestaurantService } from '../../services/restaurantService';
 import { CaptainService } from '../../services/captainService';
 import { OrderService } from '../../services/orderService';
-import { ShiftService } from '../../services/shiftService';
-import { NotificationService } from '../../services/notificationService';
 import { useToast } from '../../contexts/ToastContext';
 
 interface SendOrderModalProps {
@@ -145,41 +143,14 @@ export const SendOrderModal: React.FC<SendOrderModalProps> = ({
       return;
     }
 
-    if (!selectedCaptain) {
-      toastError('يرجى تحديد كابتن التوصيل المستلم للطلب');
-      return;
-    }
-
-    if (selectedCaptain.canReceiveOrders === false) {
-      const msg = `تم إيقاف استقبال الطلبات للكابتن "${selectedCaptain.name}" من قِبل الإدارة.`;
-      toastError(msg);
-      NotificationService.notifyCaptainAssignmentFailed({
-        restaurantName: selectedRestaurant.name,
-        reason: msg,
-      });
-      return;
-    }
-
-    // Strict shift hours check: Do not allow assigning new orders outside active work hours
-    const eligibility = await ShiftService.verifyCaptainOrderEligibility(selectedCaptain.id);
-    if (!eligibility.isEligible) {
-      const msg = eligibility.reason || 'الكابتن المحدد خارج ساعات العمل المحددة له في الشفت، ولا يمكن إسناد طلبات جديدة إليه.';
-      toastError(msg);
-      NotificationService.notifyCaptainAssignmentFailed({
-        restaurantName: selectedRestaurant.name,
-        reason: msg,
-      });
-      return;
-    }
-
     setSubmitting(true);
     try {
       const fee = typeof deliveryFee === 'number' ? deliveryFee : 25;
       const createdOrder = await OrderService.create({
         restaurantId: selectedRestaurant.id,
         restaurantName: selectedRestaurant.name,
-        captainId: selectedCaptain.id,
-        captainName: selectedCaptain.name,
+        captainId: selectedCaptain?.id || '',
+        captainName: selectedCaptain?.name || '',
         customerName: customerName.trim(),
         customerPhone: customerPhone.trim(),
         deliveryAddress: deliveryAddress.trim() || (selectedRestaurant.address ? `توصيل من ${selectedRestaurant.name}` : 'غير محدد'),
@@ -189,7 +160,11 @@ export const SendOrderModal: React.FC<SendOrderModalProps> = ({
         notes: notes.trim(),
       });
 
-      success(`تم إرسال الطلب ${createdOrder.orderNumber} بنجاح إلى الكابتن ${selectedCaptain.name}!`);
+      success(
+        selectedCaptain
+          ? `تم إنشاء الطلب ${createdOrder.orderNumber} وطلب عرض من الخادم إلى الكابتن المحدد.`
+          : `تم إنشاء الطلب ${createdOrder.orderNumber} وبدأ الخادم البحث عن أقرب كابتن مؤهل.`
+      );
 
       // Reset and close
       handleReset();
@@ -373,7 +348,7 @@ export const SendOrderModal: React.FC<SendOrderModalProps> = ({
             <label className="text-xs font-bold text-zinc-300 flex items-center justify-between">
               <span className="flex items-center gap-1.5">
                 <Bike className="w-4 h-4 text-amber-400" />
-                كابتن التوصيل المسجل <span className="text-rose-400">*</span>
+                كابتن محدد (اختياري)
               </span>
               {selectedCaptain && (
                 <button
@@ -406,7 +381,7 @@ export const SendOrderModal: React.FC<SendOrderModalProps> = ({
                 <div className="flex items-center gap-2">
                   <span className="text-xs font-bold px-2.5 py-1 rounded-lg bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 flex items-center gap-1">
                     <Check className="w-3.5 h-3.5" />
-                    تم التعيين
+                    كابتن محدد
                   </span>
                 </div>
               </div>
@@ -422,7 +397,7 @@ export const SendOrderModal: React.FC<SendOrderModalProps> = ({
                       setIsCaptainDropdownOpen(true);
                     }}
                     onFocus={() => setIsCaptainDropdownOpen(true)}
-                    placeholder="ابحث باسم الكابتن، الهاتف، أو نوع المركبة..."
+                    placeholder="اختياري: ابحث لاختيار كابتن مفضل، أو اتركه فارغًا للتوزيع التلقائي..."
                     className="w-full bg-[#131722] border border-zinc-700/80 text-zinc-100 placeholder-zinc-500 rounded-xl py-2.5 pr-10 pl-4 text-xs sm:text-sm focus:outline-none focus:border-amber-500 transition-colors"
                   />
                   {captainSearch && (
@@ -594,7 +569,7 @@ export const SendOrderModal: React.FC<SendOrderModalProps> = ({
             </button>
             <button
               type="submit"
-              disabled={submitting || !selectedRestaurant || !selectedCaptain}
+              disabled={submitting || !selectedRestaurant}
               className="w-full sm:w-auto px-6 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 font-black text-xs sm:text-sm shadow-lg shadow-amber-500/20 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 transition-all"
             >
               {submitting ? (
@@ -605,7 +580,7 @@ export const SendOrderModal: React.FC<SendOrderModalProps> = ({
               ) : (
                 <>
                   <Send className="w-4 h-4 -rotate-45" />
-                  <span>إرسال الطلب للكابتن الآن</span>
+                  <span>{selectedCaptain ? 'إنشاء الطلب وإرسال العرض للكابتن المفضل' : 'إنشاء الطلب والتوزيع التلقائي'}</span>
                 </>
               )}
             </button>

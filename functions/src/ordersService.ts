@@ -329,6 +329,9 @@ export class OrderServerService {
       tx.update(captainRef, {
         presenceStatus: "on_trip",
         currentOrderId: orderId,
+        activeMerchantId: merchantId,
+        currentMerchantId: merchantId,
+        captainPhotoUrl: readString(captainData, "profileImageUrl", "photoUrl", "imageUrl", "personalImageUrl"),
         activeOfferOrderId: null,
         activeOfferGeneration: null,
         activeOfferExpiresAt: null,
@@ -751,6 +754,8 @@ export class OrderServerService {
         totalOrdersCount: s.increment(1),
         presenceStatus: "available",
         currentOrderId: null,
+        activeMerchantId: s.deleteField(),
+        currentMerchantId: s.deleteField(),
         activeOfferOrderId: null,
         activeOfferGeneration: null,
         activeOfferExpiresAt: null,
@@ -948,7 +953,6 @@ export class OrderServerService {
     const candidates = requestedUid
       ? allCandidates.filter((candidate) => candidate.uid === requestedUid)
       : allCandidates;
-    const eligibleIds = candidates.map((candidate) => candidate.uid);
     const s = this.effects.sentinels;
 
     let selectedOfferPayload: OfferFcmPayload | null = null;
@@ -1024,7 +1028,7 @@ export class OrderServerService {
           offeredCaptainId: null,
           offeredCaptainName: null,
           offerExpiresAt: null,
-          eligibleCaptainIds: [],
+          eligibleCaptainIds: s.deleteField(),
           updatedAt: s.serverTimestamp(),
         });
         return {status: "no_captains_available", orderId} as DispatchOutcome;
@@ -1060,7 +1064,7 @@ export class OrderServerService {
         offerSentAt: s.serverTimestamp(),
         offerExpiresAt: offerExpiresAtMs,
         offerGeneration: nextGen,
-        eligibleCaptainIds: eligibleIds,
+        eligibleCaptainIds: s.deleteField(),
         requestedCaptainId: s.deleteField(),
         updatedAt: s.serverTimestamp(),
       });
@@ -1277,7 +1281,6 @@ export class OrderServerService {
       excludedSet,
       nowMs
     );
-    const eligibleIds = candidates.map((c) => c.uid);
     const s = this.effects.sentinels;
 
     let offerFcm: OfferFcmPayload | null = null;
@@ -1372,7 +1375,7 @@ export class OrderServerService {
           offeredCaptainId: null,
           offeredCaptainName: null,
           offerExpiresAt: null,
-          eligibleCaptainIds: [],
+          eligibleCaptainIds: s.deleteField(),
           excludedCaptainIds: s.arrayUnion(timedOutCaptainId),
           timedOutCaptainIds:
             rotationReason === "expired"
@@ -1409,7 +1412,7 @@ export class OrderServerService {
         offerSentAt: s.serverTimestamp(),
         offerExpiresAt: offerExpiresAtMs,
         offerGeneration: nextGen,
-        eligibleCaptainIds: eligibleIds,
+        eligibleCaptainIds: s.deleteField(),
         excludedCaptainIds: s.arrayUnion(timedOutCaptainId),
         updatedAt: s.serverTimestamp(),
       };

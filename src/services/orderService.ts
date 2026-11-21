@@ -2,13 +2,11 @@ import {
   collection,
   doc,
   getDocs,
-  setDoc,
-  updateDoc,
   query,
   orderBy,
-  serverTimestamp,
 } from 'firebase/firestore';
-import { db, isFirebaseConfigured, handleFirestoreError, OperationType } from '../firebase/config';
+import { db, functions, isFirebaseConfigured, handleFirestoreError, OperationType } from '../firebase/config';
+import { httpsCallable } from 'firebase/functions';
 import { COLLECTIONS } from './collections';
 import { Order, OrderStatus } from '../types';
 
@@ -619,53 +617,20 @@ export const OrderService = {
   },
 
   async updateStatus(id: string, newStatus: OrderStatus): Promise<Partial<Order>> {
-    const nowIso = new Date().toISOString();
-    const existing = localOrdersCache.find((o) => o.id === id);
-
-    const stageUpdates: Partial<Order> = { status: newStatus };
-    const firestoreUpdates: Record<string, any> = {
-      status: newStatus,
-      updatedAt: serverTimestamp(),
-    };
-
-    if (newStatus === 'Accepted' && !existing?.acceptedAt) {
-      stageUpdates.acceptedAt = nowIso;
-      firestoreUpdates.acceptedAt = nowIso;
-      if (existing?.createdAt && existing.captainSearchSeconds === undefined) {
-        const startMs = new Date(existing.createdAt).getTime();
-        const endMs = Date.now();
-        if (!isNaN(startMs) && endMs >= startMs) {
-          const secs = Math.round((endMs - startMs) / 1000);
-          stageUpdates.captainSearchSeconds = secs;
-          stageUpdates.captainSearchDuration = formatDurationArabic(secs);
-          firestoreUpdates.captainSearchSeconds = secs;
-          firestoreUpdates.captainSearchDuration = stageUpdates.captainSearchDuration;
-        }
-      }
-    } else if ((newStatus === 'Preparing' || newStatus === 'Ready') && !existing?.arrivedAtMerchantAt) {
-      stageUpdates.arrivedAtMerchantAt = nowIso;
-      firestoreUpdates.arrivedAtMerchantAt = nowIso;
-    } else if (newStatus === 'Picked Up' && !existing?.pickedUpAt) {
-      stageUpdates.pickedUpAt = nowIso;
-      firestoreUpdates.pickedUpAt = nowIso;
-    } else if (newStatus === 'Delivered' && !existing?.deliveredAt) {
-      stageUpdates.deliveredAt = nowIso;
-      firestoreUpdates.deliveredAt = nowIso;
+    if (newStatus !== 'Cancelled') {
+      throw new Error(
+        'تغيير مراحل الطلب يتم من تطبيق الكابتن أو التاجر عبر الخادم. يمكن للإدارة إلغاء الطلب فقط.'
+      );
     }
-
+    if (!isFirebaseConfigured) {
+      throw new Error('لا يمكن إلغاء الطلب دون اتصال Firebase مباشر.');
+    }
+    const cancelOrder = httpsCallable(functions, 'adminCancelOrder');
+    await cancelOrder({ orderId: id, reason: 'إلغاء من لوحة الإدارة' });
+    const stageUpdates: Partial<Order> = { status: newStatus };
     localOrdersCache = localOrdersCache.map((order) =>
       order.id === id ? { ...order, ...stageUpdates } : order
     );
-
-    if (isFirebaseConfigured) {
-      try {
-        const docRef = doc(db, COLLECTIONS.ORDERS, id);
-        await updateDoc(docRef, firestoreUpdates);
-      } catch (error) {
-        handleFirestoreError(error, OperationType.UPDATE, `${COLLECTIONS.ORDERS}/${id}`);
-      }
-    }
-
     return stageUpdates;
   },
 
@@ -674,26 +639,59 @@ export const OrderService = {
     field: 'acceptedAt' | 'arrivedAtMerchantAt' | 'pickedUpAt' | 'deliveredAt',
     customIso?: string
   ): Promise<string> {
-    const timestampIso = customIso || new Date().toISOString();
-
-    localOrdersCache = localOrdersCache.map((o) =>
-      o.id === orderId ? { ...o, [field]: timestampIso } : o
-    );
-
-    if (isFirebaseConfigured) {
-      try {
-        const docRef = doc(db, COLLECTIONS.ORDERS, orderId);
-        await updateDoc(docRef, {
-          [field]: timestampIso,
-          updatedAt: serverTimestamp(),
-        });
-      } catch (error) {
-        handleFirestoreError(error, OperationType.UPDATE, `${COLLECTIONS.ORDERS}/${orderId}`);
-        throw error;
-      }
+    if (!isFirebaseConfigured) {
+      throw new Error('لا يمكن تسجيل التوقيت دون اتصال Firebase مباشر.');
     }
-
+    const recordTimestamp = httpsCallable(functions, 'adminRecordOrderStageTimestamp');
+    const response = await recordTimestamp({ orderId, field });
+    const payload = response.data as { timestamp?: unknown };
+    const raw = payload?.timestamp as { toDate?: () => Date } | string | undefined;
+    const timestampIso = typeof raw === 'string'
+      ? raw
+      : raw && typeof raw.toDate === 'function'
+        ? raw.toDate().toISOString()
+        : customIso || new Date().toISOString();
+    localOrdersCache = localOrdersCache.map((order) =>
+      order.id === orderId ? { ...order, [field]: timestampIso } : order
+    );
     return timestampIso;
+  },
+
+  async dispatchOrder(orderId: string): Promise<{
+    offeredCaptainId: string;
+    offerExpiresAt: string;
+    offerGeneration: number;
+  }> {
+    if (!isFirebaseConfigured) {
+      throw new Error('لا يمكن بدء توزيع الطلب دون اتصال Firebase مباشر.');
+    }
+    const dispatch = httpsCallable(functions, 'adminDispatchOrder');
+    const response = await dispatch({ orderId });
+    const result = response.data as {
+      offeredCaptainId?: string;
+      offerExpiresAtMs?: number;
+      offerGeneration?: number;
+    };
+    if (!result?.offeredCaptainId || !result.offerExpiresAtMs) {
+      throw new Error('لم يرجع الخادم عرض كابتن صالحًا.');
+    }
+    const offerExpiresAt = new Date(result.offerExpiresAtMs).toISOString();
+    localOrdersCache = localOrdersCache.map((order) =>
+      order.id === orderId
+        ? {
+            ...order,
+            offeredCaptainId: result.offeredCaptainId,
+            offerExpiresAt,
+            offerGeneration: result.offerGeneration || 0,
+            dispatchStatus: 'offered',
+          }
+        : order
+    );
+    return {
+      offeredCaptainId: result.offeredCaptainId,
+      offerExpiresAt,
+      offerGeneration: result.offerGeneration || 0,
+    };
   },
 
   async assignCaptain(
@@ -706,90 +704,72 @@ export const OrderService = {
       distanceToMerchantKm?: number;
     }
   ): Promise<{
-    assignedAt: string;
-    acceptedAt?: string;
+    offeredCaptainId: string;
+    offeredCaptainName: string;
+    offerExpiresAt: string;
+    offerGeneration: number;
     captainSearchDuration: string;
     captainSearchSeconds: number;
     distanceToMerchantKm?: number;
     status: OrderStatus;
   }> {
+    if (!isFirebaseConfigured) {
+      throw new Error('لا يمكن إرسال عرض كابتن دون اتصال Firebase مباشر.');
+    }
     const nowIso = new Date().toISOString();
-    const existing = localOrdersCache.find((o) => o.id === orderId);
-    const preservedStatus: OrderStatus = existing?.status || 'New';
-
-    let searchSecs = extra?.searchDurationSeconds;
-    if (searchSecs === undefined && existing?.createdAt) {
-      const createdMs = new Date(existing.createdAt).getTime();
-      const nowMs = Date.now();
-      if (!isNaN(createdMs) && nowMs >= createdMs) {
-        searchSecs = Math.round((nowMs - createdMs) / 1000);
-      }
-    }
-    if (searchSecs === undefined) {
-      searchSecs = 1;
-    }
-
+    const existing = localOrdersCache.find((order) => order.id === orderId);
+    const searchSecs = extra?.searchDurationSeconds ??
+      (existing?.createdAt
+        ? Math.max(1, Math.round((Date.now() - new Date(existing.createdAt).getTime()) / 1000))
+        : 1);
     const searchDurationText = extra?.searchDurationText || formatDurationArabic(searchSecs);
-
+    const assignCaptain = httpsCallable(functions, 'adminAssignCaptain');
+    const response = await assignCaptain({ orderId, captainId });
+    const result = response.data as {
+      offeredCaptainId?: string;
+      offerExpiresAtMs?: number;
+      offerGeneration?: number;
+      status?: string;
+    };
+    if (!result?.offeredCaptainId || !result.offerExpiresAtMs) {
+      throw new Error('لم يؤكد الخادم إنشاء عرض صالح للكابتن.');
+    }
+    const offerExpiresAt = new Date(result.offerExpiresAtMs).toISOString();
+    const status = (existing?.status || 'New') as OrderStatus;
     localOrdersCache = localOrdersCache.map((order) =>
       order.id === orderId
         ? {
             ...order,
-            captainId,
-            captainName,
-            status: preservedStatus,
-            assignedAt: nowIso,
+            offeredCaptainId: result.offeredCaptainId,
+            offeredCaptainName: captainName,
+            offerExpiresAt,
+            offerGeneration: result.offerGeneration || 0,
+            dispatchStatus: 'offered',
             captainSearchSeconds: searchSecs,
             captainSearchDuration: searchDurationText,
             ...(extra?.distanceToMerchantKm !== undefined
               ? { distanceToMerchantKm: extra.distanceToMerchantKm }
               : {}),
-          }
+          } as Order
         : order
     );
-
-    if (isFirebaseConfigured) {
-      try {
-        const docRef = doc(db, COLLECTIONS.ORDERS, orderId);
-        const payload: Record<string, any> = {
-          captainId,
-          captainName,
-          captain: {
-            id: captainId,
-            name: captainName,
-          },
-          assignedAt: nowIso,
-          captainSearchSeconds: searchSecs,
-          captainSearchDuration: searchDurationText,
-          updatedAt: serverTimestamp(),
-        };
-        if (preservedStatus === 'New') {
-          payload.status = 'New';
-        }
-        if (extra?.distanceToMerchantKm !== undefined) {
-          payload.distanceToMerchantKm = extra.distanceToMerchantKm;
-        }
-        await updateDoc(docRef, payload);
-      } catch (error) {
-        handleFirestoreError(error, OperationType.UPDATE, `${COLLECTIONS.ORDERS}/${orderId}`);
-      }
-    }
-
     return {
-      assignedAt: nowIso,
-      acceptedAt: existing?.acceptedAt,
+      offeredCaptainId: result.offeredCaptainId,
+      offeredCaptainName: captainName,
+      offerExpiresAt,
+      offerGeneration: result.offerGeneration || 0,
       captainSearchDuration: searchDurationText,
       captainSearchSeconds: searchSecs,
       distanceToMerchantKm: extra?.distanceToMerchantKm,
-      status: preservedStatus,
+      status,
     };
   },
 
   async create(data: {
     restaurantId: string;
     restaurantName: string;
-    captainId: string;
-    captainName: string;
+    captainId?: string;
+    captainName?: string;
     deliveryAddress?: string;
     deliveryFee?: number;
     notes?: string;
@@ -799,23 +779,49 @@ export const OrderService = {
     total?: number;
     items?: { name: string; quantity: number; price: number }[];
   }): Promise<Order> {
-    const timestamp = Date.now();
+    if (!isFirebaseConfigured) {
+      throw new Error('لا يمكن إنشاء طلب إداري دون اتصال Firebase مباشر.');
+    }
     const nowIso = new Date().toISOString();
-    const newId = `ord_${timestamp}`;
-    const orderNumber = `#ELB-${Math.floor(1000 + Math.random() * 9000)}`;
-
     const deliveryFee = Number(data.deliveryFee ?? 0);
     const subtotal = Number(data.subtotal ?? 0);
     const total = Number(data.total ?? subtotal + deliveryFee);
-
-    const newOrder: Order = {
-      id: newId,
-      orderNumber,
-      orderCode: orderNumber,
+    const idempotencyKey = `admin_${Date.now()}_${Math.random().toString(36).slice(2, 12)}`;
+    const createOrder = httpsCallable(functions, 'adminCreateOrder');
+    const response = await createOrder({
+      merchantId: data.restaurantId,
+      deliveryAddress: data.deliveryAddress || '',
+      customerName: data.customerName || '',
+      customerPhone: data.customerPhone || '',
+      deliveryFee,
+      subtotal,
+      total,
+      notes: data.notes || '',
+      items: data.items || [],
+      requestedCaptainId: data.captainId || '',
+      idempotencyKey,
+    });
+    const result = response.data as {
+      orderId: string;
+      orderCode: string;
+      orderNumber: string;
+      status?: string;
+      dispatchStatus?: string;
+    };
+    if (!result?.orderId || !result.orderCode || !result.orderNumber) {
+      throw new Error('لم يرجع الخادم بيانات الطلب كاملة.');
+    }
+    const newOrder = {
+      id: result.orderId,
+      orderNumber: result.orderNumber,
+      orderCode: result.orderCode,
       merchantId: data.restaurantId,
       merchantName: data.restaurantName,
-      captainId: data.captainId,
-      captainName: data.captainName,
+      restaurantName: data.restaurantName,
+      captainId: '',
+      captainName: '',
+      offeredCaptainId: undefined,
+      offeredCaptainName: undefined,
       customerName: data.customerName || '',
       customerPhone: data.customerPhone || '',
       deliveryAddress: data.deliveryAddress || '',
@@ -823,64 +829,23 @@ export const OrderService = {
       deliveryFee,
       total,
       status: 'New',
+      dispatchStatus: result.dispatchStatus || 'searching',
       createdAt: nowIso,
-      assignedAt: nowIso,
-      captainSearchSeconds: 1,
-      captainSearchDuration: '1 ثانية',
+      captainSearchSeconds: 0,
+      captainSearchDuration: 'جارٍ البحث',
       items: data.items && data.items.length > 0 ? data.items : [],
       raw: {
         ...data,
-        notes: data.notes || '',
-        orderNumber,
-        orderCode: orderNumber,
-        order_codes: orderNumber,
-        status: 'New',
-        dispatchedBy: 'admin',
+        orderNumber: result.orderNumber,
+        orderCode: result.orderCode,
+        status: 'pending',
+        dispatchAuthority: 'dashboard_functions',
+        createdByServerFunction: 'adminCreateOrder',
+        requestedCaptainId: data.captainId,
       },
-    };
-
+    } as unknown as Order;
     localOrdersCache = [newOrder, ...localOrdersCache];
-
-    if (isFirebaseConfigured) {
-      try {
-        const docRef = doc(db, COLLECTIONS.ORDERS, newId);
-        await setDoc(docRef, {
-          orderNumber,
-          orderCode: orderNumber,
-          order_code: orderNumber,
-          order_codes: orderNumber,
-          merchantId: data.restaurantId,
-          merchantName: data.restaurantName,
-          captainId: data.captainId,
-          captainName: data.captainName,
-          captain: {
-            id: data.captainId,
-            name: data.captainName,
-          },
-          customerName: data.customerName || '',
-          customerPhone: data.customerPhone || '',
-          deliveryAddress: data.deliveryAddress || '',
-          deliveryFee,
-          delivery_fee: deliveryFee,
-          deliveryPrice: deliveryFee,
-          fee: deliveryFee,
-          subtotal,
-          total,
-          status: 'New',
-          assignedAt: nowIso,
-          captainSearchSeconds: 1,
-          captainSearchDuration: '1 ثانية',
-          notes: data.notes || '',
-          items: newOrder.items,
-          dispatchedBy: 'admin',
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-      } catch (error) {
-        handleFirestoreError(error, OperationType.CREATE, `${COLLECTIONS.ORDERS}/${newId}`);
-      }
-    }
-
     return newOrder;
   },
+
 };

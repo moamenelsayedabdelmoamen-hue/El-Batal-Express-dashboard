@@ -26,11 +26,11 @@ import {
   ExternalLink,
 } from 'lucide-react';
 import { Order, OrderStatus, Captain, Restaurant } from '../types';
-import { OrderService, formatDurationArabic } from '../services/orderService';
+import { OrderService } from '../services/orderService';
 import { CaptainService } from '../services/captainService';
 import { RestaurantService } from '../services/restaurantService';
 import { ShiftService } from '../services/shiftService';
-import { extractCoordinates, haversineDistanceKm, formatDistanceArabic } from '../utils/geoUtils';
+import { formatDistanceArabic } from '../utils/geoUtils';
 import { StatusBadge } from '../components/common/StatusBadge';
 import { EmptyState } from '../components/common/EmptyState';
 import { FirebaseImage } from '../components/common/FirebaseImage';
@@ -358,10 +358,12 @@ export const OrdersPage: React.FC = () => {
           o.id === orderId
             ? {
                 ...o,
-                captainId,
-                captainName,
+                offeredCaptainId: result.offeredCaptainId,
+                offeredCaptainName: result.offeredCaptainName,
+                offerExpiresAt: result.offerExpiresAt,
+                offerGeneration: result.offerGeneration,
+                dispatchStatus: 'offered',
                 status: result.status,
-                assignedAt: result.assignedAt,
                 captainSearchDuration: result.captainSearchDuration,
                 captainSearchSeconds: result.captainSearchSeconds,
                 distanceToMerchantKm: result.distanceToMerchantKm,
@@ -374,10 +376,12 @@ export const OrdersPage: React.FC = () => {
           prev
             ? {
                 ...prev,
-                captainId,
-                captainName,
+                offeredCaptainId: result.offeredCaptainId,
+                offeredCaptainName: result.offeredCaptainName,
+                offerExpiresAt: result.offerExpiresAt,
+                offerGeneration: result.offerGeneration,
+                dispatchStatus: 'offered',
                 status: result.status,
-                assignedAt: result.assignedAt,
                 captainSearchDuration: result.captainSearchDuration,
                 captainSearchSeconds: result.captainSearchSeconds,
                 distanceToMerchantKm: result.distanceToMerchantKm,
@@ -385,139 +389,39 @@ export const OrdersPage: React.FC = () => {
             : null
         );
       }
-      success(`تم تعيين الكابتن "${captainName}" للطلب بنجاح!`);
+      success(`تم إرسال عرض الطلب إلى الكابتن "${captainName}" لمدة 60 ثانية.`);
     } catch (err) {
       toastError('فشل تعيين الكابتن للطلب في قاعدة البيانات');
     }
   };
 
   /**
-   * "ابحث عن كابتن": Searches for the nearest eligible captain to the merchant and assigns the order automatically.
+   * Nearest-captain selection runs only inside Dashboard Cloud Functions.
+   * The client receives the single captain offer returned by the server.
    */
   const handleSearchAndAssignNearestCaptain = async (order: Order) => {
-    const searchStartMs = Date.now();
     setSearchingOrderId(order.id);
-
     try {
-      // 1. Find the merchant for this order to get its coordinates
-      const merchant = merchants.find(
-        (m) =>
-          (order.restaurantId && m.id === order.restaurantId) ||
-          (order.restaurantName &&
-            m.name.trim().toLowerCase() === order.restaurantName.trim().toLowerCase())
+      const result = await OrderService.dispatchOrder(order.id);
+      const offeredCaptain = captains.find((captain) => captain.id === result.offeredCaptainId);
+      const offeredCaptainName = offeredCaptain?.name || 'كابتن مرشح';
+      const offerUpdates = {
+        offeredCaptainId: result.offeredCaptainId,
+        offeredCaptainName,
+        offerExpiresAt: result.offerExpiresAt,
+        offerGeneration: result.offerGeneration,
+        dispatchStatus: 'offered',
+      };
+      setOrders((prev) =>
+        prev.map((item) => item.id === order.id ? { ...item, ...offerUpdates } : item)
       );
-
-      const merchantCoords =
-        merchant?.coords ||
-        extractCoordinates(merchant?.raw) ||
-        extractCoordinates(order.raw?.restaurant) ||
-        extractCoordinates(order.raw);
-
-      // 2. Filter captains who have order reception enabled
-      const receptionEnabledCaptains = captains.filter((c) => c.canReceiveOrders !== false);
-
-      if (receptionEnabledCaptains.length === 0) {
-        const reason = 'لا يوجد أي كابتن مفعل لاستقبال الطلبات حالياً';
-        toastError(reason);
-        await notifyCaptainAssignmentFailed({
-          orderId: order.id,
-          orderNumber: order.orderNumber,
-          restaurantName: order.restaurantName,
-          reason,
-        });
-        return;
+      if (viewingOrder?.id === order.id) {
+        setViewingOrder((prev) => prev ? { ...prev, ...offerUpdates } : null);
       }
-
-      // 3. Check shift eligibility & online status
-      const shiftEligibleCaptains: Captain[] = [];
-      for (const cap of receptionEnabledCaptains) {
-        const check = await ShiftService.verifyCaptainOrderEligibility(cap.id);
-        if (check.isEligible) {
-          shiftEligibleCaptains.push(cap);
-        }
-      }
-
-      // Candidate pool: prefer captains in active shift; otherwise online/available captains
-      let candidatePool =
-        shiftEligibleCaptains.length > 0
-          ? shiftEligibleCaptains
-          : receptionEnabledCaptains.filter((c) => c.status === 'online' || c.status === 'available');
-
-      if (candidatePool.length === 0) {
-        candidatePool = receptionEnabledCaptains;
-      }
-
-      // 4. Rank candidates by distance to merchant (if coordinates available), then online status & lowest load
-      const rankedCandidates = candidatePool.map((cap) => {
-        const capCoords = cap.coords || extractCoordinates(cap.raw);
-        let distanceKm: number | undefined;
-        if (merchantCoords && capCoords) {
-          distanceKm = haversineDistanceKm(
-            merchantCoords.lat,
-            merchantCoords.lng,
-            capCoords.lat,
-            capCoords.lng
-          );
-        }
-        return {
-          captain: cap,
-          distanceKm,
-          isOnline: cap.status === 'online' || cap.status === 'available',
-        };
-      });
-
-      rankedCandidates.sort((a, b) => {
-        // Both have GPS distance to merchant -> nearest first
-        if (a.distanceKm !== undefined && b.distanceKm !== undefined) {
-          return a.distanceKm - b.distanceKm;
-        }
-        if (a.distanceKm !== undefined) return -1;
-        if (b.distanceKm !== undefined) return 1;
-        // Fallback: online first, then fewer orders
-        if (a.isOnline !== b.isOnline) return a.isOnline ? -1 : 1;
-        return (a.captain.ordersCount || 0) - (b.captain.ordersCount || 0);
-      });
-
-      const bestMatch = rankedCandidates[0];
-      if (!bestMatch) {
-        const reason = 'لم يتم العثور على أي كابتن متاح قريب من التاجر لتعيين الطلب';
-        toastError(reason);
-        await notifyCaptainAssignmentFailed({
-          orderId: order.id,
-          orderNumber: order.orderNumber,
-          restaurantName: order.restaurantName,
-          reason,
-        });
-        return;
-      }
-
-      // 5. Compute how long the system took to find a captain
-      const elapsedSearchSecs = Math.max(1, Math.round((Date.now() - searchStartMs) / 1000));
-      let totalWaitSeconds = elapsedSearchSecs;
-      if (order.createdAt) {
-        const createdMs = new Date(order.createdAt).getTime();
-        if (!isNaN(createdMs) && Date.now() > createdMs) {
-          totalWaitSeconds = Math.max(elapsedSearchSecs, Math.round((Date.now() - createdMs) / 1000));
-        }
-      }
-      const searchDurationText = formatDurationArabic(totalWaitSeconds);
-
-      await handleAssignCaptain(order.id, bestMatch.captain.id, {
-        searchDurationSeconds: totalWaitSeconds,
-        searchDurationText,
-        distanceToMerchantKm: bestMatch.distanceKm,
-        skipShiftCheck: shiftEligibleCaptains.length === 0,
-      });
-
-      const distMsg =
-        bestMatch.distanceKm !== undefined
-          ? ` (المسافة للتاجر: ${formatDistanceArabic(bestMatch.distanceKm)})`
-          : '';
-      success(
-        `تم العثور على أقرب كابتن "${bestMatch.captain.name}"${distMsg} وإسناد الطلب له خلال ${searchDurationText}`
-      );
+      success(`أرسل الخادم عرض الطلب إلى "${offeredCaptainName}" لمدة 60 ثانية.`);
     } catch (err) {
-      toastError('حدث خطأ أثناء البحث عن أقرب كابتن للتاجر');
+      const message = err instanceof Error ? err.message : 'لا يوجد كابتن مؤهل حاليًا. سيواصل الخادم البحث عند عودة كابتن متاح.';
+      toastError(message);
     } finally {
       setSearchingOrderId(null);
     }
@@ -911,12 +815,12 @@ export const OrdersPage: React.FC = () => {
                       {/* الكابتن + خاصية ابحث عن كابتن */}
                       <td className="py-4 px-3.5 text-xs text-zinc-300">
                         <div className="flex flex-col gap-1.5 min-w-[210px]">
-                          {order.captainName ? (
+                          {(order.captainName || order.offeredCaptainName) ? (
                             <div className="flex items-center justify-between gap-2">
                               <div className="flex items-center gap-1.5 min-w-0">
                                 <Bike className="w-3.5 h-3.5 text-amber-400 shrink-0" />
                                 <span className="font-extrabold text-zinc-100 truncate">
-                                  {order.captainName}
+                                  {order.captainName || order.offeredCaptainName}
                                 </span>
                                 {order.distanceToMerchantKm !== undefined && (
                                   <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 font-mono">
@@ -947,7 +851,7 @@ export const OrdersPage: React.FC = () => {
                               className="bg-[#0a0c12] hover:bg-zinc-900 border border-zinc-700/80 text-zinc-300 text-[11px] font-bold rounded-lg px-2 py-1.5 focus:outline-none focus:border-amber-400 cursor-pointer transition-all"
                             >
                               <option value="" disabled className="bg-zinc-900 text-zinc-400">
-                                {order.captainName ? 'تغيير الكابتن' : '+ تعيين يدوي'}
+                                {order.captainName || order.offeredCaptainName ? 'تغيير عرض الكابتن' : '+ تعيين يدوي'}
                               </option>
                               {captains.map((c) => (
                                 <option key={c.id} value={c.id} className="bg-zinc-900 text-white">
@@ -1063,17 +967,15 @@ export const OrdersPage: React.FC = () => {
                       {/* الإجراءات */}
                       <td className="py-4 px-3.5 text-left whitespace-nowrap">
                         <div className="flex items-center justify-end gap-1.5">
-                          <select
-                            value={order.status}
-                            onChange={(e) => handleUpdateStatus(order.id, e.target.value as OrderStatus)}
-                            className="bg-[#0a0c12] border border-zinc-800 text-[11px] font-bold text-zinc-300 rounded-lg px-2 py-1 focus:outline-none focus:border-amber-500 cursor-pointer"
+                          <button
+                            type="button"
+                            onClick={() => handleUpdateStatus(order.id, 'Cancelled')}
+                            disabled={['Delivered', 'Cancelled'].includes(order.status)}
+                            className="bg-[#0a0c12] border border-red-900/70 text-[11px] font-bold text-red-300 rounded-lg px-2 py-1 hover:bg-red-950/40 disabled:opacity-40 disabled:cursor-not-allowed"
+                            title="الإدارة يمكنها الإلغاء فقط؛ مراحل التنفيذ يحدّثها التاجر والكابتن عبر الخادم"
                           >
-                            {ORDER_STATUSES.map((st) => (
-                              <option key={st} value={st}>
-                                {st}
-                              </option>
-                            ))}
-                          </select>
+                            إلغاء الطلب
+                          </button>
 
                           <button
                             onClick={() => setViewingOrder(order)}
@@ -1132,7 +1034,7 @@ export const OrdersPage: React.FC = () => {
                 <span className="text-zinc-500 block">كابتن التوصيل</span>
                 <div className="flex items-center justify-between gap-2">
                   <span className="font-bold text-zinc-200 truncate">
-                    {viewingOrder.captainName || 'لم يتم تعيين كابتن'}
+                    {viewingOrder.captainName || viewingOrder.offeredCaptainName || 'لم يتم إرسال عرض إلى كابتن'}
                   </span>
                   <button
                     type="button"
@@ -1150,7 +1052,7 @@ export const OrdersPage: React.FC = () => {
                   className="w-full bg-zinc-950 border border-amber-500/40 text-[11px] text-amber-400 font-bold rounded-lg px-2 py-1.5 focus:outline-none focus:border-amber-400 cursor-pointer"
                 >
                   <option value="" disabled>
-                    {viewingOrder.captainName ? 'تغيير الكابتن يدوياً' : 'تعيين كابتن يدوياً'}
+                    {viewingOrder.captainName || viewingOrder.offeredCaptainName ? 'تغيير عرض الكابتن يدوياً' : 'إرسال عرض يدوي'}
                   </option>
                   {captains.map((c) => (
                     <option key={c.id} value={c.id} className="bg-zinc-900 text-white">
@@ -1335,20 +1237,18 @@ export const OrdersPage: React.FC = () => {
               <span className="font-mono text-amber-400 font-black text-base">{viewingOrder.deliveryFee} ج.م</span>
             </div>
 
-            {/* Status changer in modal */}
             <div className="flex items-center justify-between gap-3 pt-3 border-t border-zinc-800/80">
-              <label className="text-xs font-bold text-zinc-400">تغيير حالة الطلب:</label>
-              <select
-                value={viewingOrder.status}
-                onChange={(e) => handleUpdateStatus(viewingOrder.id, e.target.value as OrderStatus)}
-                className="bg-[#0a0c12] border border-zinc-700 text-xs font-bold text-amber-400 rounded-xl px-3 py-2 focus:outline-none focus:border-amber-500"
+              <span className="text-xs font-bold text-zinc-400">
+                مراحل الطلب يحدّثها التاجر والكابتن؛ الإدارة مسؤولة عن الإلغاء فقط.
+              </span>
+              <button
+                type="button"
+                onClick={() => handleUpdateStatus(viewingOrder.id, 'Cancelled')}
+                disabled={['Delivered', 'Cancelled'].includes(viewingOrder.status)}
+                className="bg-red-950/30 border border-red-900/70 text-xs font-bold text-red-300 rounded-xl px-3 py-2 disabled:opacity-40 disabled:cursor-not-allowed"
               >
-                {ORDER_STATUSES.map((st) => (
-                  <option key={st} value={st}>
-                    {st}
-                  </option>
-                ))}
-              </select>
+                إلغاء الطلب
+              </button>
             </div>
           </div>
         </div>

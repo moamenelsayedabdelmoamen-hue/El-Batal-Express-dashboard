@@ -488,13 +488,19 @@ describe("El-Batal Cloud Functions Order Server Service", () => {
     // cap_near (~0.1km from pickup), cap_far (~5km), cap_offline (closer but offline)
     seedCaptain(db, "cap_offline", {isOnline: false, latitude: 30.0444, longitude: 31.2357}, now);
     seedCaptain(db, "cap_near", {latitude: 30.045, longitude: 31.236}, now);
-    seedCaptain(db, "cap_far", {latitude: 30.09, longitude: 31.25}, now);
+    seedCaptain(db, "cap_far", {
+      latitude: 30.09,
+      longitude: 31.25,
+      profileImageUrl: "https://storage.example.test/captains/cap_far/profile.jpg",
+    }, now);
     seedPendingOrder(db, "ord_dispatch");
 
     const dispatchRes = await service.dispatchNewOrSearchingOrder("ord_dispatch");
     assert.equal(dispatchRes.status, "offered");
     assert.equal(dispatchRes.offeredCaptainId, "cap_near");
     assert.equal(dispatchRes.offerGeneration, 1);
+    assert.equal(db.getDocData("orders/ord_dispatch").eligibleCaptainIds, undefined,
+      "The order document must not expose the full eligible-captain list.");
     assert.equal(fcmNotifications.length, 1);
     assert.equal(fcmNotifications[0].captainUid, "cap_near");
     assert.equal(scheduledTasks.length, 1);
@@ -519,6 +525,12 @@ describe("El-Batal Cloud Functions Order Server Service", () => {
     // cap_far accepts order before 2nd 60s expires
     const accepted = await service.acceptOrder("cap_far", {orderId: "ord_dispatch"});
     assert.equal(accepted.captainId, "cap_far");
+    assert.equal(db.getDocData("captains/cap_far").activeMerchantId, "merch_1");
+    assert.equal(db.getDocData("captains/cap_far").currentMerchantId, "merch_1");
+    assert.equal(
+      db.getDocData("captains/cap_far").captainPhotoUrl,
+      "https://storage.example.test/captains/cap_far/profile.jpg"
+    );
 
     // Stale Cloud Task firing after acceptance MUST do nothing!
     advanceMs(70_000);
@@ -632,6 +644,8 @@ describe("El-Batal Cloud Functions Order Server Service", () => {
     assert.ok(d1.alreadyCompleted !== d2.alreadyCompleted, "Exactly one call settles, one is idempotent");
 
     const updatedCaptain = db.getDocData("captains/cap_1");
+    assert.equal(updatedCaptain.activeMerchantId, undefined);
+    assert.equal(updatedCaptain.currentMerchantId, undefined);
     assert.equal(updatedCaptain.walletBalance, 145.0);
     assert.equal(updatedCaptain.totalOrdersCount, 6);
 
