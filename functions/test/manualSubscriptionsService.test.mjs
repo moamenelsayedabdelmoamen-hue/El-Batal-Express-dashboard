@@ -1191,4 +1191,123 @@ describe("Manual Vodafone Cash Subscriptions Server Service (Full 14-Scenario Su
       item.id === `manual_sub_req_${requestId}`).length, 1);
   });
 
+
+  it("18. General dashboard activation atomically writes the canonical merchant and subscription contract", async () => {
+    const now = Date.UTC(2026, 10, 20, 10, 0, 0);
+    const {db, service} = createHarness(now);
+    seedMerchant(db, {
+      merchantId: "merchant_1",
+      merchantOverrides: {status: "approved"},
+    });
+
+    const result = await service.manageMerchantSubscription(ADMIN_AUTH, {
+      operation: "upsert",
+      merchantId: "merchant_1",
+      maxCaptains: 4,
+      price: 800,
+      startDate: "2026-11-20",
+      endDate: "2026-12-20",
+      status: "Active",
+    });
+
+    const subscription = db.getDocData("subscriptions/merchant_1");
+    const merchant = db.getDocData("merchants/merchant_1");
+    assert.equal(result.status, "active");
+    assert.equal(result.maxCaptains, 4);
+    assert.equal(subscription.status, "active");
+    assert.equal(subscription.planId, 2);
+    assert.equal(subscription.maxCaptains, 4);
+    assert.equal(subscription.paymentStatus, "admin_manual");
+    assert.equal(merchant.subscriptionStatus, "active");
+    assert.equal(merchant.isSubscribed, true);
+    assert.equal(merchant.captainLimit, 4);
+    assert.equal(db.listCollection("payments").length, 0, "Admin-managed activation must not fabricate a payment");
+    assert.equal(db.listCollection("operation_logs").length, 1);
+  });
+
+  it("19. General dashboard activation rejects client-tampered package prices", async () => {
+    const {db, service} = createHarness();
+    seedMerchant(db, {
+      merchantId: "merchant_1",
+      merchantOverrides: {status: "active"},
+    });
+    await assert.rejects(
+      () => service.manageMerchantSubscription(ADMIN_AUTH, {
+        operation: "upsert",
+        merchantId: "merchant_1",
+        maxCaptains: 4,
+        price: 1,
+        startDate: "2026-11-20",
+        endDate: "2026-12-20",
+        status: "Active",
+      }),
+      (err) => err instanceof DomainHttpsError && err.code === "failed-precondition"
+    );
+    assert.equal(db.getDocData("subscriptions/merchant_1"), undefined);
+    assert.equal(db.getDocData("merchants/merchant_1").isSubscribed, false);
+  });
+
+  it("20. General dashboard suspension and reactivation synchronize both canonical documents", async () => {
+    const {db, service} = createHarness();
+    seedMerchant(db, {
+      merchantId: "merchant_1",
+      merchantOverrides: {status: "approved"},
+    });
+    await service.manageMerchantSubscription(ADMIN_AUTH, {
+      operation: "upsert",
+      merchantId: "merchant_1",
+      maxCaptains: 2,
+      price: 400,
+      startDate: "2026-11-20",
+      endDate: "2026-12-20",
+      status: "Active",
+    });
+    await service.manageMerchantSubscription(ADMIN_AUTH, {
+      operation: "status",
+      merchantId: "merchant_1",
+      status: "Suspended",
+    });
+    assert.equal(db.getDocData("subscriptions/merchant_1").status, "suspended");
+    assert.equal(db.getDocData("merchants/merchant_1").isSubscribed, false);
+
+    await service.manageMerchantSubscription(ADMIN_AUTH, {
+      operation: "status",
+      merchantId: "merchant_1",
+      status: "Active",
+    });
+    assert.equal(db.getDocData("subscriptions/merchant_1").status, "active");
+    assert.equal(db.getDocData("merchants/merchant_1").isSubscribed, true);
+  });
+
+  it("21. General dashboard activation migrates an old subscription row without leaving it active", async () => {
+    const {db, service} = createHarness();
+    seedMerchant(db, {
+      merchantId: "merchant_1",
+      merchantOverrides: {status: "approved"},
+    });
+    db.seed("subscriptions/legacy_sub_1", {
+      merchantId: "merchant_1",
+      restaurantId: "merchant_1",
+      status: "Active",
+      maxCaptains: 2,
+      price: 400,
+    });
+
+    await service.manageMerchantSubscription(ADMIN_AUTH, {
+      operation: "upsert",
+      merchantId: "merchant_1",
+      legacySubscriptionId: "legacy_sub_1",
+      maxCaptains: 2,
+      price: 400,
+      startDate: "2026-11-20",
+      endDate: "2026-12-20",
+      status: "Active",
+    });
+
+    const legacy = db.getDocData("subscriptions/legacy_sub_1");
+    assert.equal(legacy.status, "migrated");
+    assert.equal(legacy.migratedToMerchantId, "merchant_1");
+    assert.equal(db.getDocData("subscriptions/merchant_1").status, "active");
+  });
+
 });
