@@ -25,7 +25,7 @@ import { ExportButton } from '../components/common/ExportButton';
 import { exportSubscriptions } from '../utils/exportUtils';
 import { useToast } from '../contexts/ToastContext';
 
-type SubscriptionPackageOption = { planId: string; captainsCount: number; price: number; label: string };
+type SubscriptionPackageOption = { planId: string; captainsCount: number; price: number; durationDays: number; label: string };
 
 export const SubscriptionsPage: React.FC = () => {
   const { success, error: toastError } = useToast();
@@ -76,6 +76,7 @@ export const SubscriptionsPage: React.FC = () => {
         planId: plan.planId,
         captainsCount: plan.maxCaptains,
         price: plan.price,
+        durationDays: plan.durationDays || settings.durationDays || 30,
         label: plan.planName,
       })));
     } catch (err) {
@@ -114,20 +115,25 @@ export const SubscriptionsPage: React.FC = () => {
   );
 
   const handleSelectPackage = (pkg: SubscriptionPackageOption) => {
+    const start = new Date(formData.startDate + 'T00:00:00.000Z');
+    start.setUTCDate(start.getUTCDate() + pkg.durationDays);
+    const endDate = start.toISOString().split('T')[0];
     setFormData((prev) => ({
       ...prev,
       captainsCount: pkg.captainsCount,
       price: pkg.price,
       plan: pkg.label,
+      endDate,
     }));
   };
 
   const handleStartDateChange = (newStart: string) => {
     let nextEnd = formData.endDate;
     try {
-      const d = new Date(newStart);
+      const d = new Date(newStart + 'T00:00:00.000Z');
       if (!isNaN(d.getTime())) {
-        d.setDate(d.getDate() + 30);
+        const selectedPlan = officialPackages.find((plan) => plan.captainsCount === formData.captainsCount);
+        d.setUTCDate(d.getUTCDate() + (selectedPlan?.durationDays || 30));
         nextEnd = d.toISOString().split('T')[0];
       }
     } catch {
@@ -146,6 +152,8 @@ export const SubscriptionsPage: React.FC = () => {
       return;
     }
     const firstPlan = officialPackages[0];
+    const firstPlanEnd = new Date(todayYMD + 'T00:00:00.000Z');
+    firstPlanEnd.setUTCDate(firstPlanEnd.getUTCDate() + firstPlan.durationDays);
     setFormData({
       restaurantId: '',
       restaurantName: '',
@@ -153,7 +161,7 @@ export const SubscriptionsPage: React.FC = () => {
       price: firstPlan.price,
       plan: firstPlan.label,
       startDate: todayYMD,
-      endDate: defaultEndYMD,
+      endDate: firstPlanEnd.toISOString().split('T')[0],
       status: 'Active',
     });
     setIsAddModalOpen(true);
@@ -387,7 +395,7 @@ export const SubscriptionsPage: React.FC = () => {
                     <Users className="w-3.5 h-3.5" />
                     <span>{pkg.captainsCount} كابتن</span>
                   </span>
-                  <span className="text-[11px] font-bold text-zinc-500">باقة شهرية</span>
+                  <span className="text-[11px] font-bold text-zinc-500">باقة اشتراك</span>
                 </div>
 
                 <div className="text-2xl sm:text-3xl font-black text-white font-['Outfit',sans-serif] mb-1">
