@@ -2005,6 +2005,10 @@ export class ManualSubscriptionsServerService {
       if (readString(merchant, "accountType").toLowerCase() !== "merchant") {
         throw new DomainHttpsError("failed-precondition", "المستند المحدد ليس حساب تاجر.");
       }
+      const merchantAccountStatus = readString(merchant, "status").toLowerCase();
+      if (!["active", "approved"].includes(merchantAccountStatus) && merchant.isApproved !== true) {
+        throw new DomainHttpsError("failed-precondition", "حساب التاجر لم يحصل على موافقة الإدارة بعد.");
+      }
       if (merchant.isBlocked === true || merchant.isSuspended === true ||
           ["blocked", "banned", "suspended", "disabled", "inactive"].includes(readString(merchant, "status").toLowerCase())) {
         throw new DomainHttpsError("failed-precondition", "حساب التاجر موقوف ولا يمكن إدارة اشتراكه.");
