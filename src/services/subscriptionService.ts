@@ -286,6 +286,10 @@ export const SubscriptionService = {
       // 1. Map existing subscription documents
       subsSnap.forEach((docSnap) => {
         const subData = docSnap.data();
+        if (typeof subData.migratedToMerchantId === 'string' && subData.migratedToMerchantId) {
+          coveredMerchantIds.add(subData.migratedToMerchantId);
+          return;
+        }
         const restId = subData.restaurantId || subData.merchantId || subData.restaurant?.id || '';
         const restNameKey = String(subData.restaurantName || subData.merchantName || '')
           .trim()
