@@ -384,11 +384,10 @@ service cloud.firestore {
     }
 
     function isAvailablePendingOrder(data) {
+      // An order offer is private to the single captain selected by the server.
+      // eligibleCaptainIds is never an authorization source because it reveals other captains.
       return ('status' in data && data.status == 'pending')
-        && (
-          ('offeredCaptainId' in data && data.offeredCaptainId == request.auth.uid) ||
-          ('eligibleCaptainIds' in data && request.auth.uid in data.eligibleCaptainIds)
-        );
+        && ('offeredCaptainId' in data && data.offeredCaptainId == request.auth.uid);
     }
 
     function isOrderOwnedByMerchant(data) {
