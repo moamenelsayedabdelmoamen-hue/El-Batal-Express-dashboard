@@ -479,7 +479,9 @@ describe('El-Batal Express Real Firebase Emulator Security Audit (Firestore + St
     );
     assert.equal(pendingSnap.size, 1);
     // Captain 2 is listed in the legacy candidate array but must not read Captain 1's private offer.
-    await assertFails(getDoc(doc(cap2Db, 'orders', 'order_pending_open')));
+    await assertFails(
+      getDoc(doc(testEnv.authenticatedContext('captain_2').firestore(), 'orders', 'order_pending_open'))
+    );
 
     const ownOrdersSnap = await assertSucceeds(
       getDocs(query(collection(cap1Db, 'orders'), where('captainId', '==', 'captain_1')))
