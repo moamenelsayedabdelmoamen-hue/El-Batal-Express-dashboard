@@ -1979,6 +1979,9 @@ export class ManualSubscriptionsServerService {
     const merchantId = readString(data, "merchantId", "restaurantId");
     const legacySubscriptionId = readString(data, "legacySubscriptionId");
     if (!isValidDocId(merchantId)) throw new DomainHttpsError("invalid-argument", "معرّف حساب التاجر غير صالح.");
+    if (legacySubscriptionId && !isValidDocId(legacySubscriptionId)) {
+      throw new DomainHttpsError("invalid-argument", "معرّف سجل الاشتراك القديم غير صالح.");
+    }
     if (!["upsert", "status", "renew", "delete"].includes(operation)) {
       throw new DomainHttpsError("invalid-argument", "نوع عملية الاشتراك غير مدعوم.");
     }
@@ -1991,7 +1994,8 @@ export class ManualSubscriptionsServerService {
     const restaurantRef = this.db.collection("restaurants").doc(merchantId);
     const legacyRef = legacySubscriptionId && legacySubscriptionId !== merchantId
       ? this.db.collection("subscriptions").doc(legacySubscriptionId) : null;
-    const auditRef = this.db.collection("operation_logs").doc("admin_subscription_" + merchantId + "_" + nowMs);
+    const merchantAuditKey = createHash("sha256").update(merchantId).digest("hex").slice(0, 20);
+    const auditRef = this.db.collection("operation_logs").doc("admin_subscription_" + merchantAuditKey + "_" + nowMs);
 
     return this.db.runTransaction(async (tx) => {
       const [merchantSnap, subscriptionSnap, settingsSnap, restaurantSnap, legacySnap] = await Promise.all([
