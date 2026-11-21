@@ -2114,6 +2114,10 @@ export class ManualSubscriptionsServerService {
       }
       const startMs = parseStart(startDate);
       const endMs = parseEnd(endDate);
+      if (operation === "upsert" && startMs !== null && endMs !== null &&
+          endDate !== formatYmdUtc(startMs + durationDays * 86_400_000)) {
+        throw new DomainHttpsError("invalid-argument", "تاريخ انتهاء الاشتراك لا يطابق مدة الباقة الرسمية.");
+      }
       const isActive = nextStatus === "active";
       if (isActive && (startMs === null || endMs === null || endMs <= nowMs)) {
         throw new DomainHttpsError("invalid-argument", "تاريخ بداية أو نهاية الاشتراك غير صالح أو منتهي.");
