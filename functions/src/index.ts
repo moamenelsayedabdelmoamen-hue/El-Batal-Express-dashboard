@@ -1918,7 +1918,8 @@ async function retryQueuedDashboardOrders(): Promise<void> {
 
   for (const orderDoc of pending) {
     const outcome = await service.dispatchNewOrSearchingOrder(orderDoc.id);
-    if (outcome.status === "offered") break;
+    // One queue item per trigger prevents notification storms when no eligible captain exists.
+    if (outcome.status === "offered" || outcome.status === "no_captains_available") break;
   }
 }
 
