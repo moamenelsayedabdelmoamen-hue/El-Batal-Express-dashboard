@@ -220,9 +220,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   const login = async (email: string, pass: string) => {
-    if (!auth || !isFirebaseConfigured) {
-      // In environment without real Firebase Auth API key, allow logging in with the entered credentials
-      // and grant admin session smoothly so the user can test with their own email
+    if (!isFirebaseConfigured) {
+      // Preview-only demo login. This branch must never run against a configured production project.
       localStorage.setItem('elbatal_demo_admin_session', 'true');
       sessionStorage.removeItem('elbatal_explicit_logout');
       const cleanEmail = email.trim() || 'admin@elbatalexpress.com';
@@ -240,6 +239,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setIsMasterAdmin(isMaster);
       setClaims({ role: 'admin' });
       return;
+    }
+    if (!auth) {
+      throw new Error('تعذر تهيئة Firebase Authentication. أعد تحميل الصفحة أو تحقق من إعدادات Firebase.');
     }
 
     // A real sign-in must clear any old preview flag and use a fresh verified ID token.
