@@ -122,6 +122,7 @@ export interface Order {
   id: string;
   orderNumber: string;
   orderCode?: string;
+  merchantId?: string;
   restaurantId?: string;
   restaurantName: string;
   customerName: string;
@@ -129,6 +130,11 @@ export interface Order {
   deliveryAddress?: string;
   captainId?: string;
   captainName?: string;
+  offeredCaptainId?: string;
+  offeredCaptainName?: string;
+  offerExpiresAt?: any;
+  offerGeneration?: number;
+  dispatchStatus?: string;
   receiptImageUrl?: string;
   receiptImagePath?: string;
   subtotal: number;
