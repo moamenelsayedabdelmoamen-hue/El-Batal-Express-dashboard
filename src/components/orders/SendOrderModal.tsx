@@ -20,8 +20,6 @@ import { Restaurant, Captain } from '../../types';
 import { RestaurantService } from '../../services/restaurantService';
 import { CaptainService } from '../../services/captainService';
 import { OrderService } from '../../services/orderService';
-import { ShiftService } from '../../services/shiftService';
-import { NotificationService } from '../../services/notificationService';
 import { useToast } from '../../contexts/ToastContext';
 
 interface SendOrderModalProps {
