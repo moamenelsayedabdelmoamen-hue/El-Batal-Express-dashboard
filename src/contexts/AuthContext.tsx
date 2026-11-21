@@ -373,7 +373,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const loginAsDemoAdmin = () => {
     if (isFirebaseConfigured) {
-      throw new Error('الدخول التجريبي غير متاح على الموقع المنشور. استخدم حساب المشرف الموثق في Firebase Authentication.');
+      console.warn('الدخول التجريبي غير متاح على الموقع المنشور. استخدم حساب المشرف الموثق في Firebase Authentication.');
+      return;
     }
     sessionStorage.removeItem('elbatal_explicit_logout');
     localStorage.setItem('elbatal_demo_admin_session', 'true');
