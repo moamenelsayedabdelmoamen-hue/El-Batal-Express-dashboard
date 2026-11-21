@@ -1239,7 +1239,7 @@ export const adminCreateOrder = onCall(
 
       const MAX_CODE_ATTEMPTS = 25;
       for (let attempt = 0; attempt < MAX_CODE_ATTEMPTS; attempt++) {
-        const orderCode = String(randomInt(100000, 1000000));
+        const orderCode = generateDistinctOrderCode();
         const orderRef = ordersRef.doc();
         const codeRef = db.collection("order_codes").doc(orderCode);
         try {
@@ -1264,7 +1264,13 @@ export const adminCreateOrder = onCall(
               tx.get(merchantOrderQueries[2]),
               tx.get(capacityRef),
             ]);
-            if (keySnap.exists) return;
+            if (keySnap.exists) {
+              const previous = keySnap.data() ?? {};
+              if (readString(previous, "merchantId") !== merchantId) {
+                throw new HttpsError("permission-denied", "مفتاح الطلب مستخدم لحساب آخر.");
+              }
+              return;
+            }
             if ((!currentMerchantSnap.exists && !currentRestaurantSnap.exists) || !currentSubscriptionSnap.exists) {
               throw new HttpsError("failed-precondition", "ملف التاجر أو الاشتراك غير موجود.");
             }
@@ -1277,11 +1283,16 @@ export const adminCreateOrder = onCall(
 
             const planId = readNumber(currentSubscription, "planId") ?? readNumber(currentMerchant, "planId") ?? 0;
             const legacyLimits: Record<number, number> = {1: 2, 2: 4, 3: 6, 4: 8};
+            const planName = (
+              readString(currentSubscription, "planName", "plan", "subscriptionPlan") ||
+              readString(currentMerchant, "planName", "plan", "subscriptionPlan")
+            ).toLowerCase();
+            const planNameLimit = /8/.test(planName) ? 8 : /6/.test(planName) ? 6 : /4/.test(planName) ? 4 : /2/.test(planName) ? 2 : 0;
             const maxCaptains =
-              readNumber(currentSubscription, "captainLimit", "maxCaptains") ??
-              readNumber(currentMerchant, "captainLimit", "maxCaptains") ??
+              readNumber(currentSubscription, "captainsCount", "captainLimit", "maxCaptains", "allowedCaptains") ??
+              readNumber(currentMerchant, "captainsCount", "captainLimit", "maxCaptains", "allowedCaptains") ??
               legacyLimits[planId] ??
-              0;
+              planNameLimit;
             if (![2, 4, 6, 8].includes(maxCaptains)) {
               throw new HttpsError("failed-precondition", "باقة التاجر لا تحتوي على حد كباتن صالح.");
             }
