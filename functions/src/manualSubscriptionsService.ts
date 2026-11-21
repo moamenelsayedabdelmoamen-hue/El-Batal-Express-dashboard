@@ -2159,7 +2159,17 @@ export class ManualSubscriptionsServerService {
           updatedAt: sentinels.serverTimestamp(),
         }, {merge: true});
       }
-      if (legacyRef && legacySnap?.exists) tx.delete(legacyRef);
+      if (legacyRef && legacySnap?.exists) {
+        tx.set(legacyRef, {
+          status: "migrated",
+          subscriptionStatus: "migrated",
+          isActive: false,
+          isSubscribed: false,
+          migratedToMerchantId: merchantId,
+          migratedAt: sentinels.serverTimestamp(),
+          updatedAt: sentinels.serverTimestamp(),
+        }, {merge: true});
+      }
       tx.set(auditRef, {
         action: "admin_" + operation + "_merchant_subscription", entityType: "merchant_subscription",
         merchantId, status: nextStatus, planId, planKey: planKey || ("plan_" + maxCaptains + "_captains"),
