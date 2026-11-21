@@ -2159,6 +2159,27 @@ export const updateManualSubscriptionSettings = onCall(
 );
 
 /**
+ * Admin-only callable used by the general Subscriptions dashboard.
+ * Creates, edits, renews, suspends, reactivates or cancels the canonical merchant subscription.
+ */
+export const adminManageMerchantSubscription = onCall(
+  {region: "us-central1"},
+  async (request) => {
+    try {
+      const payload = (request.data ?? {}) as Record<string, unknown>;
+      return await manualSubService.manageMerchantSubscription(
+        request.auth
+          ? {uid: request.auth.uid, token: request.auth.token as Record<string, unknown>}
+          : undefined,
+        payload
+      );
+    } catch (err) {
+      throw mapError(err);
+    }
+  }
+);
+
+/**
  * Trigger 3: Notifies admins whenever a merchant submits a new manual subscription request.
  */
 export const onManualSubscriptionRequestCreated = onDocumentCreated(
