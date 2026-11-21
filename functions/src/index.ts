@@ -514,7 +514,10 @@ async function buildMerchantSubscriptionResponse(merchantId: string, requestedCa
       readNumber(merchant, "subscriptionVersion") ?? 1,
     updatedBy: readString(subscription, "updatedBy", "updatedByAdminUid") ||
       readString(merchant, "updatedBy") || undefined,
-    paymentMethod: readString(subscription, "paymentMethod") || undefined,
+    paymentStatus: readString(subscription, "paymentStatus") ||
+      readString(merchant, "paymentStatus") || (isActive ? "paid" : "unpaid"),
+    paymentMethod: readString(subscription, "paymentMethod") ||
+      readString(merchant, "paymentMethod") || undefined,
     errorMessage,
     reason: errorMessage,
     serverTimeMs: nowMs,
