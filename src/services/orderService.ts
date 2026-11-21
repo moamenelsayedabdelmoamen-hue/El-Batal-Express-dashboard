@@ -768,8 +768,8 @@ export const OrderService = {
   async create(data: {
     restaurantId: string;
     restaurantName: string;
-    captainId: string;
-    captainName: string;
+    captainId?: string;
+    captainName?: string;
     deliveryAddress?: string;
     deliveryFee?: number;
     notes?: string;
@@ -820,8 +820,8 @@ export const OrderService = {
       restaurantName: data.restaurantName,
       captainId: '',
       captainName: '',
-      offeredCaptainId: data.captainId,
-      offeredCaptainName: data.captainName,
+      offeredCaptainId: undefined,
+      offeredCaptainName: undefined,
       customerName: data.customerName || '',
       customerPhone: data.customerPhone || '',
       deliveryAddress: data.deliveryAddress || '',
