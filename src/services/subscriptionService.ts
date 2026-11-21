@@ -346,7 +346,7 @@ export const SubscriptionService = {
         sub.id === id || sub.restaurantId === merchantId ? { ...sub, status } : sub
       );
     } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, \`\${COLLECTIONS.SUBSCRIPTIONS}/\${merchantId}\`);
+      handleFirestoreError(error, OperationType.UPDATE, `${COLLECTIONS.SUBSCRIPTIONS}/${merchantId}`);
       throw error;
     }
   },
@@ -383,7 +383,7 @@ export const SubscriptionService = {
           : sub
       );
     } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, \`\${COLLECTIONS.SUBSCRIPTIONS}/\${merchantId}\`);
+      handleFirestoreError(error, OperationType.UPDATE, `${COLLECTIONS.SUBSCRIPTIONS}/${merchantId}`);
       throw error;
     }
   },
@@ -408,7 +408,7 @@ export const SubscriptionService = {
       ];
       return newSub;
     } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, \`\${COLLECTIONS.SUBSCRIPTIONS}/\${merchantId}\`);
+      handleFirestoreError(error, OperationType.CREATE, `${COLLECTIONS.SUBSCRIPTIONS}/${merchantId}`);
       throw error;
     }
   },
@@ -431,7 +431,7 @@ export const SubscriptionService = {
       );
       return endDate;
     } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, \`\${COLLECTIONS.SUBSCRIPTIONS}/\${merchantId}\`);
+      handleFirestoreError(error, OperationType.UPDATE, `${COLLECTIONS.SUBSCRIPTIONS}/${merchantId}`);
       throw error;
     }
   },
@@ -449,7 +449,7 @@ export const SubscriptionService = {
         sub.id === id || sub.restaurantId === merchantId ? { ...sub, status: "Suspended" } : sub
       );
     } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, \`\${COLLECTIONS.SUBSCRIPTIONS}/\${merchantId}\`);
+      handleFirestoreError(error, OperationType.DELETE, `${COLLECTIONS.SUBSCRIPTIONS}/${merchantId}`);
       throw error;
     }
   },
