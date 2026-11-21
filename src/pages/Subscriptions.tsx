@@ -175,8 +175,11 @@ export const SubscriptionsPage: React.FC = () => {
 
   const handleCreateSubscription = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!formData.restaurantName) {
-      toastError('يرجى اختيار التاجر المسجل');
+    if (
+      !formData.restaurantId ||
+      !eligibleMerchants.some((merchant) => merchant.id === formData.restaurantId)
+    ) {
+      toastError('يرجى اختيار حساب تاجر معتمد وحقيقي من القائمة.');
       return;
     }
 
