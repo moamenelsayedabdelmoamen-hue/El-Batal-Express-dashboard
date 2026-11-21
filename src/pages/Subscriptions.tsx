@@ -14,7 +14,8 @@ import {
   Building2,
 } from 'lucide-react';
 import { Subscription, SubscriptionStatus, Restaurant } from '../types';
-import { SubscriptionService, OFFICIAL_PACKAGES } from '../services/subscriptionService';
+import { SubscriptionService } from '../services/subscriptionService';
+import { ManualSubscriptionService } from '../services/manualSubscriptionService';
 import { RestaurantService } from '../services/restaurantService';
 import { StatusBadge } from '../components/common/StatusBadge';
 import { ConfirmationModal } from '../components/common/ConfirmationModal';
@@ -24,11 +25,14 @@ import { ExportButton } from '../components/common/ExportButton';
 import { exportSubscriptions } from '../utils/exportUtils';
 import { useToast } from '../contexts/ToastContext';
 
+type SubscriptionPackageOption = { planId: string; captainsCount: number; price: number; label: string };
+
 export const SubscriptionsPage: React.FC = () => {
   const { success, error: toastError } = useToast();
 
   const [subscriptions, setSubscriptions] = useState<Subscription[]>([]);
   const [merchants, setMerchants] = useState<Restaurant[]>([]);
+  const [officialPackages, setOfficialPackages] = useState<SubscriptionPackageOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
@@ -94,7 +98,7 @@ export const SubscriptionsPage: React.FC = () => {
     });
   }, [subscriptions, searchQuery, statusFilter]);
 
-  const handleSelectPackage = (pkg: { captainsCount: number; price: number; label: string }) => {
+  const eligibleMerchants = useMemo(() => merchants.filter((merchant) =>\n    merchant.raw?.accountType === 'merchant' && (!merchant.raw?.uid || merchant.raw.uid === merchant.id)\n  ), [merchants]);\n\n  const handleSelectPackage = (pkg: SubscriptionPackageOption) => {
     setFormData((prev) => ({
       ...prev,
       captainsCount: pkg.captainsCount,
@@ -159,7 +163,7 @@ export const SubscriptionsPage: React.FC = () => {
     setActionLoading(true);
     try {
       await SubscriptionService.create({
-        restaurantId: formData.restaurantId || `rest_${Date.now()}`,
+        restaurantId: formData.restaurantId,
         restaurantName: formData.restaurantName,
         plan: formData.plan,
         captainsCount: formData.captainsCount,
@@ -334,7 +338,7 @@ export const SubscriptionsPage: React.FC = () => {
 
       {/* Current Official Package Plans Banner: 2/400, 4/800, 6/1200, 8/1600 */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {OFFICIAL_PACKAGES.map((pkg, index) => {
+        {officialPackages.map((pkg, index) => {
           const isPopular = pkg.captainsCount === 4 || pkg.captainsCount === 6;
           const activeCountForPlan = subscriptions.filter(
             (s) => s.captainsCount === pkg.captainsCount || s.price === pkg.price
@@ -629,11 +633,11 @@ export const SubscriptionsPage: React.FC = () => {
             <form onSubmit={handleCreateSubscription} className="space-y-4 text-xs">
               <div>
                 <label className="block font-bold text-zinc-300 mb-1.5">اختر التاجر المسجل *</label>
-                {merchants.length > 0 ? (
+                {eligibleMerchants.length > 0 ? (
                   <select
                     value={formData.restaurantId}
                     onChange={(e) => {
-                      const selected = merchants.find((r) => r.id === e.target.value);
+                      const selected = eligibleMerchants.find((r) => r.id === e.target.value);
                       setFormData({
                         ...formData,
                         restaurantId: e.target.value,
@@ -644,28 +648,23 @@ export const SubscriptionsPage: React.FC = () => {
                     required
                   >
                     <option value="">-- اختر من قائمة التجار المسجلين --</option>
-                    {merchants.map((r) => (
+                    {eligibleMerchants.map((r) => (
                       <option key={r.id} value={r.id}>
                         {r.name}
                       </option>
                     ))}
                   </select>
                 ) : (
-                  <input
-                    type="text"
-                    placeholder="اسم التاجر"
-                    value={formData.restaurantName}
-                    onChange={(e) => setFormData({ ...formData, restaurantName: e.target.value })}
-                    className="w-full bg-[#0a0c12] border border-zinc-800 rounded-xl px-3.5 py-2.5 text-zinc-100 focus:outline-none focus:border-amber-500"
-                    required
-                  />
+                  <p className="text-amber-400 text-xs p-3 rounded-xl border border-amber-500/20 bg-amber-500/5">
+                    لا توجد حسابات تجار معتمدة في مجموعة merchants. لا يمكن إنشاء اشتراك باسم حر أو بمعرّف غير مرتبط بحساب دخول.
+                  </p>
                 )}
               </div>
 
               <div>
                 <label className="block font-bold text-zinc-300 mb-1.5">اختر الباقة الشهرية</label>
                 <div className="grid grid-cols-2 gap-2.5">
-                  {OFFICIAL_PACKAGES.map((pkg) => {
+                  {officialPackages.map((pkg) => {
                     const isSelected = formData.captainsCount === pkg.captainsCount;
                     return (
                       <button
