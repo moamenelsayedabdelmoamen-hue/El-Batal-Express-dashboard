@@ -162,7 +162,7 @@ export const SendOrderModal: React.FC<SendOrderModalProps> = ({
 
       success(
         selectedCaptain
-          ? `تم إنشاء الطلب ${createdOrder.orderNumber} وطلب عرض من الخادم إلى الكابتن المفضل.`
+          ? `تم إنشاء الطلب ${createdOrder.orderNumber} وطلب عرض من الخادم إلى الكابتن المحدد.`
           : `تم إنشاء الطلب ${createdOrder.orderNumber} وبدأ الخادم البحث عن أقرب كابتن مؤهل.`
       );
 
@@ -348,7 +348,7 @@ export const SendOrderModal: React.FC<SendOrderModalProps> = ({
             <label className="text-xs font-bold text-zinc-300 flex items-center justify-between">
               <span className="flex items-center gap-1.5">
                 <Bike className="w-4 h-4 text-amber-400" />
-                كابتن مفضل (اختياري)
+                كابتن محدد (اختياري)
               </span>
               {selectedCaptain && (
                 <button
@@ -381,7 +381,7 @@ export const SendOrderModal: React.FC<SendOrderModalProps> = ({
                 <div className="flex items-center gap-2">
                   <span className="text-xs font-bold px-2.5 py-1 rounded-lg bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 flex items-center gap-1">
                     <Check className="w-3.5 h-3.5" />
-                    كابتن مفضل
+                    كابتن محدد
                   </span>
                 </div>
               </div>
