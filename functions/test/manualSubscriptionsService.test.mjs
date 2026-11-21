@@ -1310,4 +1310,36 @@ describe("Manual Vodafone Cash Subscriptions Server Service (Full 14-Scenario Su
     assert.equal(db.getDocData("subscriptions/merchant_1").status, "active");
   });
 
+  it("22. General dashboard renewal uses the official selected plan duration", async () => {
+    const now = Date.UTC(2026, 10, 20, 10, 0, 0);
+    const {db, service} = createHarness(now);
+    seedMerchant(db, {
+      merchantId: "merchant_1",
+      merchantOverrides: {status: "approved"},
+    });
+
+    await service.manageMerchantSubscription(ADMIN_AUTH, {
+      operation: "upsert",
+      merchantId: "merchant_1",
+      maxCaptains: 6,
+      price: 1200,
+      startDate: "2026-11-20",
+      endDate: "2027-01-04",
+      status: "Active",
+    });
+
+    const result = await service.manageMerchantSubscription(ADMIN_AUTH, {
+      operation: "renew",
+      merchantId: "merchant_1",
+    });
+
+    const subscription = db.getDocData("subscriptions/merchant_1");
+    assert.equal(subscription.durationDays, 45);
+    assert.equal(subscription.startDate, "2027-01-05");
+    assert.equal(subscription.endDate, "2027-02-18");
+    assert.equal(result.startDate, "2027-01-05");
+    assert.equal(result.endDate, "2027-02-18");
+    assert.equal(subscription.paymentStatus, "admin_manual");
+  });
+
 });
