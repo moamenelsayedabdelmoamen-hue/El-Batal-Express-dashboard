@@ -63,9 +63,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [claims, setClaims] = useState<Record<string, any> | null>(null);
 
   useEffect(() => {
-    // 1. Check for persisted demo session
+    // Demo sessions are permitted only in an unconfigured preview. Never let a persisted
+    // demo flag override the real Firebase Authentication session used by production rules.
     const savedDemo = localStorage.getItem('elbatal_demo_admin_session');
-    if (savedDemo === 'true') {
+    if (savedDemo === 'true' && !isFirebaseConfigured) {
       const demoEmail = 'admin@elbatalexpress.com';
       const isMaster = isMasterAdminEmail(demoEmail);
       setUser({
@@ -82,12 +83,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setLoading(false);
       return;
     }
+    if (savedDemo === 'true' && isFirebaseConfigured) {
+      localStorage.removeItem('elbatal_demo_admin_session');
+    }
 
-    // 2. If Firebase Auth is not configured (e.g. preview environment without VITE_FIREBASE_API_KEY)
-    if (!isFirebaseConfigured || !auth) {
+    // Demo mode is strictly limited to builds without Firebase configuration.
+    if (!isFirebaseConfigured) {
       const explicitLogout = sessionStorage.getItem('elbatal_explicit_logout') === 'true';
       if (!explicitLogout) {
-        // Auto-enable demo session so reviewer immediately sees the full working application
         const demoEmail = 'admin@elbatalexpress.com';
         const isMaster = isMasterAdminEmail(demoEmail);
         setUser({
@@ -111,20 +114,33 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return;
     }
 
-    // 3. Real Firebase Auth Listener with error-handling callback to prevent unhandled rejections
+    // A configured production app without Firebase Auth must fail closed, not create a demo admin.
+    if (!auth) {
+      setUser(null);
+      setIsAdmin(false);
+      setIsMasterAdmin(false);
+      setClaims(null);
+      setLoading(false);
+      return;
+    }
+
+    // Real Firebase Auth Listener with error-handling callback to prevent unhandled rejections
     try {
       const unsubscribe = onAuthStateChanged(
         auth,
         async (firebaseUser: FirebaseUser | null) => {
           if (firebaseUser) {
-            let hasAdminClaim = isSuperAdminEmail(firebaseUser.email);
+            let hasAdminClaim = isSuperAdminEmail(firebaseUser.email) && firebaseUser.emailVerified;
             let userClaims: Record<string, any> = {};
 
             try {
-              // Read cached token without forcing a blocking network refresh
-              const tokenResult = await firebaseUser.getIdTokenResult(false);
+              // Reload the user profile and force-refresh the ID token so Firestore receives
+              // the current email_verified claim (not a cached token from before verification).
+              await reload(firebaseUser);
+              const tokenResult = await firebaseUser.getIdTokenResult(true);
               userClaims = tokenResult.claims || {};
               setClaims(userClaims);
+              hasAdminClaim = isSuperAdminEmail(firebaseUser.email) && firebaseUser.emailVerified;
 
               if (userClaims.role === 'admin' || userClaims.admin === true) {
                 hasAdminClaim = true;
@@ -145,37 +161,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               }
             }
 
-            // Auto-sync admin document to Firestore admins collection for super admins if online
-            if (hasAdminClaim && db && firebaseUser.email) {
-              try {
-                await setDoc(doc(db, COLLECTIONS.ADMINS, firebaseUser.uid), {
-                  email: firebaseUser.email,
-                  displayName: firebaseUser.displayName || 'مسؤول النظام',
-                  role: 'admin',
-                  isSuperAdmin: isSuperAdminEmail(firebaseUser.email),
-                  updatedAt: new Date().toISOString(),
-                }, { merge: true });
-              } catch (syncErr) {
-                console.warn('Admin doc sync notice:', syncErr);
-              }
-            }
-
+            // Admin documents are provisioned by trusted Admin SDK / Console only.
+            // Client-side writes are intentionally denied by Firestore Security Rules.
             const isMaster = isMasterAdminEmail(firebaseUser.email);
-            let isVerified = Boolean(firebaseUser.emailVerified);
-
-            if (!isVerified && db) {
-              try {
-                const adminDoc = await getDoc(doc(db, COLLECTIONS.ADMINS, firebaseUser.uid));
-                if (adminDoc.exists() && adminDoc.data()?.emailVerified) {
-                  isVerified = true;
-                }
-              } catch (err) {
-                // ignore
-              }
-            }
-            if (isMaster) {
-              isVerified = true;
-            }
+            const isVerified = Boolean(firebaseUser.emailVerified);
 
             setIsAdmin(hasAdminClaim);
             setIsMasterAdmin(isMaster);
@@ -231,9 +220,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   const login = async (email: string, pass: string) => {
-    if (!auth || !isFirebaseConfigured) {
-      // In environment without real Firebase Auth API key, allow logging in with the entered credentials
-      // and grant admin session smoothly so the user can test with their own email
+    if (!isFirebaseConfigured) {
+      // Preview-only demo login. This branch must never run against a configured production project.
       localStorage.setItem('elbatal_demo_admin_session', 'true');
       sessionStorage.removeItem('elbatal_explicit_logout');
       const cleanEmail = email.trim() || 'admin@elbatalexpress.com';
@@ -252,13 +240,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setClaims({ role: 'admin' });
       return;
     }
+    if (!auth) {
+      throw new Error('تعذر تهيئة Firebase Authentication. أعد تحميل الصفحة أو تحقق من إعدادات Firebase.');
+    }
 
+    // A real sign-in must clear any old preview flag and use a fresh verified ID token.
+    localStorage.removeItem('elbatal_demo_admin_session');
     const cred = await signInWithEmailAndPassword(auth, email, pass);
-    let hasAdminClaim = isSuperAdminEmail(cred.user.email);
+    await reload(cred.user);
+    await cred.user.getIdToken(true);
+    let hasAdminClaim = isSuperAdminEmail(cred.user.email) && cred.user.emailVerified;
     let userClaims: Record<string, any> = {};
 
     try {
-      const tokenResult = await cred.user.getIdTokenResult(false);
+      const tokenResult = await cred.user.getIdTokenResult(true);
       userClaims = tokenResult.claims || {};
       setClaims(userClaims);
       if (userClaims.role === 'admin' || userClaims.admin === true) {
@@ -287,20 +282,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       );
     }
 
-    if (db && cred.user.email) {
-      try {
-        await setDoc(doc(db, COLLECTIONS.ADMINS, cred.user.uid), {
-          email: cred.user.email,
-          displayName: cred.user.displayName || 'مسؤول النظام',
-          role: 'admin',
-          isSuperAdmin: isSuperAdminEmail(cred.user.email),
-          updatedAt: new Date().toISOString(),
-        }, { merge: true });
-      } catch (syncErr) {
-        console.warn('Admin doc creation notice:', syncErr);
-      }
-    }
-
     const isMaster = isMasterAdminEmail(cred.user.email);
     setIsAdmin(true);
     setIsMasterAdmin(isMaster);
@@ -311,6 +292,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       role: 'admin',
       isAdmin: true,
       isMasterAdmin: isMaster,
+      emailVerified: cred.user.emailVerified,
     });
     sessionStorage.removeItem('elbatal_explicit_logout');
   };
@@ -323,17 +305,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     sessionStorage.removeItem('elbatal_explicit_logout');
     localStorage.removeItem('elbatal_demo_admin_session');
 
+    // Refresh the profile and ID token so the Firestore rules see current verified status.
+    await reload(cred.user);
+    await cred.user.getIdToken(true);
+
     // Extract and cache OAuth access token in memory for Google Sheets API
     const credential = GoogleAuthProvider.credentialFromResult(cred);
     if (credential?.accessToken) {
       setCachedGoogleToken(credential.accessToken);
     }
 
-    let hasAdminClaim = isSuperAdminEmail(cred.user.email);
+    let hasAdminClaim = isSuperAdminEmail(cred.user.email) && cred.user.emailVerified;
     let userClaims: Record<string, any> = {};
 
     try {
-      const tokenResult = await cred.user.getIdTokenResult(false);
+      const tokenResult = await cred.user.getIdTokenResult(true);
       userClaims = tokenResult.claims || {};
       setClaims(userClaims);
       if (userClaims.role === 'admin' || userClaims.admin === true) {
@@ -354,24 +340,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     }
 
-    if (db && cred.user.email) {
-      try {
-        await setDoc(
-          doc(db, COLLECTIONS.ADMINS, cred.user.uid),
-          {
-            email: cred.user.email,
-            displayName: cred.user.displayName || 'مسؤول النظام',
-            role: hasAdminClaim ? 'admin' : 'user',
-            isSuperAdmin: isSuperAdminEmail(cred.user.email),
-            updatedAt: new Date().toISOString(),
-          },
-          { merge: true }
-        );
-      } catch (syncErr) {
-        console.warn('Admin doc creation notice:', syncErr);
-      }
-    }
-
     const isMaster = isMasterAdminEmail(cred.user.email);
     setIsAdmin(hasAdminClaim);
     setIsMasterAdmin(isMaster);
@@ -382,6 +350,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       role: hasAdminClaim ? 'admin' : 'user',
       isAdmin: hasAdminClaim,
       isMasterAdmin: isMaster,
+      emailVerified: cred.user.emailVerified,
     });
   };
 
@@ -403,6 +372,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const loginAsDemoAdmin = () => {
+    if (isFirebaseConfigured) {
+      console.warn('الدخول التجريبي غير متاح على الموقع المنشور. استخدم حساب المشرف الموثق في Firebase Authentication.');
+      return;
+    }
     sessionStorage.removeItem('elbatal_explicit_logout');
     localStorage.setItem('elbatal_demo_admin_session', 'true');
     const demoEmail = 'admin@elbatalexpress.com';
