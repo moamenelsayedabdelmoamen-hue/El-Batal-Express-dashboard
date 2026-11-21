@@ -1,5 +1,5 @@
 import {initializeApp} from "firebase-admin/app";
-import {randomInt} from "node:crypto";
+import {createHash, randomInt} from "node:crypto";
 import {getFirestore, FieldValue, GeoPoint} from "firebase-admin/firestore";
 import {setGlobalOptions} from "firebase-functions";
 import * as logger from "firebase-functions/logger";
@@ -70,6 +70,43 @@ function isCaptainReadyForDispatch(data: Record<string, unknown> | undefined): b
     !unavailable.has(presence) &&
     !unavailable.has(availability) &&
     !readString(data, "currentOrderId");
+}
+
+async function enforceCaptainEmailLookupRateLimit(ipAddress: string, phone: string): Promise<void> {
+  const db = getFirestore();
+  const nowMs = Date.now();
+  const windowMs = 15 * 60 * 1000;
+  const normalizedPhone = phone.replace(/[^0-9+]/g, "").slice(0, 32) || "missing";
+  const scopes = [
+    {name: "ip", value: ipAddress || "unknown", maxAttempts: 30},
+    {name: "phone", value: normalizedPhone, maxAttempts: 6},
+  ];
+
+  for (const scope of scopes) {
+    const digest = createHash("sha256").update(scope.value).digest("hex");
+    const ref = db.collection("security_rate_limits")
+      .doc(`captain-email-lookup-${scope.name}-${digest}`);
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      const data = snap.data() ?? {};
+      const windowStartedAtMs = readNumber(data, "windowStartedAtMs") ?? 0;
+      const attempts = readNumber(data, "attempts") ?? 0;
+      const inWindow = nowMs - windowStartedAtMs < windowMs;
+      if (inWindow && attempts >= scope.maxAttempts) {
+        throw new HttpsError(
+          "resource-exhausted",
+          "تم تجاوز عدد محاولات البحث عن الحساب. حاول مرة أخرى بعد 15 دقيقة."
+        );
+      }
+      tx.set(ref, {
+        scope: scope.name,
+        windowStartedAtMs: inWindow ? windowStartedAtMs : nowMs,
+        attempts: inWindow ? attempts + 1 : 1,
+        expiresAt: new Date(nowMs + 24 * 60 * 60 * 1000),
+        updatedAt: FieldValue.serverTimestamp(),
+      }, {merge: true});
+    });
+  }
 }
 
 /**
@@ -173,6 +210,8 @@ export const resolveCaptainEmailByPhone = onCall(
   async (request) => {
     try {
       const payload = (request.data ?? {}) as Record<string, unknown>;
+      const phone = readString(payload, "phone", "phoneNumber", "mobile");
+      await enforceCaptainEmailLookupRateLimit(request.rawRequest.ip || "unknown", phone);
       return await service.resolveCaptainEmailByPhone(payload);
     } catch (err) {
       throw mapError(err);
