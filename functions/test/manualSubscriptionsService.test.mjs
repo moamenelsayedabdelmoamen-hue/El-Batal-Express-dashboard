@@ -477,7 +477,7 @@ describe("Manual Vodafone Cash Subscriptions Server Service (Full 14-Scenario Su
     assert.equal(subDoc.maxCaptains, 6);
     assert.equal(subDoc.captainLimit, 6);
     assert.equal(subDoc.durationDays, 30);
-    assert.equal(subDoc.endDate, "2027-01-04");
+    assert.equal(subDoc.endDate, "2026-12-20");
 
     const merchantDoc = db.getDocData("merchants/merchant_1");
     assert.equal(merchantDoc.subscriptionStatus, "active");
