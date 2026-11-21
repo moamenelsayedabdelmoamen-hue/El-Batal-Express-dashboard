@@ -326,7 +326,7 @@ function createHarness(initialNowMs = Date.UTC(2026, 10, 20, 10, 0, 0)) {
         planName: "باقة 6 كابتن",
         maxCaptains: 6,
         price: 1200,
-        durationDays: 45,
+        durationDays: 30,
         isActive: true,
       },
     ],
@@ -433,7 +433,7 @@ describe("Manual Vodafone Cash Subscriptions Server Service (Full 14-Scenario Su
     assert.equal(submitted.paymentStatus, "pending_verification");
     assert.equal(submitted.amount, 1200);
     assert.equal(submitted.maxCaptains, 6);
-    assert.equal(submitted.durationDays, 45); // Per-plan durationDays!
+    assert.equal(submitted.durationDays, 30); // All packages have a fixed one-month term.
     assert.equal(submitted.receiverWalletNumber, "01099887766");
     assert.equal(submitted.isResubmission, false);
 
@@ -467,7 +467,7 @@ describe("Manual Vodafone Cash Subscriptions Server Service (Full 14-Scenario Su
     assert.equal(approved.maxCaptains, 6);
     assert.equal(approved.amount, 1200);
     assert.equal(approved.startDate, "2026-11-20");
-    assert.equal(approved.endDate, "2027-01-04"); // 45 days from 2026-11-20
+    assert.equal(approved.endDate, "2026-12-20"); // 30 days from 2026-11-20
 
     // Verify subscriptions/{merchantId}, merchants/{merchantId}, and single payment
     const subDoc = db.getDocData("subscriptions/merchant_1");
@@ -476,7 +476,7 @@ describe("Manual Vodafone Cash Subscriptions Server Service (Full 14-Scenario Su
     assert.equal(subDoc.isSubscribed, true);
     assert.equal(subDoc.maxCaptains, 6);
     assert.equal(subDoc.captainLimit, 6);
-    assert.equal(subDoc.durationDays, 45);
+    assert.equal(subDoc.durationDays, 30);
     assert.equal(subDoc.endDate, "2027-01-04");
 
     const merchantDoc = db.getDocData("merchants/merchant_1");
@@ -1061,7 +1061,7 @@ describe("Manual Vodafone Cash Subscriptions Server Service (Full 14-Scenario Su
           planName: "باقة 8 كابتن",
           maxCaptains: 8,
           price: 1650,
-          durationDays: 60,
+          durationDays: 30,
           isActive: true,
         },
       ],
@@ -1072,7 +1072,7 @@ describe("Manual Vodafone Cash Subscriptions Server Service (Full 14-Scenario Su
       (err) => err instanceof DomainHttpsError && err.code === "permission-denied"
     );
 
-    // Master Admin succeeds with per-plan durationDays
+    // Master Admin saves every package with the fixed 30-day term
     const saved = await service.updateManualSubscriptionSettings(
       MASTER_ADMIN_AUTH,
       validSettingsPayload
@@ -1080,12 +1080,12 @@ describe("Manual Vodafone Cash Subscriptions Server Service (Full 14-Scenario Su
     assert.equal(saved.success, true);
     assert.equal(saved.settings.vodafoneCashNumber, "01011223344");
     assert.equal(saved.settings.plans[0].price, 450);
-    assert.equal(saved.settings.plans[1].durationDays, 60);
+    assert.equal(saved.settings.plans[1].durationDays, 30);
 
     const persisted = db.getDocData("settings/manual_subscription_config");
     assert.equal(persisted.vodafoneCashNumber, "01011223344");
     assert.equal(persisted.updatedBy, "master_admin_1");
-    assert.equal(persisted.plans[1].durationDays, 60);
+    assert.equal(persisted.plans[1].durationDays, 30);
 
     // Master Admin invalid Egyptian wallet number rejected
     await assert.rejects(
@@ -1310,7 +1310,7 @@ describe("Manual Vodafone Cash Subscriptions Server Service (Full 14-Scenario Su
     assert.equal(db.getDocData("subscriptions/merchant_1").status, "active");
   });
 
-  it("22. General dashboard renewal uses the official selected plan duration", async () => {
+  it("22. Every general-dashboard package and renewal lasts exactly 30 days", async () => {
     const now = Date.UTC(2026, 10, 20, 10, 0, 0);
     const {db, service} = createHarness(now);
     seedMerchant(db, {
@@ -1324,7 +1324,7 @@ describe("Manual Vodafone Cash Subscriptions Server Service (Full 14-Scenario Su
       maxCaptains: 6,
       price: 1200,
       startDate: "2026-11-20",
-      endDate: "2027-01-04",
+      endDate: "2026-12-20",
       status: "Active",
     });
 
@@ -1334,11 +1334,11 @@ describe("Manual Vodafone Cash Subscriptions Server Service (Full 14-Scenario Su
     });
 
     const subscription = db.getDocData("subscriptions/merchant_1");
-    assert.equal(subscription.durationDays, 45);
-    assert.equal(subscription.startDate, "2027-01-05");
-    assert.equal(subscription.endDate, "2027-02-18");
-    assert.equal(result.startDate, "2027-01-05");
-    assert.equal(result.endDate, "2027-02-18");
+    assert.equal(subscription.durationDays, 30);
+    assert.equal(subscription.startDate, "2026-12-21");
+    assert.equal(subscription.endDate, "2027-01-19");
+    assert.equal(result.startDate, "2026-12-21");
+    assert.equal(result.endDate, "2027-01-19");
     assert.equal(subscription.paymentStatus, "admin_manual");
   });
 
