@@ -62,8 +62,11 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/merchants/$(request.auth.uid)).data.accountType == 'merchant';
     }
 
+    // Reads the field once: callers check ~25 fields per captain write, and repeating
+    // data[key] four times per field exceeded Firestore's 1000-expression limit.
     function isOptionalBoundedString(data, key, maxLen) {
-      return !(key in data) || data[key] == null || (data[key] is string && data[key].size() <= maxLen);
+      let value = data.get(key, null);
+      return value == null || (value is string && value.size() <= maxLen);
     }
 
     // --- 1. Captains Validation & Rules ---
