@@ -1,0 +1,46 @@
+name: Cloud Functions Build and Tests
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "functions/**"
+      - "firebase.json"
+      - ".github/workflows/functions-ci.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "functions/**"
+      - "firebase.json"
+      - ".github/workflows/functions-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  functions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: functions/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Install Cloud Functions dependencies
+        working-directory: functions
+        run: npm ci
+      - name: Build and run unit tests
+        working-directory: functions
+        run: npm test
+      - name: Install Firebase CLI for emulator integration tests
+        run: npm install --global firebase-tools@15.37.0
+      - name: Run Firestore and Functions Emulator integration tests
+        run: firebase emulators:exec --only functions,firestore --project demo-elbatal-express "node functions/test/firestoreTriggers.integration.mjs"

@@ -1,0 +1,39 @@
+name: Dashboard Build
+on:
+  pull_request:
+    paths:
+      - "dashboard/src/**"
+      - "dashboard/public/**"
+      - "dashboard/index.html"
+      - "dashboard/package.json"
+      - "dashboard/package-lock.json"
+      - "dashboard/bun.lock"
+      - "dashboard/vite.config.ts"
+      - "dashboard/tsconfig.json"
+      - "firebase-applet-config.json"
+      - ".github/workflows/dashboard-build.yml"
+  push:
+    branches: [main]
+    paths:
+      - "dashboard/src/**"
+      - "dashboard/public/**"
+      - "dashboard/index.html"
+      - "dashboard/package.json"
+      - "dashboard/package-lock.json"
+      - "dashboard/bun.lock"
+      - "dashboard/vite.config.ts"
+      - "dashboard/tsconfig.json"
+      - "firebase-applet-config.json"
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install
+      - run: npm run build

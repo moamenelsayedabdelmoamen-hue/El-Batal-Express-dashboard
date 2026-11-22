@@ -1,0 +1,43 @@
+name: Firebase Rules Unit Tests
+on:
+  pull_request:
+    paths:
+      - "firestore.rules"
+      - "storage.rules"
+      - "security_rules.test.js"
+      - "firebase.json"
+      - ".github/workflows/firebase-rules.yml"
+  push:
+    branches:
+      - main
+      - fix/live-readiness-mainline
+    paths:
+      - "firestore.rules"
+      - "storage.rules"
+      - "security_rules.test.js"
+      - "firebase.json"
+      - ".github/workflows/firebase-rules.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  firebase-rules:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install isolated emulator test dependencies
+        run: |
+          npm init -y
+          npm install --no-save @firebase/rules-unit-testing @firebase/firestore @firebase/storage
+      - name: Install Firebase CLI
+        run: npm install --global firebase-tools
+      - name: Run Firestore and Storage security assertions
+        run: |
+          # The repository root is ESM; run the existing CommonJS test from a .cjs copy.
+          cp security_rules.test.js security_rules.test.cjs
+          firebase emulators:exec --only firestore,storage --project el-batal-express-956ae "node --test security_rules.test.cjs"

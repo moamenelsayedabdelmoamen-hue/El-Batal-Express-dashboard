@@ -1,0 +1,54 @@
+/**
+ * Central registry for all Firestore collection names and common fields.
+ * If the current or future schema names differ in your Firebase project,
+ * you can adjust them in this single file without touching the UI components.
+ */
+
+export const COLLECTIONS = {
+  RESTAURANTS: 'restaurants',
+  MERCHANTS: 'merchants',
+  CAPTAINS: 'captains',
+  ORDERS: 'orders',
+  ORDER_CODES: 'order_codes',
+  SUBSCRIPTIONS: 'subscriptions',
+  SUBSCRIPTION_PACKAGES: 'subscription_packages',
+  SUBSCRIPTION_HISTORY: 'subscription_history',
+  PAYMENTS: 'payments',
+  SETTINGS: 'settings',
+  ADMINS: 'admins',
+  USERS: 'users',
+  CAPTAIN_SCHEDULES: 'captain_schedules',
+  CAPTAIN_AUDIT_LOGS: 'captain_audit_logs',
+  NOTIFICATIONS: 'notifications',
+  MANUAL_SUBSCRIPTION_REQUESTS: 'manual_subscription_requests',
+  OPERATION_LOGS: 'operation_logs',
+} as const;
+
+export const RESTAURANT_FIELDS = {
+  NAME: 'name',
+  NAME_AR: 'nameAr',
+  CATEGORY: 'category',
+  CUISINE: 'cuisine',
+  PHONE: 'phone',
+  RATING: 'rating',
+  STATUS: 'status',
+  IS_ACTIVE: 'isActive',
+  SUBSCRIPTION_STATUS: 'subscriptionStatus',
+  CREATED_AT: 'createdAt',
+  UPDATED_AT: 'updatedAt',
+} as const;
+
+export const ORDER_FIELDS = {
+  ORDER_NUMBER: 'orderNumber',
+  RESTAURANT_ID: 'restaurantId',
+  RESTAURANT_NAME: 'restaurantName',
+  CUSTOMER_NAME: 'customerName',
+  CUSTOMER_PHONE: 'customerPhone',
+  CAPTAIN_ID: 'captainId',
+  CAPTAIN_NAME: 'captainName',
+  STATUS: 'status',
+  TOTAL: 'total',
+  SUBTOTAL: 'subtotal',
+  DELIVERY_FEE: 'deliveryFee',
+  CREATED_AT: 'createdAt',
+} as const;
