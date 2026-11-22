@@ -1,12 +1,17 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.OrderServerService = exports.OFFER_WINDOW_SECONDS = exports.OFFER_WINDOW_MS = void 0;
+exports.OrderServerService = exports.EXCLUSION_RESET_MS = exports.OFFER_WINDOW_SECONDS = exports.OFFER_WINDOW_MS = void 0;
 exports.isNonEmptyTruthy = isNonEmptyTruthy;
 const types_js_1 = require("./types.js");
 const shifts_js_1 = require("./shifts.js");
 const validators_js_1 = require("./validators.js");
 exports.OFFER_WINDOW_MS = 60000;
 exports.OFFER_WINDOW_SECONDS = 60;
+/**
+ * After this long with no captain, captains who let the offer expire or declined it
+ * are offered the order again; otherwise a lone captain's missed offer strands it forever.
+ */
+exports.EXCLUSION_RESET_MS = 3 * 60000;
 const ACTIVE_CAPTAIN_FIELDS = [
     "captainId",
     "driverId",
@@ -168,6 +173,7 @@ class OrderServerService {
             tx.update(orderRef, orderUpdate);
             tx.update(captainRef, {
                 presenceStatus: "on_trip",
+                availabilityStatus: "on_trip",
                 currentOrderId: orderId,
                 activeMerchantId: merchantId,
                 currentMerchantId: merchantId,
@@ -478,6 +484,8 @@ class OrderServerService {
                 walletBalance: s.increment(earnedAmount),
                 totalOrdersCount: s.increment(1),
                 presenceStatus: "available",
+                // The captain app also writes availabilityStatus; dispatch rejects "on_trip" in either field.
+                availabilityStatus: "available",
                 currentOrderId: null,
                 activeMerchantId: s.deleteField(),
                 currentMerchantId: s.deleteField(),
@@ -683,6 +691,7 @@ class OrderServerService {
                 tx.update(orderRef, {
                     status: "searching",
                     dispatchStatus: "no_captains_available",
+                    noCaptainsSinceMs: nowMs,
                     offeredCaptainId: null,
                     offeredCaptainName: null,
                     offerExpiresAt: null,
@@ -798,6 +807,56 @@ class OrderServerService {
             processed += 1;
         }
         return processed;
+    }
+    /**
+     * Re-dispatches orders stuck in no_captains_available only because every nearby
+     * captain already missed or declined them. Once EXCLUSION_RESET_MS has passed,
+     * the exclusions are cleared so those captains get a fresh offer.
+     * Orders with no exclusions are left to the captain-available triggers.
+     * @param {number} limit Maximum number of queued orders to scan.
+     * @return {Promise<number>} Number of orders re-dispatched.
+     */
+    async retryOrdersWithExpiredExclusions(limit = 20) {
+        var _a;
+        const nowMs = this.effects.now();
+        const snap = await this.db
+            .collection("orders")
+            .where("dispatchStatus", "==", "no_captains_available")
+            .limit(Math.max(1, Math.min(limit, 100)))
+            .get();
+        const s = this.effects.sentinels;
+        let retried = 0;
+        for (const doc of snap.docs) {
+            const order = (_a = doc.data()) !== null && _a !== void 0 ? _a : {};
+            if (!isExclusionResetDue(order, nowMs))
+                continue;
+            const orderRef = this.db.collection("orders").doc(doc.id);
+            const reset = await this.db.runTransaction(async (tx) => {
+                var _a;
+                const latestSnap = await tx.get(orderRef);
+                const latest = (_a = latestSnap.data()) !== null && _a !== void 0 ? _a : {};
+                if (!latestSnap.exists || !isExclusionResetDue(latest, nowMs))
+                    return false;
+                tx.update(orderRef, {
+                    excludedCaptainIds: [],
+                    timedOutCaptainIds: [],
+                    exclusionResetCount: s.increment(1),
+                    updatedAt: s.serverTimestamp(),
+                });
+                return true;
+            });
+            if (!reset)
+                continue;
+            try {
+                await this.dispatchNewOrSearchingOrder(doc.id);
+                retried += 1;
+            }
+            catch (err) {
+                // One bad order (e.g. lapsed subscription) must not block the rest of the queue.
+                console.warn("Exclusion-reset re-dispatch failed", doc.id, err);
+            }
+        }
+        return retried;
     }
     /**
      * 9. Read-only phone lookup for Captain login/reset flows (eliminates need for client direct query).
@@ -947,6 +1006,7 @@ class OrderServerService {
                 tx.update(orderRef, {
                     status: "searching",
                     dispatchStatus: "no_captains_available",
+                    noCaptainsSinceMs: nowMs,
                     offeredCaptainId: null,
                     offeredCaptainName: null,
                     offerExpiresAt: null,
@@ -1196,6 +1256,32 @@ class OrderServerService {
     }
 }
 exports.OrderServerService = OrderServerService;
+/**
+ * True when an order has waited EXCLUSION_RESET_MS with no captain and has
+ * excluded captains that could be offered it again.
+ * @param {Record<string, unknown>} order Order document data.
+ * @param {number} nowMs Current time in milliseconds.
+ * @return {boolean} Whether the exclusions should be cleared and the order re-dispatched.
+ */
+function isExclusionResetDue(order, nowMs) {
+    var _a, _b;
+    if (String((_a = order.dispatchStatus) !== null && _a !== void 0 ? _a : "").toLowerCase() !== "no_captains_available")
+        return false;
+    if (order.dispatchAuthority !== "dashboard_functions")
+        return false;
+    if (!["pending", "searching"].includes((0, validators_js_1.readNormalizedOrderStatus)(order)))
+        return false;
+    if ((0, validators_js_1.extractOrderCaptainUid)(order))
+        return false;
+    const excluded = [
+        ...(0, validators_js_1.readStringList)(order.excludedCaptainIds),
+        ...(0, validators_js_1.readStringList)(order.timedOutCaptainIds),
+    ];
+    if (excluded.length === 0)
+        return false;
+    const sinceMs = Number((_b = order.noCaptainsSinceMs) !== null && _b !== void 0 ? _b : 0) || (0, validators_js_1.parseTimestampMs)(order.updatedAt);
+    return sinceMs > 0 && nowMs - sinceMs >= exports.EXCLUSION_RESET_MS;
+}
 function requireAuthUid(authUid) {
     const uid = typeof authUid === "string" ? authUid.trim() : "";
     if (!uid) {
