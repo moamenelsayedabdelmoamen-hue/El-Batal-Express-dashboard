@@ -598,6 +598,7 @@ describe("El-Batal Cloud Functions Order Server Service", () => {
 
     await service.dispatchNewOrSearchingOrder("ord_life");
     await service.acceptOrder("cap_1", {orderId: "ord_life"});
+    assert.equal(db.getDocData("captains/cap_1").availabilityStatus, "on_trip");
     await service.captainArrivedAtMerchant("cap_1", {orderId: "ord_life"});
     await service.confirmPickup("cap_1", {orderId: "ord_life"});
 
@@ -648,6 +649,8 @@ describe("El-Batal Cloud Functions Order Server Service", () => {
     assert.equal(updatedCaptain.currentMerchantId, undefined);
     assert.equal(updatedCaptain.walletBalance, 145.0);
     assert.equal(updatedCaptain.totalOrdersCount, 6);
+    // Dispatch skips captains whose availabilityStatus is still "on_trip".
+    assert.equal(updatedCaptain.availabilityStatus, "available");
 
     const dayKey = getCairoTimeContext(now).dayKey;
     const dailyWallet = db.getDocData(`captains/cap_1/daily_wallets/${dayKey}`);

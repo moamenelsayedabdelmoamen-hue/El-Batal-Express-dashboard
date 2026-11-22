@@ -328,6 +328,7 @@ export class OrderServerService {
       tx.update(orderRef, orderUpdate);
       tx.update(captainRef, {
         presenceStatus: "on_trip",
+        availabilityStatus: "on_trip",
         currentOrderId: orderId,
         activeMerchantId: merchantId,
         currentMerchantId: merchantId,
@@ -753,6 +754,8 @@ export class OrderServerService {
         walletBalance: s.increment(earnedAmount),
         totalOrdersCount: s.increment(1),
         presenceStatus: "available",
+        // The captain app also writes availabilityStatus; dispatch rejects "on_trip" in either field.
+        availabilityStatus: "available",
         currentOrderId: null,
         activeMerchantId: s.deleteField(),
         currentMerchantId: s.deleteField(),

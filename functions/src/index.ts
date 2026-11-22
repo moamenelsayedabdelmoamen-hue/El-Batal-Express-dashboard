@@ -998,6 +998,9 @@ export const merchantCancelOrder = onCall(
             if (readString(captain, "presenceStatus") === "on_trip") {
               patch.presenceStatus = "available";
             }
+            if (readString(captain, "availabilityStatus") === "on_trip") {
+              patch.availabilityStatus = "available";
+            }
           }
           if (readString(captain, "activeOfferOrderId") === orderId) {
             patch.activeOfferOrderId = null;
@@ -1584,6 +1587,9 @@ export const adminCancelOrder = onCall(
             patch.currentMerchantId = FieldValue.delete();
             if (captain.presenceStatus === "on_trip") {
               patch.presenceStatus = "available";
+            }
+            if (captain.availabilityStatus === "on_trip") {
+              patch.availabilityStatus = "available";
             }
           }
           if (captain.activeOfferOrderId === orderId) {
