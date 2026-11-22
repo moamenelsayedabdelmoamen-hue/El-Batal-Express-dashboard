@@ -210,15 +210,23 @@ describe("Static Security & Architecture Invariants (Rules + Server-Only + Paymo
       firestoreRules,
       /match\s+\/captain_audit_logs\/\{logId\}\s*\{[\s\S]*?allow read:\s*if isAdmin\(\);[\s\S]*?allow write:\s*if false;/
     );
+    // Self sign-up is a strict key allowlist, so moderation fields can never be written by the captain.
     const initialCaptainGuards = firestoreRules.match(
-      /function\s+hasSafeInitialCaptainFinancialAndAdminFields\(data\)\s*\{([\s\S]*?)\n    \}/
+      /function\s+isValidNewCaptainSelfProfile\(captainId\)\s*\{([\s\S]*?)\r?\n    \}/
     )?.[1] || "";
-    assert.match(initialCaptainGuards, /data\.accountStatus == 'pending'/);
-    assert.match(initialCaptainGuards, /data\.isApproved == false/);
-    assert.match(initialCaptainGuards, /!\('approvedBy' in data\)/);
-    assert.match(initialCaptainGuards, /!\('rejectedBy' in data\)/);
-    assert.match(initialCaptainGuards, /!\('suspendedBy' in data\)/);
-    assert.match(initialCaptainGuards, /!\('blockedBy' in data\)/);
+    assert.match(initialCaptainGuards, /d\.keys\(\)\.hasOnly\(\[/);
+    assert.match(initialCaptainGuards, /d\.accountStatus == 'pending'/);
+    assert.match(initialCaptainGuards, /d\.isApproved == false/);
+    const allowedSignUpKeys = initialCaptainGuards.match(/hasOnly\(\[([\s\S]*?)\]\)/)?.[1] || "";
+    assert.ok(allowedSignUpKeys.includes("'accountType'"), "sign-up key allowlist must be present");
+    assert.doesNotMatch(
+      allowedSignUpKeys,
+      /'(approvedBy|rejectedBy|suspendedBy|blockedBy|isBlocked|isSuspended|isAdmin|activeMerchantId|currentMerchantId|subscriptionStatus)'/
+    );
+    assert.match(
+      firestoreRules,
+      /allow create:[\s\S]*?request\.auth\.uid == captainId[\s\S]*?isValidNewCaptainSelfProfile\(captainId\)/
+    );
 
     const selfUpdateKeys = firestoreRules.match(
       /function\s+isAllowedCaptainSelfUpdateKeys\(\)\s*\{([\s\S]*?)\n    \}/

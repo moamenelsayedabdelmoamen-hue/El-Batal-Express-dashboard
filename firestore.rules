@@ -70,74 +70,62 @@ service cloud.firestore {
     }
 
     // --- 1. Captains Validation & Rules ---
-    // Protects financial, subscription, approval, accountType, and moderation fields from client tampering.
-    function isValidCaptainProfileShape(data, expectedUid) {
-      return ('uid' in data) && data.uid == expectedUid
-        && (!('accountType' in data) || data.accountType == 'captain')
-        && (!('role' in data) || data.role in ['captain', 'driver'])
-        && isOptionalBoundedString(data, 'accountType', 32)
-        && isOptionalBoundedString(data, 'name', 120)
-        && isOptionalBoundedString(data, 'fullName', 120)
-        && isOptionalBoundedString(data, 'driver_name', 120)
-        && isOptionalBoundedString(data, 'email', 160)
-        && isOptionalBoundedString(data, 'phone', 32)
-        && isOptionalBoundedString(data, 'phoneNumber', 32)
-        && isOptionalBoundedString(data, 'address', 300)
-        && isOptionalBoundedString(data, 'vehicleType', 80)
-        && isOptionalBoundedString(data, 'licensePlate', 40)
-        && isOptionalBoundedString(data, 'avatarUri', 500)
-        && isOptionalBoundedString(data, 'personalImage', 500)
-        && isOptionalBoundedString(data, 'idCardFront', 500)
-        && isOptionalBoundedString(data, 'idCardBack', 500)
-        && isOptionalBoundedString(data, 'profileImagePath', 300)
-        && isOptionalBoundedString(data, 'idFrontImagePath', 300)
-        && isOptionalBoundedString(data, 'idBackImagePath', 300)
-        && isOptionalBoundedString(data, 'licenseImagePath', 300)
-        && isOptionalBoundedString(data, 'presenceStatus', 32)
-        && isOptionalBoundedString(data, 'availabilityStatus', 32)
-        && isOptionalBoundedString(data, 'shiftStatus', 32)
-        && isOptionalBoundedString(data, 'accountStatus', 32)
-        && isOptionalBoundedString(data, 'fcmToken', 512)
-        && (!('isOnline' in data) || data.isOnline is bool)
-        && (!('isLoggedIn' in data) || data.isLoggedIn is bool)
-        && (!('emailVerified' in data) || data.emailVerified is bool)
-        && (!('isEmailVerified' in data) || data.isEmailVerified is bool)
-        && (!('idDocumentsComplete' in data) || data.idDocumentsComplete is bool);
+    // Uses `let` bindings and strict key allowlists so evaluation stays well below
+    // Firestore's 1,000-expression limit while blocking privilege, financial, and cross-captain tampering.
+    function isValidCaptainStorageOrEmptyPath(val, expectedUid, maxLen) {
+      return val == null || (
+        val is string &&
+        val.size() <= maxLen &&
+        (val == '' || val.matches('^captains/' + expectedUid + '/(profile|documents)/[a-zA-Z0-9_\\.\\-]+$'))
+      );
     }
 
-    // On self-registration, financial & administrative privilege fields MUST NOT be elevated
-    function hasSafeInitialCaptainFinancialAndAdminFields(data) {
-      return (!('status' in data) || data.status == 'pending')
-        && (!('accountStatus' in data) || data.accountStatus == 'pending')
-        && (!('isApproved' in data) || data.isApproved == false)
-        && (!('canReceiveOrders' in data) || data.canReceiveOrders == false)
-        && (!('walletBalance' in data) || (data.walletBalance is number && data.walletBalance == 0))
-        && (!('totalOrdersCount' in data) || (data.totalOrdersCount is int && data.totalOrdersCount == 0))
-        && (!('rating' in data) || (data.rating is number && data.rating == 5.0))
-        && !('isBlocked' in data)
-        && !('isSuspended' in data)
-        && !('approvedAt' in data)
-        && !('approvedBy' in data)
-        && !('rejectedAt' in data)
-        && !('rejectedBy' in data)
-        && !('rejectionReason' in data)
-        && !('suspendedAt' in data)
-        && !('suspendedBy' in data)
-        && !('suspensionReason' in data)
-        && !('reactivatedAt' in data)
-        && !('reactivatedBy' in data)
-        && !('blockedAt' in data)
-        && !('blockedBy' in data)
-        && !('blockReason' in data)
-        && !('isAdmin' in data)
-        && !('subscription' in data)
-        && !('subscriptionStatus' in data)
-        && !('subscriptionPlan' in data)
-        && !('subscriptionExpiresAt' in data)
-        && !('creditLimit' in data)
-        && !('commissionRate' in data)
-        && !('activeMerchantId' in data)
-        && !('currentMerchantId' in data);
+    function isValidNewCaptainSelfProfile(captainId) {
+      let d = request.resource.data;
+      return d.keys().hasOnly([
+          'uid', 'name', 'fullName', 'driver_name', 'email', 'phone', 'phoneNumber',
+          'address', 'vehicleType', 'licensePlate',
+          'avatarUri', 'avatarPresetIndex', 'personalImage', 'idCardFront', 'idCardBack',
+          'profileImagePath', 'idFrontImagePath', 'idBackImagePath', 'licenseImagePath',
+          'idDocumentsComplete', 'accountType', 'role', 'status',
+          'accountStatus', 'isApproved',
+          'emailVerified', 'isEmailVerified',
+          'availabilityStatus', 'presenceStatus', 'shiftStatus',
+          'isOnline', 'isLoggedIn', 'fcmToken',
+          'totalOrdersCount', 'walletBalance', 'rating',
+          'createdAt', 'updatedAt'
+        ])
+        && ('uid' in d) && d.uid == captainId
+        && ('accountType' in d) && d.accountType == 'captain'
+        && (!('role' in d) || d.role == 'captain')
+        && ('accountStatus' in d) && d.accountStatus == 'pending'
+        && ('isApproved' in d) && d.isApproved == false
+        && ('status' in d) && d.status == 'pending'
+        && ('createdAt' in d) && d.createdAt is timestamp
+        && (!('walletBalance' in d) || (d.walletBalance is number && d.walletBalance == 0))
+        && (!('totalOrdersCount' in d) || (d.totalOrdersCount is int && d.totalOrdersCount == 0))
+        && (!('rating' in d) || (d.rating is number && d.rating == 5.0))
+        && (!('emailVerified' in d) || d.emailVerified == false || ('email_verified' in request.auth.token && request.auth.token.email_verified == true))
+        && (!('isEmailVerified' in d) || d.isEmailVerified == false || ('email_verified' in request.auth.token && request.auth.token.email_verified == true))
+        && (!('name' in d) || (d.name is string && d.name.size() <= 120))
+        && (!('fullName' in d) || (d.fullName is string && d.fullName.size() <= 120))
+        && (!('email' in d) || (d.email is string && d.email.size() <= 160))
+        && (!('phone' in d) || (d.phone is string && d.phone.size() <= 32))
+        && (!('phoneNumber' in d) || (d.phoneNumber is string && d.phoneNumber.size() <= 32))
+        && (!('address' in d) || (d.address is string && d.address.size() <= 300))
+        && (!('vehicleType' in d) || (d.vehicleType is string && d.vehicleType.size() <= 80))
+        && (!('licensePlate' in d) || (d.licensePlate is string && d.licensePlate.size() <= 40))
+        && (!('profileImagePath' in d) || isValidCaptainStorageOrEmptyPath(d.profileImagePath, captainId, 300))
+        && (!('idFrontImagePath' in d) || isValidCaptainStorageOrEmptyPath(d.idFrontImagePath, captainId, 300))
+        && (!('idBackImagePath' in d) || isValidCaptainStorageOrEmptyPath(d.idBackImagePath, captainId, 300))
+        && (!('licenseImagePath' in d) || isValidCaptainStorageOrEmptyPath(d.licenseImagePath, captainId, 300))
+        && (!('personalImage' in d) || isValidCaptainStorageOrEmptyPath(d.personalImage, captainId, 500))
+        && (!('idCardFront' in d) || isValidCaptainStorageOrEmptyPath(d.idCardFront, captainId, 500))
+        && (!('idCardBack' in d) || isValidCaptainStorageOrEmptyPath(d.idCardBack, captainId, 500))
+        && (!('avatarUri' in d) || isValidCaptainStorageOrEmptyPath(d.avatarUri, captainId, 500))
+        && (!('isOnline' in d) || d.isOnline == false)
+        && (!('isLoggedIn' in d) || d.isLoggedIn == false)
+        && (!('idDocumentsComplete' in d) || d.idDocumentsComplete is bool);
     }
 
     function isCaptainApprovedProfile(data) {
@@ -214,12 +202,7 @@ service cloud.firestore {
           (
             request.auth.uid == captainId
             && !isMerchantAccount()
-            && ('accountType' in incoming() && incoming().accountType == 'captain')
-            && (!('role' in incoming()) || incoming().role == 'captain')
-            && (!('emailVerified' in incoming()) || incoming().emailVerified == false || request.auth.token.email_verified == true)
-            && (!('isEmailVerified' in incoming()) || incoming().isEmailVerified == false || request.auth.token.email_verified == true)
-            && isValidCaptainProfileShape(incoming(), captainId)
-            && hasSafeInitialCaptainFinancialAndAdminFields(incoming())
+            && isValidNewCaptainSelfProfile(captainId)
           )
         );
 
