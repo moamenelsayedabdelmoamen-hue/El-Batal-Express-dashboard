@@ -899,6 +899,9 @@ exports.merchantCancelOrder = (0, https_1.onCall)({ region: "us-central1" }, asy
                     if ((0, validators_js_1.readString)(captain, "presenceStatus") === "on_trip") {
                         patch.presenceStatus = "available";
                     }
+                    if ((0, validators_js_1.readString)(captain, "availabilityStatus") === "on_trip") {
+                        patch.availabilityStatus = "available";
+                    }
                 }
                 if ((0, validators_js_1.readString)(captain, "activeOfferOrderId") === orderId) {
                     patch.activeOfferOrderId = null;
@@ -1398,6 +1401,9 @@ exports.adminCancelOrder = (0, https_1.onCall)({ region: "us-central1" }, async 
                     if (captain.presenceStatus === "on_trip") {
                         patch.presenceStatus = "available";
                     }
+                    if (captain.availabilityStatus === "on_trip") {
+                        patch.availabilityStatus = "available";
+                    }
                 }
                 if (captain.activeOfferOrderId === orderId) {
                     patch.activeOfferOrderId = null;
@@ -1772,7 +1778,8 @@ exports.sweepExpiredOrderOffers = (0, scheduler_1.onSchedule)({
 }, async () => {
     try {
         const processed = await service.sweepExpiredOffers(100);
-        logger.info("Expired-order offer recovery sweep completed", { processed });
+        const redispatched = await service.retryOrdersWithExpiredExclusions(20);
+        logger.info("Expired-order offer recovery sweep completed", { processed, redispatched });
     }
     catch (err) {
         logger.error("Expired-order offer recovery sweep failed", {

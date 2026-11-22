@@ -998,6 +998,9 @@ export const merchantCancelOrder = onCall(
             if (readString(captain, "presenceStatus") === "on_trip") {
               patch.presenceStatus = "available";
             }
+            if (readString(captain, "availabilityStatus") === "on_trip") {
+              patch.availabilityStatus = "available";
+            }
           }
           if (readString(captain, "activeOfferOrderId") === orderId) {
             patch.activeOfferOrderId = null;
@@ -1585,6 +1588,9 @@ export const adminCancelOrder = onCall(
             if (captain.presenceStatus === "on_trip") {
               patch.presenceStatus = "available";
             }
+            if (captain.availabilityStatus === "on_trip") {
+              patch.availabilityStatus = "available";
+            }
           }
           if (captain.activeOfferOrderId === orderId) {
             patch.activeOfferOrderId = null;
@@ -2006,7 +2012,8 @@ export const sweepExpiredOrderOffers = onSchedule(
   async () => {
     try {
       const processed = await service.sweepExpiredOffers(100);
-      logger.info("Expired-order offer recovery sweep completed", {processed});
+      const redispatched = await service.retryOrdersWithExpiredExclusions(20);
+      logger.info("Expired-order offer recovery sweep completed", {processed, redispatched});
     } catch (err) {
       logger.error("Expired-order offer recovery sweep failed", {
         error: err instanceof Error ? err.message : String(err),

@@ -36,6 +36,14 @@ service firebase.storage {
         firestore.exists(/databases/(default)/documents/merchants/$(request.auth.uid));
     }
 
+    // A failed captain sign-up removes its own uploads. Once captains/{uid} exists the
+    // images back a real profile, and only admins may delete them.
+    function isRollingBackOwnSignUp(captainId) {
+      return isAuthenticated()
+        && request.auth.uid == captainId
+        && !firestore.exists(/databases/(default)/documents/captains/$(captainId));
+    }
+
     function isValidImageUpload() {
       return request.resource != null
         && request.resource.size > 0
@@ -147,7 +155,7 @@ service firebase.storage {
         )
         && isValidImageUpload();
 
-      allow delete: if isAdmin();
+      allow delete: if isAdmin() || isRollingBackOwnSignUp(captainId);
     }
 
     // 2. Captain Private Documents (National ID Front & Back, License): captains/{captainId}/documents/{docFile}
@@ -166,7 +174,7 @@ service firebase.storage {
         && (docFile == 'id_front.jpg' || docFile == 'id_back.jpg' || docFile == 'license.jpg')
         && isValidImageUpload();
 
-      allow delete: if isAdmin();
+      allow delete: if isAdmin() || isRollingBackOwnSignUp(captainId);
     }
 
     // 3. Order Receipts: orders/{orderId}/receipts/{uniqueFileName}
