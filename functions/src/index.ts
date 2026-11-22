@@ -2012,7 +2012,8 @@ export const sweepExpiredOrderOffers = onSchedule(
   async () => {
     try {
       const processed = await service.sweepExpiredOffers(100);
-      logger.info("Expired-order offer recovery sweep completed", {processed});
+      const redispatched = await service.retryOrdersWithExpiredExclusions(20);
+      logger.info("Expired-order offer recovery sweep completed", {processed, redispatched});
     } catch (err) {
       logger.error("Expired-order offer recovery sweep failed", {
         error: err instanceof Error ? err.message : String(err),

@@ -589,6 +589,44 @@ describe("El-Batal Cloud Functions Order Server Service", () => {
     assert.equal(notifs.docs[0].data().type, "captain_assignment_failed");
   });
 
+  it("6a. Re-offers a stranded order to captains who missed it once the exclusion window passes", async () => {
+    const now = Date.UTC(2026, 10, 18, 12, 0, 0);
+    const {db, service, scheduledTasks, advanceMs} = createHarness(now);
+    seedMerchantAndSub(db, "merch_1");
+    seedCaptain(db, "cap_only", {latitude: 30.045, longitude: 31.236}, now);
+    seedPendingOrder(db, "ord_stranded", {dispatchAuthority: "dashboard_functions"});
+
+    await service.dispatchNewOrSearchingOrder("ord_stranded");
+    advanceMs(65_000);
+    await service.handleReassignOfferTask(scheduledTasks[0].payload);
+    assert.deepEqual(db.getDocData("orders/ord_stranded").excludedCaptainIds, ["cap_only"]);
+
+    // Too early: the captain who just missed the offer is not pestered again.
+    assert.equal(await service.retryOrdersWithExpiredExclusions(), 0);
+    assert.equal(db.getDocData("orders/ord_stranded").dispatchStatus, "no_captains_available");
+
+    advanceMs(3 * 60_000);
+    // Keep the captain's GPS fresh relative to the advanced clock.
+    await db.collection("captains").doc("cap_only").update({
+      lastLocationTimestamp: now + 65_000 + 3 * 60_000 - 10_000,
+    });
+    assert.equal(await service.retryOrdersWithExpiredExclusions(), 1);
+    const order = db.getDocData("orders/ord_stranded");
+    assert.equal(order.dispatchStatus, "offered");
+    assert.equal(order.offeredCaptainId, "cap_only");
+    assert.deepEqual(order.excludedCaptainIds, []);
+
+    // Orders not created by dashboard functions are never touched.
+    seedPendingOrder(db, "ord_legacy", {
+      dispatchStatus: "no_captains_available",
+      status: "searching",
+      excludedCaptainIds: ["cap_only"],
+      noCaptainsSinceMs: now,
+    });
+    await service.retryOrdersWithExpiredExclusions();
+    assert.equal(db.getDocData("orders/ord_legacy").dispatchStatus, "no_captains_available");
+  });
+
   it("7. Full lifecycle & atomic idempotent confirmDelivery (zero double-crediting)", async () => {
     const now = Date.UTC(2026, 10, 18, 12, 0, 0);
     const {db, service} = createHarness(now);
