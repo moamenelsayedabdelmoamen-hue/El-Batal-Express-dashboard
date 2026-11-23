@@ -154,6 +154,8 @@ export const CaptainShiftsPage: React.FC = () => {
   // Summary counts
   const stats = useMemo(() => {
     let activeCount = 0;
+    let readyCount = 0;
+    let awaitingReadyCount = 0;
     let offShiftCount = 0;
     let startingSoonCount = 0;
     let pausedCount = 0;
@@ -162,6 +164,8 @@ export const CaptainShiftsPage: React.FC = () => {
 
     captainsWithStatus.forEach(({ statusInfo, schedule }) => {
       if (statusInfo.status === 'active') activeCount++;
+      else if (statusInfo.status === 'ready') readyCount++;
+      else if (statusInfo.status === 'awaiting_ready') awaitingReadyCount++;
       else if (statusInfo.status === 'off_shift') offShiftCount++;
       else if (statusInfo.status === 'starting_soon') startingSoonCount++;
       else if (statusInfo.status === 'paused') pausedCount++;
@@ -174,6 +178,8 @@ export const CaptainShiftsPage: React.FC = () => {
 
     return {
       activeCount,
+      readyCount,
+      awaitingReadyCount,
       offShiftCount,
       startingSoonCount,
       pausedCount,
@@ -308,6 +314,40 @@ export const CaptainShiftsPage: React.FC = () => {
           <span className="text-[11px] text-zinc-400 block mt-0.5">
             شفت يبدأ خلال 60 دقيقة
           </span>
+        </div>
+
+        {/* Ready */}
+        <div
+          onClick={() => setStatusFilter(statusFilter === 'ready' ? 'all' : 'ready')}
+          className={`p-4 rounded-2xl border transition-all cursor-pointer ${
+            statusFilter === 'ready'
+              ? 'bg-yellow-500/20 border-yellow-500/50 ring-2 ring-yellow-500/30'
+              : 'bg-[#11141c] border-zinc-800/90 hover:border-yellow-500/30'
+          }`}
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold text-yellow-300">أكدوا الجاهزية</span>
+            <Clock className="w-3.5 h-3.5 text-yellow-300" />
+          </div>
+          <div className="mt-2 text-2xl font-black text-white font-mono">{stats.readyCount}</div>
+          <span className="text-[11px] text-zinc-400 block mt-0.5">ينتظرون بداية الشفت</span>
+        </div>
+
+        {/* Awaiting ready */}
+        <div
+          onClick={() => setStatusFilter(statusFilter === 'awaiting_ready' ? 'all' : 'awaiting_ready')}
+          className={`p-4 rounded-2xl border transition-all cursor-pointer ${
+            statusFilter === 'awaiting_ready'
+              ? 'bg-zinc-700/40 border-zinc-500 ring-2 ring-zinc-500/30'
+              : 'bg-[#11141c] border-zinc-800/90 hover:border-zinc-600'
+          }`}
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold text-zinc-300">لم يؤكدوا الجاهزية</span>
+            <AlertOctagon className="w-3.5 h-3.5 text-zinc-400" />
+          </div>
+          <div className="mt-2 text-2xl font-black text-white font-mono">{stats.awaitingReadyCount}</div>
+          <span className="text-[11px] text-zinc-400 block mt-0.5">الشفت بدأ دون تأكيد حضور</span>
         </div>
 
         {/* Paused */}
