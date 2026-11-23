@@ -379,6 +379,18 @@ describe("El-Batal Cloud Functions Order Server Service", () => {
       (e) => e instanceof DomainHttpsError && e.code === "failed-precondition"
     );
 
+    // Ready is not the same as working and must never accept or receive an order.
+    seedCaptain(db, "cap_ready", {
+      workStatus: "ready",
+      readyConfirmed: true,
+      presenceStatus: "ready",
+      availabilityStatus: "ready",
+    }, now);
+    await assert.rejects(
+      () => service.acceptOrder("cap_ready", {orderId: "ord_1"}),
+      (e) => e instanceof DomainHttpsError && e.code === "failed-precondition"
+    );
+
     // Outside shift schedule (paused/day off)
     seedCaptain(db, "cap_noshift", {}, now);
     db.seed("captain_schedules/cap_noshift", {
