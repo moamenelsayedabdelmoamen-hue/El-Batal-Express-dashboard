@@ -72,6 +72,7 @@ function mapError(err: unknown): HttpsError {
 
 function isCaptainReadyForDispatch(data: Record<string, unknown> | undefined): boolean {
   if (!data || data.isOnline !== true) return false;
+  if (readString(data, "workStatus").toLowerCase() !== "working" || data.readyConfirmed !== true) return false;
   if (resolveCaptainAccountStatus(data) !== "approved") return false;
   const status = readString(data, "status").toLowerCase();
   const presence = (readString(data, "presenceStatus") || "available").toLowerCase();
