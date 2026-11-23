@@ -37,7 +37,7 @@ export const CaptainShiftsPage: React.FC = () => {
 
   // Search & Filter
   const [searchQuery, setSearchQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'off_shift' | 'starting_soon' | 'paused' | 'unscheduled'>('all');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'ready' | 'awaiting_ready' | 'off_shift' | 'starting_soon' | 'paused' | 'unscheduled'>('all');
 
   // Modals state
   const [editingCaptain, setEditingCaptain] = useState<Captain | null>(null);
@@ -61,7 +61,13 @@ export const CaptainShiftsPage: React.FC = () => {
   };
 
   useEffect(() => {
-    loadData();
+    const unsubscribeCaptains = CaptainService.subscribeAll(
+      (liveCaptains) => {
+        setCaptains(liveCaptains);
+        setLoading(false);
+      },
+      (err) => console.error('Realtime captain status listener error:', err)
+    );
 
     // Subscribe to Firestore schedules in real-time
     const unsubscribe = ShiftService.subscribeAllSchedules(
@@ -79,6 +85,7 @@ export const CaptainShiftsPage: React.FC = () => {
     }, 30000);
 
     return () => {
+      unsubscribeCaptains();
       unsubscribe();
       clearInterval(interval);
     };
