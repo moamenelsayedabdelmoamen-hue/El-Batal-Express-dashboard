@@ -108,6 +108,8 @@ export interface Captain {
   suspensionReason?: string;
   blockReason?: string;
   isOnline?: boolean;
+  workStatus?: 'ready' | 'working' | 'off_shift' | string;
+  readyConfirmed?: boolean;
   canReceiveOrders?: boolean;
   ordersCount: number;
   rating: number;
@@ -341,6 +343,7 @@ export type ShiftWorkStatus =
   | 'active'        // أخضر: يعمل ومستعد لاستقبال الطلبات
   | 'starting_soon' // برتقالي: لديه شفت قريب وسيبدأ العمل قريباً
   | 'ready'         // أصفر: أكد الجاهزية وينتظر بداية الشفت
+  | 'awaiting_ready' // رمادي: الشفت بدأ لكن الكابتن لم يؤكد الجاهزية
   | 'off_shift'     // أحمر: خارج ساعات العمل ولا يستقبل طلبات
   | 'paused'        // رمادي: جدول العمل متوقف مؤقتاً
   | 'unscheduled';  // رمادي: غير مجدول
