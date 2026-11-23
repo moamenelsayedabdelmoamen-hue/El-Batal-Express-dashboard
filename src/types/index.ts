@@ -340,6 +340,7 @@ export interface DaySchedule {
 export type ShiftWorkStatus =
   | 'active'        // أخضر: يعمل ومستعد لاستقبال الطلبات
   | 'starting_soon' // برتقالي: لديه شفت قريب وسيبدأ العمل قريباً
+  | 'ready'         // أصفر: أكد الجاهزية وينتظر بداية الشفت
   | 'off_shift'     // أحمر: خارج ساعات العمل ولا يستقبل طلبات
   | 'paused'        // رمادي: جدول العمل متوقف مؤقتاً
   | 'unscheduled';  // رمادي: غير مجدول
