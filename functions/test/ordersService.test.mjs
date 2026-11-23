@@ -2,7 +2,7 @@ import {describe, it} from "node:test";
 import assert from "node:assert/strict";
 import {OrderServerService} from "../lib/ordersService.js";
 import {DomainHttpsError} from "../lib/types.js";
-import {getCairoTimeContext} from "../lib/shifts.js";
+import {getCairoTimeContext, isScheduleWithinReadyWindow} from "../lib/shifts.js";
 import {isTerminalMerchantOrderStatus} from "../lib/validators.js";
 
 /**
@@ -341,6 +341,25 @@ function seedPendingOrder(db, orderId, overrides = {}) {
     ...overrides,
   });
 }
+
+describe("Server-side Cairo shift readiness window", () => {
+  it("allows Ready only in the 30 minutes before today's shift and not after it starts", () => {
+    const schedule = {
+      weeklySchedule: {
+        wednesday: {
+          isDayOff: false,
+          shifts: [{startTime: "09:00", endTime: "17:00"}],
+        },
+      },
+    };
+    assert.equal(isScheduleWithinReadyWindow(schedule, Date.parse("2026-11-18T08:30:00+02:00")), true);
+    assert.equal(isScheduleWithinReadyWindow(schedule, Date.parse("2026-11-18T08:29:00+02:00")), false);
+    assert.equal(isScheduleWithinReadyWindow(schedule, Date.parse("2026-11-18T09:01:00+02:00")), false);
+    assert.equal(isScheduleWithinReadyWindow({
+      weeklySchedule: {wednesday: {isDayOff: true, shifts: []}},
+    }, Date.parse("2026-11-18T08:45:00+02:00")), false);
+  });
+});
 
 describe("El-Batal Cloud Functions Order Server Service", () => {
   it("1. Rejects unauthenticated caller and unregistered captain", async () => {
