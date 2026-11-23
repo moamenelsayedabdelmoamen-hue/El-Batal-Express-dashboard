@@ -266,6 +266,115 @@ export function evaluateScheduleDocAtTime(
 }
 
 
+
+/** Returns a stable key for the active shift or the shift starting within 30 minutes. */
+export function getScheduleShiftKeyAtTime(
+  scheduleDoc: Record<string, unknown> | undefined,
+  nowMs: number,
+  readyWindowMinutes = 30
+): string | null {
+  if (!scheduleDoc || scheduleDoc.isPaused === true) return null;
+  const ctx = getCairoTimeContext(nowMs);
+  const previousDate = (() => {
+    const d = new Date(`${ctx.dayKey}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() - 1);
+    return d.toISOString().slice(0, 10);
+  })();
+  const keyFor = (dateKey: string, dayKey: string, start: number) =>
+    `${dateKey}|${dayKey}|${String(start).padStart(4, "0")}`;
+
+  const weekly = scheduleDoc.weeklySchedule;
+  if (weekly && typeof weekly === "object" && !Array.isArray(weekly)) {
+    const weekMap = weekly as Record<string, unknown>;
+    const prev = weekMap[ctx.prevWeekdayKey] as Record<string, unknown> | undefined;
+    if (prev && prev.isDayOff !== true && Array.isArray(prev.shifts)) {
+      for (const raw of prev.shifts) {
+        if (!raw || typeof raw !== "object") continue;
+        const slot = raw as Record<string, unknown>;
+        const start = parseMinutes(slot.startTime ?? slot.start);
+        const end = parseMinutes(slot.endTime ?? slot.end);
+        if (start !== null && end !== null && end <= start && ctx.minutesSinceMidnight < end) {
+          return keyFor(previousDate, ctx.prevWeekdayKey, start);
+        }
+      }
+    }
+    const current = weekMap[ctx.weekdayKey] as Record<string, unknown> | undefined;
+    if (!current || current.isDayOff === true || !Array.isArray(current.shifts)) return null;
+    for (const raw of current.shifts) {
+      if (!raw || typeof raw !== "object") continue;
+      const slot = raw as Record<string, unknown>;
+      const start = parseMinutes(slot.startTime ?? slot.start);
+      const end = parseMinutes(slot.endTime ?? slot.end);
+      if (start === null || end === null) continue;
+      const active = end > start
+        ? ctx.minutesSinceMidnight >= start && ctx.minutesSinceMidnight < end
+        : ctx.minutesSinceMidnight >= start;
+      const minutesUntilStart = start - ctx.minutesSinceMidnight;
+      if (active || (minutesUntilStart >= 0 && minutesUntilStart <= readyWindowMinutes)) {
+        return keyFor(ctx.dayKey, ctx.weekdayKey, start);
+      }
+    }
+    return null;
+  }
+
+  const rawShifts = Array.isArray(scheduleDoc.shifts)
+    ? scheduleDoc.shifts
+    : Array.isArray(scheduleDoc.schedule)
+      ? scheduleDoc.schedule
+      : [];
+  for (const raw of rawShifts) {
+    if (!raw || typeof raw !== "object") continue;
+    const slot = raw as Record<string, unknown>;
+    const dayKey = resolveDayKey(slot);
+    if (slot.isDayOff === true || slot.enabled === false) continue;
+    const start = parseMinutes(slot.startTime ?? slot.start);
+    const end = parseMinutes(slot.endTime ?? slot.end);
+    if (start === null || end === null) continue;
+    if (dayKey === ctx.prevWeekdayKey && end <= start && ctx.minutesSinceMidnight < end) {
+      return keyFor(previousDate, ctx.prevWeekdayKey, start);
+    }
+    if (dayKey && dayKey !== ctx.weekdayKey) continue;
+    const active = end > start
+      ? ctx.minutesSinceMidnight >= start && ctx.minutesSinceMidnight < end
+      : ctx.minutesSinceMidnight >= start;
+    const minutesUntilStart = start - ctx.minutesSinceMidnight;
+    if (active || (minutesUntilStart >= 0 && minutesUntilStart <= readyWindowMinutes)) {
+      return keyFor(ctx.dayKey, ctx.weekdayKey, start);
+    }
+  }
+  return null;
+}
+
+/** Resolves the canonical schedule key for the active or imminent shift. */
+export async function getCaptainShiftKeyAtTime(
+  db: DatabaseLike,
+  captainUid: string,
+  captainData: Record<string, unknown>,
+  nowMs: number
+): Promise<string | null> {
+  const direct = await db.collection("captain_schedules").doc(captainUid).get();
+  if (direct.exists) {
+    const data = direct.data() ?? {};
+    const directKey = getScheduleShiftKeyAtTime(data, nowMs);
+    if (directKey) return directKey;
+    const sub = await db.collection("captain_schedules").doc(captainUid).collection("shifts").get();
+    if (!sub.empty) {
+      const subKey = getScheduleShiftKeyAtTime({shifts: sub.docs.map((doc) => doc.data() ?? {})}, nowMs);
+      if (subKey) return subKey;
+    }
+    if (evaluateScheduleDocAtTime(data, nowMs).hasSchedule) return null;
+  }
+  const query = await db.collection("captain_schedules").where("captainId", "==", captainUid).limit(5).get();
+  if (!query.empty) {
+    for (const doc of query.docs) {
+      const key = getScheduleShiftKeyAtTime(doc.data() ?? {}, nowMs);
+      if (key) return key;
+    }
+    return null;
+  }
+  return getScheduleShiftKeyAtTime(captainData, nowMs);
+}
+
 /**
  * Checks whether the captain is within the 30-minute pre-shift readiness window
  * using Africa/Cairo local time. Only today's upcoming shift can be confirmed.
