@@ -154,6 +154,11 @@ export const updateCaptainShiftPresence = onCall(
       const captainData = (captainSnap.data() ?? {}) as Record<string, unknown>;
 
       if (action === "offline") {
+        if (captainData.isOnline === false &&
+            captainData.workStatus === "off_shift" &&
+            captainData.readyConfirmed === false) {
+          return {success: true, workStatus: "off_shift", unchanged: true};
+        }
         await captainRef.update({
           isOnline: false,
           workStatus: "off_shift",
@@ -172,6 +177,11 @@ export const updateCaptainShiftPresence = onCall(
       const nowMs = Date.now();
       const activeShift = await isCaptainInActiveShift(dbAdapter, uid, captainData, nowMs);
       if (action === "ready") {
+        if (captainData.isOnline === true &&
+            captainData.workStatus === "ready" &&
+            captainData.readyConfirmed === true) {
+          return {success: true, workStatus: "ready", unchanged: true};
+        }
         const inReadyWindow = await isCaptainWithinReadyWindow(dbAdapter, uid, captainData, nowMs);
         if (!activeShift && !inReadyWindow) {
           throw new HttpsError(
@@ -193,6 +203,11 @@ export const updateCaptainShiftPresence = onCall(
 
       if (!activeShift) {
         throw new HttpsError("failed-precondition", "لا يمكن بدء العمل خارج وقت الشفت.");
+      }
+      if (captainData.isOnline === true &&
+          captainData.workStatus === "working" &&
+          captainData.readyConfirmed === true) {
+        return {success: true, workStatus: "working", unchanged: true};
       }
       const hasReadyConfirmation = captainData.readyConfirmed === true &&
         (captainData.workStatus === "ready" || captainData.workStatus === "working");
