@@ -1159,7 +1159,7 @@ export const OrdersPage: React.FC = () => {
             </div>
 
             {['awaiting_merchant_confirmation', 'awaiting_confirmation'].includes(
-              String(viewingOrder.raw?.status ?? '').toLowerCase().replace(/[\\s-]+/g, '_')
+              String(viewingOrder.raw?.status ?? '').toLowerCase().replace(/ /g, '_').replace(/-/g, '_')
             ) && (
               <div className="mb-5 rounded-2xl border border-amber-500/30 bg-amber-500/5 p-4 space-y-3">
                 <div>
