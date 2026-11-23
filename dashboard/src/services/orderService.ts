@@ -2,6 +2,7 @@ import {
   collection,
   doc,
   getDocs,
+  onSnapshot,
   query,
   orderBy,
 } from 'firebase/firestore';
@@ -574,6 +575,47 @@ function mapDocToOrder(
 }
 
 export const OrderService = {
+  subscribeToOrders(
+    onUpdate: (orders: Order[]) => void,
+    onError?: (error: unknown) => void
+  ): () => void {
+    if (!isFirebaseConfigured) return () => undefined;
+    const ordersQuery = query(collection(db, COLLECTIONS.ORDERS));
+    let orderCodesMap = new Map<string, string>();
+    let latestSnapshot: any = null;
+
+    const publish = (snapshot: any) => {
+      const list: Order[] = [];
+      snapshot.forEach((docSnap: any) => {
+        list.push(mapDocToOrder(docSnap.id, docSnap.data(), orderCodesMap));
+      });
+      list.sort((a, b) =>
+        (new Date(b.createdAt).getTime() || 0) - (new Date(a.createdAt).getTime() || 0)
+      );
+      localOrdersCache = list;
+      onUpdate(list);
+    };
+
+    const unsubscribe = onSnapshot(
+      ordersQuery,
+      (snapshot) => {
+        latestSnapshot = snapshot;
+        publish(snapshot);
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.LIST, COLLECTIONS.ORDERS);
+        onError?.(error);
+      }
+    );
+
+    void fetchOrderCodesLookup().then((lookup) => {
+      orderCodesMap = lookup;
+      if (latestSnapshot) publish(latestSnapshot);
+    });
+
+    return unsubscribe;
+  },
+
   async getAll(): Promise<{ data: Order[]; isLive: boolean }> {
     if (!isFirebaseConfigured) {
       return { data: localOrdersCache, isLive: false };
@@ -632,6 +674,17 @@ export const OrderService = {
       order.id === id ? { ...order, ...stageUpdates } : order
     );
     return stageUpdates;
+  },
+
+  async adminConfirmOrderData(orderId: string): Promise<void> {
+    if (!isFirebaseConfigured) {
+      throw new Error('لا يمكن تأكيد بيانات الطلب دون اتصال Firebase مباشر.');
+    }
+    const confirm = httpsCallable(functions, 'adminConfirmOrderData');
+    await confirm({ orderId });
+    localOrdersCache = localOrdersCache.map((order) =>
+      order.id === orderId ? { ...order, status: 'Picked Up' as OrderStatus } : order
+    );
   },
 
   async recordStageTimestamp(

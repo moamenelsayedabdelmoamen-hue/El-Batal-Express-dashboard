@@ -554,6 +554,10 @@ export class OrderServerService {
 
       const status = readNormalizedOrderStatus(order);
       const allowedStatuses = new Set([
+        "arrived_at_merchant",
+        "at_store",
+        "arrived",
+        "arrived_store",
         "picked_up",
         "order_data_entered",
         "data_entered",
@@ -576,9 +580,13 @@ export class OrderServerService {
         receiptUploadedBy: uid,
         receiptUploadedAt: s.serverTimestamp(),
         receiptSubmittedAt: s.serverTimestamp(),
+        customerDetailsSubmitted: true,
+        customerDetailsSubmittedAt: s.serverTimestamp(),
+        customerDetailsSubmittedBy: uid,
         notes,
         status: "awaiting_merchant_confirmation",
         merchantConfirmed: false,
+        customerDetailsConfirmed: false,
         rejectionReason: s.deleteField(),
         updatedAt: s.serverTimestamp(),
       };

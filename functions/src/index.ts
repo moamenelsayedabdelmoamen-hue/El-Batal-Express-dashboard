@@ -1800,6 +1800,70 @@ export const adminRecordOrderStageTimestamp = onCall(
 );
 
 /**
+ * Admin confirmation of captain-submitted customer/order data.
+ * Dashboard confirmation follows the same server-authoritative transition as merchant approval.
+ */
+export const adminConfirmOrderData = onCall(
+  {region: "us-central1"},
+  async (request) => {
+    try {
+      const adminUid = await requireAdminUid(
+        request.auth?.uid,
+        (request.auth?.token ?? {}) as Record<string, unknown>
+      );
+      const data = (request.data ?? {}) as Record<string, unknown>;
+      const orderId = requireOrderId(data.orderId);
+      const db = getFirestore();
+      const orderRef = db.collection("orders").doc(orderId);
+      const result = await db.runTransaction(async (tx) => {
+        const snap = await tx.get(orderRef);
+        if (!snap.exists) throw new HttpsError("not-found", "الطلب غير موجود.");
+        const order = snap.data() ?? {};
+        const status = readNormalizedOrderStatus(order);
+        if (order.merchantConfirmed === true && status === "en_route") {
+          return {alreadyUpdated: true, status: "en_route"};
+        }
+        if (
+          status !== "awaiting_merchant_confirmation" &&
+          status !== "awaiting_confirmation"
+        ) {
+          throw new HttpsError(
+            "failed-precondition",
+            "الطلب ليس في انتظار تأكيد بيانات الكابتن."
+          );
+        }
+        if (order.customerDetailsSubmitted !== true &&
+            !readString(order, "receiptImagePath", "receiptImageUrl")) {
+          throw new HttpsError(
+            "failed-precondition",
+            "لا توجد بيانات مرسلة من الكابتن لاعتمادها."
+          );
+        }
+        tx.update(orderRef, {
+          status: "en_route",
+          merchantConfirmed: true,
+          customerDetailsConfirmed: true,
+          customerDetailsRejected: false,
+          merchantConfirmedBy: adminUid,
+          merchantConfirmedByRole: "admin",
+          confirmationSource: "admin_dashboard",
+          adminConfirmedAt: FieldValue.serverTimestamp(),
+          merchantConfirmedAt: FieldValue.serverTimestamp(),
+          confirmedAt: FieldValue.serverTimestamp(),
+          rejectionReason: FieldValue.delete(),
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+        return {alreadyUpdated: false, status: "en_route"};
+      });
+      return {success: true, orderId, confirmedBy: adminUid, confirmedByRole: "admin", ...result};
+    } catch (err) {
+      throw mapError(err);
+    }
+  }
+);
+
+
+/**
  * Merchant approval/rejection of the captain's submitted receipt and customer details.
  */
 export const merchantConfirmOrder = onCall(
@@ -1864,8 +1928,14 @@ export const merchantConfirmOrder = onCall(
           tx.update(orderRef, {
             status: "en_route",
             merchantConfirmed: true,
+            customerDetailsConfirmed: true,
+            customerDetailsRejected: false,
+            merchantConfirmedBy: uid,
+            merchantConfirmedByRole: "merchant",
+            confirmationSource: "merchant_app",
             rejectionReason: FieldValue.delete(),
             merchantConfirmedAt: FieldValue.serverTimestamp(),
+            confirmedAt: FieldValue.serverTimestamp(),
             updatedAt: FieldValue.serverTimestamp(),
           });
           return {alreadyUpdated: false, status: "en_route"};
@@ -1873,6 +1943,10 @@ export const merchantConfirmOrder = onCall(
         tx.update(orderRef, {
           status: "merchant_rejected",
           merchantConfirmed: false,
+          customerDetailsConfirmed: false,
+          customerDetailsRejected: true,
+          merchantRejectedBy: uid,
+          merchantRejectedByRole: "merchant",
           rejectionReason: rejectionReason || "بيانات الإيصال أو العميل تحتاج إلى تصحيح",
           merchantRejectedAt: FieldValue.serverTimestamp(),
           updatedAt: FieldValue.serverTimestamp(),
