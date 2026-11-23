@@ -152,6 +152,9 @@ export const updateCaptainShiftPresence = onCall(
       const captainSnap = await captainRef.get();
       if (!captainSnap.exists) throw new HttpsError("not-found", "ملف الكابتن غير موجود.");
       const captainData = (captainSnap.data() ?? {}) as Record<string, unknown>;
+      if (captainData.accountType !== "captain" && captainData.role !== "captain") {
+        throw new HttpsError("permission-denied", "هذا الحساب ليس حساب كابتن.");
+      }
 
       if (action === "offline") {
         if (captainData.isOnline === false &&
