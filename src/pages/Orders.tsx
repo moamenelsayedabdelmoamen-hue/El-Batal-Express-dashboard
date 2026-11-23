@@ -202,6 +202,11 @@ export const OrdersPage: React.FC = () => {
 
   useEffect(() => {
     fetchOrders();
+    const unsubscribe = OrderService.subscribeToOrders(
+      (liveOrders) => setOrders(liveOrders),
+      () => toastError('انقطع الاتصال المباشر بتحديثات الطلبات')
+    );
+    return unsubscribe;
   }, []);
 
   const dateScopedOrders = useMemo(() => {
