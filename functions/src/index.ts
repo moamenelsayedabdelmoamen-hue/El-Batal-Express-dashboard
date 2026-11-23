@@ -161,7 +161,8 @@ export const updateCaptainShiftPresence = onCall(
       if (action === "offline") {
         if (captainData.isOnline === false &&
             captainData.workStatus === "off_shift" &&
-            captainData.readyConfirmed === false) {
+            captainData.readyConfirmed === false &&
+            !captainData.readyShiftKey && !captainData.workingShiftKey) {
           return {success: true, workStatus: "off_shift", unchanged: true};
         }
         await captainRef.update({
@@ -191,9 +192,10 @@ export const updateCaptainShiftPresence = onCall(
           );
         }
         if (captainData.isOnline === true &&
-            captainData.workStatus === "ready" &&
+            (captainData.workStatus === "ready" || captainData.workStatus === "working") &&
             captainData.readyConfirmed === true &&
-            captainData.readyShiftKey === shiftKey) {
+            captainData.readyShiftKey === shiftKey &&
+            (captainData.workStatus !== "working" || captainData.workingShiftKey === shiftKey)) {
           return {success: true, workStatus: "ready", unchanged: true};
         }
         await captainRef.update({
