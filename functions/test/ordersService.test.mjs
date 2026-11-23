@@ -2,7 +2,7 @@ import {describe, it} from "node:test";
 import assert from "node:assert/strict";
 import {OrderServerService} from "../lib/ordersService.js";
 import {DomainHttpsError} from "../lib/types.js";
-import {getCairoTimeContext, isScheduleWithinReadyWindow} from "../lib/shifts.js";
+import {getCairoTimeContext, getScheduleShiftKeyAtTime, isScheduleWithinReadyWindow} from "../lib/shifts.js";
 import {isTerminalMerchantOrderStatus} from "../lib/validators.js";
 
 /**
@@ -282,6 +282,9 @@ function seedActiveShiftForEveryDay(db, captainUid) {
 }
 
 function seedCaptain(db, uid, overrides = {}, nowMs = Date.UTC(2026, 10, 18, 12, 0, 0)) {
+  seedActiveShiftForEveryDay(db, uid);
+  const schedule = db.getDocData(`captain_schedules/${uid}`);
+  const shiftKey = getScheduleShiftKeyAtTime(schedule, nowMs) || "";
   db.seed(`captains/${uid}`, {
     uid,
     fullName: `كابتن ${uid}`,
@@ -293,6 +296,8 @@ function seedCaptain(db, uid, overrides = {}, nowMs = Date.UTC(2026, 10, 18, 12,
     isOnline: true,
     workStatus: "working",
     readyConfirmed: true,
+    readyShiftKey: shiftKey,
+    workingShiftKey: shiftKey,
     presenceStatus: "working",
     latitude: 30.045,
     longitude: 31.236,
@@ -302,7 +307,6 @@ function seedCaptain(db, uid, overrides = {}, nowMs = Date.UTC(2026, 10, 18, 12,
     fcmToken: `token_${uid}`,
     ...overrides,
   });
-  seedActiveShiftForEveryDay(db, uid);
 }
 
 function seedMerchantAndSub(db, merchantId, subOverrides = {}, merchantOverrides = {}) {
