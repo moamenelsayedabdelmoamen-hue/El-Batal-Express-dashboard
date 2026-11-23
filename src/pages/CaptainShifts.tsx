@@ -97,12 +97,33 @@ export const CaptainShiftsPage: React.FC = () => {
   const captainsWithStatus = useMemo(() => {
     return captains.map((captain) => {
       const schedule = schedulesMap.get(captain.id) || null;
-      const statusInfo = computeCaptainShiftStatus(schedule);
-      return {
-        captain,
-        schedule,
-        statusInfo,
-      };
+      const computedStatus = computeCaptainShiftStatus(schedule);
+      const workStatus = String(captain.workStatus || captain.raw?.workStatus || '').toLowerCase();
+      const isInsideReadyWindow =
+        computedStatus.status === 'starting_soon' &&
+        (computedStatus.nextShift?.startsInMinutes ?? Number.POSITIVE_INFINITY) <= 30;
+
+      let statusInfo = computedStatus;
+      if (workStatus === 'ready' && isInsideReadyWindow) {
+        statusInfo = {
+          ...computedStatus,
+          status: 'ready',
+          statusLabelAr: 'جاهز - ينتظر بداية الشفت',
+          statusBadgeVariant: 'warning',
+          isEligibleForOrders: false,
+          message: 'أكد الكابتن جاهزيته وينتظر بداية الشفت',
+        };
+      } else if (computedStatus.status === 'active' && workStatus !== 'working') {
+        statusInfo = {
+          ...computedStatus,
+          status: 'awaiting_ready',
+          statusLabelAr: 'لم يؤكد الجاهزية',
+          statusBadgeVariant: 'neutral',
+          isEligibleForOrders: false,
+          message: 'بدأ وقت الشفت لكن الكابتن لم يؤكد الجاهزية، لذلك لا يستقبل طلبات',
+        };
+      }
+      return {captain, schedule, statusInfo};
     });
   }, [captains, schedulesMap, currentTimeStr]);
 
