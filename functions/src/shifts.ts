@@ -473,7 +473,14 @@ export async function isCaptainInActiveShift(
   if (directSchedule.exists) {
     const evalRes = evaluateScheduleDocAtTime(directSchedule.data(), nowMs);
     if (evalRes.hasSchedule) {
-      return evalRes.isActive;
+      if (!evalRes.isActive) return false;
+      if (captainData.workStatus === "working") {
+        const currentKey = getScheduleShiftKeyAtTime(directSchedule.data() ?? {}, nowMs);
+        return Boolean(currentKey) &&
+          captainData.readyShiftKey === currentKey &&
+          captainData.workingShiftKey === currentKey;
+      }
+      return true;
     }
     // Check subcollection captain_schedules/{uid}/shifts
     const subSnap = await db
@@ -482,13 +489,22 @@ export async function isCaptainInActiveShift(
       .collection("shifts")
       .get();
     if (!subSnap.empty) {
+      const shifts = subSnap.docs.map((d) => d.data() ?? {});
       const ctx = getCairoTimeContext(nowMs);
-      return isShiftListActive(
-        subSnap.docs.map((d) => d.data() ?? {}),
+      const active = isShiftListActive(
+        shifts,
         ctx.weekdayKey,
         ctx.prevWeekdayKey,
         ctx.minutesSinceMidnight
       );
+      if (!active) return false;
+      if (captainData.workStatus === "working") {
+        const currentKey = getScheduleShiftKeyAtTime({shifts}, nowMs);
+        return Boolean(currentKey) &&
+          captainData.readyShiftKey === currentKey &&
+          captainData.workingShiftKey === currentKey;
+      }
+      return true;
     }
   }
 
@@ -502,8 +518,14 @@ export async function isCaptainInActiveShift(
     for (const doc of querySnap.docs) {
       const evalRes = evaluateScheduleDocAtTime(doc.data(), nowMs);
       if (evalRes.hasSchedule) {
-        if (evalRes.isActive) return true;
-        return false;
+        if (!evalRes.isActive) return false;
+        if (captainData.workStatus === "working") {
+          const currentKey = getScheduleShiftKeyAtTime(doc.data() ?? {}, nowMs);
+          return Boolean(currentKey) &&
+            captainData.readyShiftKey === currentKey &&
+            captainData.workingShiftKey === currentKey;
+        }
+        return true;
       }
     }
   }
@@ -511,7 +533,14 @@ export async function isCaptainInActiveShift(
   // 3. Fallback: embedded schedule inside captains/{uid}
   const embeddedEval = evaluateScheduleDocAtTime(captainData, nowMs);
   if (embeddedEval.hasSchedule) {
-    return embeddedEval.isActive;
+    if (!embeddedEval.isActive) return false;
+    if (captainData.workStatus === "working") {
+      const currentKey = getScheduleShiftKeyAtTime(captainData, nowMs);
+      return Boolean(currentKey) &&
+        captainData.readyShiftKey === currentKey &&
+        captainData.workingShiftKey === currentKey;
+    }
+    return true;
   }
 
   // No active schedule configured -> captain cannot receive/accept orders
