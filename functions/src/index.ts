@@ -20,7 +20,7 @@ import {
 import {CaptainApprovalServerService} from "./captainApprovalService.js";
 import {ManualSubscriptionsServerService} from "./manualSubscriptionsService.js";
 import {OrderServerService} from "./ordersService.js";
-import {isCaptainInActiveShift, isCaptainWithinReadyWindow} from "./shifts.js";
+import {getCaptainShiftKeyAtTime, isCaptainInActiveShift, isCaptainWithinReadyWindow} from "./shifts.js";
 import {DomainHttpsError, ReassignTaskPayload} from "./types.js";
 import {
   assertMerchantAndSubscriptionValid,
@@ -166,6 +166,8 @@ export const updateCaptainShiftPresence = onCall(
           isOnline: false,
           workStatus: "off_shift",
           readyConfirmed: false,
+          readyShiftKey: FieldValue.delete(),
+          workingShiftKey: FieldValue.delete(),
           presenceStatus: "offline",
           availabilityStatus: "offline",
           updatedAt: FieldValue.serverTimestamp(),
@@ -180,9 +182,17 @@ export const updateCaptainShiftPresence = onCall(
       const nowMs = Date.now();
       const activeShift = await isCaptainInActiveShift(dbAdapter, uid, captainData, nowMs);
       if (action === "ready") {
+        const shiftKey = await getCaptainShiftKeyAtTime(dbAdapter, uid, captainData, nowMs);
+        if (!shiftKey) {
+          throw new HttpsError(
+            "failed-precondition",
+            "يمكن تأكيد الجاهزية قبل الشفت بـ30 دقيقة فقط أو أثناء الشفت الحالي."
+          );
+        }
         if (captainData.isOnline === true &&
             captainData.workStatus === "ready" &&
-            captainData.readyConfirmed === true) {
+            captainData.readyConfirmed === true &&
+            captainData.readyShiftKey === shiftKey) {
           return {success: true, workStatus: "ready", unchanged: true};
         }
         const inReadyWindow = await isCaptainWithinReadyWindow(dbAdapter, uid, captainData, nowMs);
@@ -196,6 +206,7 @@ export const updateCaptainShiftPresence = onCall(
           isOnline: true,
           workStatus: "ready",
           readyConfirmed: true,
+          readyShiftKey: shiftKey,
           readyConfirmedAt: FieldValue.serverTimestamp(),
           presenceStatus: "ready",
           availabilityStatus: "ready",
@@ -207,13 +218,20 @@ export const updateCaptainShiftPresence = onCall(
       if (!activeShift) {
         throw new HttpsError("failed-precondition", "لا يمكن بدء العمل خارج وقت الشفت.");
       }
+      const currentShiftKey = await getCaptainShiftKeyAtTime(dbAdapter, uid, captainData, nowMs);
+      if (!currentShiftKey) {
+        throw new HttpsError("failed-precondition", "تعذر تحديد الشفت الحالي.");
+      }
       if (captainData.isOnline === true &&
           captainData.workStatus === "working" &&
-          captainData.readyConfirmed === true) {
+          captainData.readyConfirmed === true &&
+          captainData.readyShiftKey === currentShiftKey &&
+          captainData.workingShiftKey === currentShiftKey) {
         return {success: true, workStatus: "working", unchanged: true};
       }
       const hasReadyConfirmation = captainData.readyConfirmed === true &&
-        (captainData.workStatus === "ready" || captainData.workStatus === "working");
+        (captainData.workStatus === "ready" || captainData.workStatus === "working") &&
+        captainData.readyShiftKey === currentShiftKey;
       if (!hasReadyConfirmation) {
         throw new HttpsError(
           "failed-precondition",
@@ -224,6 +242,7 @@ export const updateCaptainShiftPresence = onCall(
         isOnline: true,
         workStatus: "working",
         readyConfirmed: true,
+        workingShiftKey: currentShiftKey,
         presenceStatus: "working",
         availabilityStatus: "working",
         updatedAt: FieldValue.serverTimestamp(),
