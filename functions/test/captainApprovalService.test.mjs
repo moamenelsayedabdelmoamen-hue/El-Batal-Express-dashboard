@@ -383,6 +383,8 @@ describe("CaptainApprovalServerService & Approval Eligibility", () => {
       isOnline: true,
       workStatus: "working",
       readyConfirmed: true,
+      readyShiftKey: "legacy-test-shift",
+      workingShiftKey: "legacy-test-shift",
       presenceStatus: "working",
       latitude: 30.0444,
       longitude: 31.2357,
