@@ -615,7 +615,10 @@ export function assertCaptainOperationalForOrder(
   }
 
   const workStatus = readString(data, "workStatus").toLowerCase();
-  if (workStatus !== "working" || data.readyConfirmed !== true) {
+  const readyShiftKey = readString(data, "readyShiftKey");
+  const workingShiftKey = readString(data, "workingShiftKey");
+  if (workStatus !== "working" || data.readyConfirmed !== true ||
+      !readyShiftKey || readyShiftKey !== workingShiftKey) {
     throw new DomainHttpsError(
       "failed-precondition",
       "يجب تأكيد الجاهزية والدخول في حالة يعمل الآن داخل الشفت قبل استقبال الطلبات."
