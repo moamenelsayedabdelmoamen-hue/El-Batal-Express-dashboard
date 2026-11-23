@@ -78,6 +78,8 @@ service firebase.storage {
       return ('status' in orderData)
         && (orderData.status is string)
         && (orderData.status in [
+          'arrived_at_merchant',
+          'at_store',
           'picked_up',
           'merchant_rejected',
           'awaiting_merchant_confirmation'
