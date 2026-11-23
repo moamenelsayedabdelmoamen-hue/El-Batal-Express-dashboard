@@ -144,7 +144,36 @@ export const SendOrderPage: React.FC = () => {
   const selectedCaptainShiftStatus = useMemo(() => {
     if (!selectedCaptain) return null;
     const sched = schedulesMap.get(selectedCaptain.id) || null;
-    return computeCaptainShiftStatus(sched);
+    const computed = computeCaptainShiftStatus(sched);
+    const workStatus = String(selectedCaptain.workStatus || selectedCaptain.raw?.workStatus || '').toLowerCase();
+    const isReadyWindow = computed.status === 'starting_soon' &&
+      (computed.nextShift?.startsInMinutes ?? Number.POSITIVE_INFINITY) <= 30;
+    if (workStatus === 'ready' && isReadyWindow) {
+      return {
+        ...computed,
+        status: 'ready' as const,
+        statusLabelAr: 'جاهز - ينتظر بداية الشفت',
+        statusBadgeVariant: 'warning' as const,
+        isEligibleForOrders: false,
+        message: 'الكابتن أكد الجاهزية لكنه لم يبدأ العمل بعد ولا يمكن إسناد طلبات إليه.',
+      };
+    }
+    if (computed.status === 'active' && workStatus !== 'working') {
+      return {
+        ...computed,
+        status: 'awaiting_ready' as const,
+        statusLabelAr: 'لم يؤكد الجاهزية',
+        statusBadgeVariant: 'neutral' as const,
+        isEligibleForOrders: false,
+        message: 'بدأ الشفت لكن الكابتن لم يؤكد الجاهزية أو لم يتحول إلى يعمل الآن.',
+      };
+    }
+    return {
+      ...computed,
+      isEligibleForOrders: computed.isEligibleForOrders &&
+        workStatus === 'working' &&
+        (selectedCaptain.readyConfirmed ?? selectedCaptain.raw?.readyConfirmed) === true,
+    };
   }, [selectedCaptain, schedulesMap]);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -157,6 +186,18 @@ export const SendOrderPage: React.FC = () => {
 
     if (!selectedCaptain) {
       toastError('يرجى اختيار كابتن التوصيل المستلم للطلب');
+      return;
+    }
+
+    const captainWorkStatus = String(selectedCaptain.workStatus || selectedCaptain.raw?.workStatus || '').toLowerCase();
+    const readyConfirmed = selectedCaptain.readyConfirmed ?? selectedCaptain.raw?.readyConfirmed;
+    if (captainWorkStatus !== 'working' || readyConfirmed !== true) {
+      const msg = 'لا يمكن إسناد الطلب: يجب أن يكون الكابتن داخل الشفت وفي حالة يعمل الآن بعد تأكيد الجاهزية.';
+      toastError(msg);
+      NotificationService.notifyCaptainAssignmentFailed({
+        restaurantName: selectedRestaurant.name,
+        reason: msg,
+      });
       return;
     }
 

@@ -144,7 +144,6 @@ export class OrderServerService {
         "عفواً، أنت خارج ساعات العمل الرسمية (الشفت) ولا يمكنك قبول طلبات حالياً."
       );
     }
-
     const orderRef = this.db.collection("orders").doc(orderId);
     const s = this.effects.sentinels;
 
@@ -163,7 +162,6 @@ export class OrderServerService {
       }
       const captainData = captainSnap.data() ?? {};
       assertCaptainOperationalForOrder(captainData, nowMs);
-
       if (!orderSnap.exists) {
         throw new DomainHttpsError(
           "not-found",
@@ -1552,7 +1550,6 @@ export class OrderServerService {
 
       const inShift = await isCaptainInActiveShift(this.db, uid, data, nowMs);
       if (!inShift) continue;
-
       const activeOrderId = readString(data, "currentOrderId");
       if (activeOrderId) continue;
 

@@ -2,7 +2,7 @@ import {describe, it} from "node:test";
 import assert from "node:assert/strict";
 import {OrderServerService} from "../lib/ordersService.js";
 import {DomainHttpsError} from "../lib/types.js";
-import {getCairoTimeContext} from "../lib/shifts.js";
+import {getCairoTimeContext, getScheduleShiftKeyAtTime, isScheduleWithinReadyWindow} from "../lib/shifts.js";
 import {isTerminalMerchantOrderStatus} from "../lib/validators.js";
 
 /**
@@ -282,6 +282,9 @@ function seedActiveShiftForEveryDay(db, captainUid) {
 }
 
 function seedCaptain(db, uid, overrides = {}, nowMs = Date.UTC(2026, 10, 18, 12, 0, 0)) {
+  seedActiveShiftForEveryDay(db, uid);
+  const schedule = db.getDocData(`captain_schedules/${uid}`);
+  const shiftKey = getScheduleShiftKeyAtTime(schedule, nowMs) || "";
   db.seed(`captains/${uid}`, {
     uid,
     fullName: `كابتن ${uid}`,
@@ -291,7 +294,11 @@ function seedCaptain(db, uid, overrides = {}, nowMs = Date.UTC(2026, 10, 18, 12,
     role: "captain",
     status: "active",
     isOnline: true,
-    presenceStatus: "available",
+    workStatus: "working",
+    readyConfirmed: true,
+    readyShiftKey: shiftKey,
+    workingShiftKey: shiftKey,
+    presenceStatus: "working",
     latitude: 30.045,
     longitude: 31.236,
     lastLocationTimestamp: nowMs - 30_000,
@@ -300,7 +307,6 @@ function seedCaptain(db, uid, overrides = {}, nowMs = Date.UTC(2026, 10, 18, 12,
     fcmToken: `token_${uid}`,
     ...overrides,
   });
-  seedActiveShiftForEveryDay(db, uid);
 }
 
 function seedMerchantAndSub(db, merchantId, subOverrides = {}, merchantOverrides = {}) {
@@ -340,6 +346,25 @@ function seedPendingOrder(db, orderId, overrides = {}) {
   });
 }
 
+describe("Server-side Cairo shift readiness window", () => {
+  it("allows Ready only in the 30 minutes before today's shift and not after it starts", () => {
+    const schedule = {
+      weeklySchedule: {
+        wednesday: {
+          isDayOff: false,
+          shifts: [{startTime: "09:00", endTime: "17:00"}],
+        },
+      },
+    };
+    assert.equal(isScheduleWithinReadyWindow(schedule, Date.parse("2026-11-18T08:30:00+02:00")), true);
+    assert.equal(isScheduleWithinReadyWindow(schedule, Date.parse("2026-11-18T08:29:00+02:00")), false);
+    assert.equal(isScheduleWithinReadyWindow(schedule, Date.parse("2026-11-18T09:01:00+02:00")), false);
+    assert.equal(isScheduleWithinReadyWindow({
+      weeklySchedule: {wednesday: {isDayOff: true, shifts: []}},
+    }, Date.parse("2026-11-18T08:45:00+02:00")), false);
+  });
+});
+
 describe("El-Batal Cloud Functions Order Server Service", () => {
   it("1. Rejects unauthenticated caller and unregistered captain", async () => {
     const {db, service} = createHarness();
@@ -374,6 +399,28 @@ describe("El-Batal Cloud Functions Order Server Service", () => {
     seedCaptain(db, "cap_off", {isOnline: false, presenceStatus: "offline"}, now);
     await assert.rejects(
       () => service.acceptOrder("cap_off", {orderId: "ord_1"}),
+      (e) => e instanceof DomainHttpsError && e.code === "failed-precondition"
+    );
+
+    // A stale confirmation from another shift instance must not authorize acceptance.
+    seedCaptain(db, "cap_old_shift", {
+      readyShiftKey: "2026-11-17|tuesday|0000",
+      workingShiftKey: "2026-11-17|tuesday|0000",
+    }, now);
+    await assert.rejects(
+      () => service.acceptOrder("cap_old_shift", {orderId: "ord_1"}),
+      (e) => e instanceof DomainHttpsError && e.code === "failed-precondition"
+    );
+
+    // Ready is not the same as working and must never accept or receive an order.
+    seedCaptain(db, "cap_ready", {
+      workStatus: "ready",
+      readyConfirmed: true,
+      presenceStatus: "ready",
+      availabilityStatus: "ready",
+    }, now);
+    await assert.rejects(
+      () => service.acceptOrder("cap_ready", {orderId: "ord_1"}),
       (e) => e instanceof DomainHttpsError && e.code === "failed-precondition"
     );
 

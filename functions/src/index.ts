@@ -20,6 +20,7 @@ import {
 import {CaptainApprovalServerService} from "./captainApprovalService.js";
 import {ManualSubscriptionsServerService} from "./manualSubscriptionsService.js";
 import {OrderServerService} from "./ordersService.js";
+import {getCaptainShiftKeyAtTime, isCaptainInActiveShift} from "./shifts.js";
 import {DomainHttpsError, ReassignTaskPayload} from "./types.js";
 import {
   assertMerchantAndSubscriptionValid,
@@ -72,6 +73,9 @@ function mapError(err: unknown): HttpsError {
 
 function isCaptainReadyForDispatch(data: Record<string, unknown> | undefined): boolean {
   if (!data || data.isOnline !== true) return false;
+  if (readString(data, "workStatus").toLowerCase() !== "working" || data.readyConfirmed !== true ||
+      !readString(data, "readyShiftKey") ||
+      readString(data, "readyShiftKey") !== readString(data, "workingShiftKey")) return false;
   if (resolveCaptainAccountStatus(data) !== "approved") return false;
   const status = readString(data, "status").toLowerCase();
   const presence = (readString(data, "presenceStatus") || "available").toLowerCase();
@@ -129,6 +133,124 @@ async function enforceCaptainEmailLookupRateLimit(ipAddress: string, phone: stri
 /**
  * Callable 1: Authoritative order acceptance by authenticated captain.
  */
+/**
+ * Server-authoritative captain shift presence transition.
+ * Clients cannot write workStatus/readyConfirmed directly; the server checks approval,
+ * the canonical Cairo shift schedule, and the explicit Ready confirmation.
+ */
+export const updateCaptainShiftPresence = onCall(
+  {region: "us-central1"},
+  async (request) => {
+    try {
+      const uid = request.auth?.uid;
+      if (!uid) throw new HttpsError("unauthenticated", "يجب تسجيل الدخول أولاً.");
+      const payload = (request.data ?? {}) as Record<string, unknown>;
+      const action = readString(payload, "action").toLowerCase();
+      if (!["ready", "working", "offline"].includes(action)) {
+        throw new HttpsError("invalid-argument", "حالة الكابتن المطلوبة غير صحيحة.");
+      }
+
+      const captainRef = getFirestore().collection("captains").doc(uid);
+      const captainSnap = await captainRef.get();
+      if (!captainSnap.exists) throw new HttpsError("not-found", "ملف الكابتن غير موجود.");
+      const captainData = (captainSnap.data() ?? {}) as Record<string, unknown>;
+      if (captainData.accountType !== "captain" && captainData.role !== "captain") {
+        throw new HttpsError("permission-denied", "هذا الحساب ليس حساب كابتن.");
+      }
+
+      if (action === "offline") {
+        if (captainData.isOnline === false &&
+            captainData.workStatus === "off_shift" &&
+            captainData.readyConfirmed === false &&
+            !captainData.readyShiftKey && !captainData.workingShiftKey) {
+          return {success: true, workStatus: "off_shift", unchanged: true};
+        }
+        await captainRef.update({
+          isOnline: false,
+          workStatus: "off_shift",
+          readyConfirmed: false,
+          readyShiftKey: FieldValue.delete(),
+          workingShiftKey: FieldValue.delete(),
+          presenceStatus: "offline",
+          availabilityStatus: "offline",
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+        return {success: true, workStatus: "off_shift"};
+      }
+
+      if (resolveCaptainAccountStatus(captainData) !== "approved") {
+        throw new HttpsError("permission-denied", "حساب الكابتن غير معتمد أو موقوف.");
+      }
+
+      const nowMs = Date.now();
+      if (action === "ready") {
+        const shiftKey = await getCaptainShiftKeyAtTime(dbAdapter, uid, captainData, nowMs);
+        if (!shiftKey) {
+          throw new HttpsError(
+            "failed-precondition",
+            "يمكن تأكيد الجاهزية قبل الشفت بـ30 دقيقة فقط أو أثناء الشفت الحالي."
+          );
+        }
+        if (captainData.isOnline === true &&
+            (captainData.workStatus === "ready" || captainData.workStatus === "working") &&
+            captainData.readyConfirmed === true &&
+            captainData.readyShiftKey === shiftKey &&
+            (captainData.workStatus !== "working" || captainData.workingShiftKey === shiftKey)) {
+          return {success: true, workStatus: "ready", unchanged: true};
+        }
+        await captainRef.update({
+          isOnline: true,
+          workStatus: "ready",
+          readyConfirmed: true,
+          readyShiftKey: shiftKey,
+          readyConfirmedAt: FieldValue.serverTimestamp(),
+          presenceStatus: "ready",
+          availabilityStatus: "ready",
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+        return {success: true, workStatus: "ready"};
+      }
+
+      const activeShift = await isCaptainInActiveShift(dbAdapter, uid, captainData, nowMs);
+      if (!activeShift) {
+        throw new HttpsError("failed-precondition", "لا يمكن بدء العمل خارج وقت الشفت.");
+      }
+      const currentShiftKey = await getCaptainShiftKeyAtTime(dbAdapter, uid, captainData, nowMs);
+      if (!currentShiftKey) {
+        throw new HttpsError("failed-precondition", "تعذر تحديد الشفت الحالي.");
+      }
+      if (captainData.isOnline === true &&
+          captainData.workStatus === "working" &&
+          captainData.readyConfirmed === true &&
+          captainData.readyShiftKey === currentShiftKey &&
+          captainData.workingShiftKey === currentShiftKey) {
+        return {success: true, workStatus: "working", unchanged: true};
+      }
+      const hasReadyConfirmation = captainData.readyConfirmed === true &&
+        (captainData.workStatus === "ready" || captainData.workStatus === "working") &&
+        captainData.readyShiftKey === currentShiftKey;
+      if (!hasReadyConfirmation) {
+        throw new HttpsError(
+          "failed-precondition",
+          "يجب الضغط على جاهز وتأكيد الحضور قبل التحول إلى يعمل الآن."
+        );
+      }
+      await captainRef.update({
+        isOnline: true,
+        workStatus: "working",
+        readyConfirmed: true,
+        workingShiftKey: currentShiftKey,
+        presenceStatus: "working",
+        availabilityStatus: "working",
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      return {success: true, workStatus: "working"};
+    } catch (err) {
+      throw mapError(err);
+    }
+  }
+);
+
 export const acceptOrder = onCall(
   {region: "us-central1"},
   async (request) => {

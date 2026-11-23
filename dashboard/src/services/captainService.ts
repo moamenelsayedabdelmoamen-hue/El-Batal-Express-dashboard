@@ -3,6 +3,7 @@ import {
   doc,
   getDoc,
   getDocs,
+  onSnapshot,
   setDoc,
   updateDoc,
   deleteDoc,
@@ -152,6 +153,29 @@ function mapDocToCaptain(id: string, data: Record<string, any>): Captain {
 }
 
 export const CaptainService = {
+  subscribeAll(
+    onUpdate: (captains: Captain[]) => void,
+    onError?: (error: unknown) => void
+  ): () => void {
+    if (!isFirebaseConfigured) {
+      onUpdate(localCaptainsCache);
+      return () => undefined;
+    }
+    return onSnapshot(
+      collection(db, COLLECTIONS.CAPTAINS),
+      (snapshot) => {
+        const list = snapshot.docs.map((docSnap) => mapDocToCaptain(docSnap.id, docSnap.data()));
+        list.sort((a, b) => a.name.localeCompare(b.name, 'ar'));
+        localCaptainsCache = list;
+        onUpdate(list);
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.LIST, COLLECTIONS.CAPTAINS);
+        onError?.(error);
+      }
+    );
+  },
+
   async getAll(): Promise<{ data: Captain[]; isLive: boolean }> {
     if (!isFirebaseConfigured) {
       return { data: localCaptainsCache, isLive: false };

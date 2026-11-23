@@ -37,6 +37,20 @@ export const ShiftStatusBadge: React.FC<ShiftStatusBadgeProps> = ({
       defaultLabel = 'يبدأ العمل قريباً';
       break;
 
+    case 'ready':
+      badgeStyle = 'bg-yellow-500/15 text-yellow-300 border-yellow-500/30';
+      dotStyle = 'bg-yellow-400';
+      Icon = Clock;
+      defaultLabel = 'جاهز - ينتظر بداية الشفت';
+      break;
+
+    case 'awaiting_ready':
+      badgeStyle = 'bg-zinc-800 text-zinc-300 border-zinc-600';
+      dotStyle = 'bg-zinc-400';
+      Icon = AlertOctagon;
+      defaultLabel = 'لم يؤكد الجاهزية';
+      break;
+
     case 'off_shift':
       badgeStyle = 'bg-rose-500/15 text-rose-400 border-rose-500/30';
       dotStyle = 'bg-rose-400';
