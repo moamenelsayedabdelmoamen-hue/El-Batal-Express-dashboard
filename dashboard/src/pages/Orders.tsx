@@ -157,6 +157,7 @@ export const OrdersPage: React.FC = () => {
   const [viewingOrder, setViewingOrder] = useState<Order | null>(null);
   const [previewReceiptOrder, setPreviewReceiptOrder] = useState<Order | null>(null);
   const [isSendModalOpen, setIsSendModalOpen] = useState(false);
+  const [confirmingOrderDataId, setConfirmingOrderDataId] = useState<string | null>(null);
 
   const todayStr = useMemo(() => getTodayString(), []);
 
@@ -285,6 +286,26 @@ export const OrdersPage: React.FC = () => {
       success(`تم تحديث حالة الطلب إلى "${newStatus}" وتسجيل التوقيت`);
     } catch (err) {
       toastError('فشل تحديث حالة الطلب');
+    }
+  };
+
+  const handleAdminConfirmOrderData = async (order: Order) => {
+    setConfirmingOrderDataId(order.id);
+    try {
+      await OrderService.adminConfirmOrderData(order.id);
+      setOrders((prev) => prev.map((item) =>
+        item.id === order.id ? { ...item, status: 'Picked Up' as OrderStatus } : item
+      ));
+      setViewingOrder((prev) => prev?.id === order.id
+        ? { ...prev, status: 'Picked Up' as OrderStatus }
+        : prev
+      );
+      success('تم تأكيد بيانات الطلب بواسطة الإدارة، ويمكن للكابتن بدء التوصيل.');
+      await fetchOrders();
+    } catch (err) {
+      toastError(err instanceof Error ? err.message : 'تعذر تأكيد بيانات الطلب');
+    } finally {
+      setConfirmingOrderDataId(null);
     }
   };
 
@@ -1136,6 +1157,30 @@ export const OrdersPage: React.FC = () => {
                 </div>
               )}
             </div>
+
+            {['awaiting_merchant_confirmation', 'awaiting_confirmation'].includes(
+              String(viewingOrder.raw?.status ?? '').toLowerCase().replace(/[\\s-]+/g, '_')
+            ) && (
+              <div className="mb-5 rounded-2xl border border-amber-500/30 bg-amber-500/5 p-4 space-y-3">
+                <div>
+                  <h4 className="text-sm font-black text-amber-300">تأكيد بيانات الطلب</h4>
+                  <p className="mt-1 text-xs text-zinc-400">
+                    راجع بيانات العميل وصورة الإيصال. تأكيد الإدارة يسمح للكابتن بالانتقال إلى مرحلة التوصيل.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleAdminConfirmOrderData(viewingOrder)}
+                  disabled={
+                    confirmingOrderDataId === viewingOrder.id ||
+                    (!viewingOrder.receiptImageUrl && !viewingOrder.receiptImagePath)
+                  }
+                  className="w-full rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed px-4 py-3 text-sm font-black text-white"
+                >
+                  {confirmingOrderDataId === viewingOrder.id ? 'جارٍ تأكيد البيانات...' : 'تأكيد بيانات الطلب'}
+                </button>
+              </div>
+            )}
 
             {/* Detailed 6-Stage Order Timestamps Panel */}
             <div className="mb-5 p-4 rounded-2xl bg-[#0a0c12] border border-zinc-800 space-y-3">

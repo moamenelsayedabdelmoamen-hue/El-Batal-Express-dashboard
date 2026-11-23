@@ -634,6 +634,17 @@ export const OrderService = {
     return stageUpdates;
   },
 
+  async adminConfirmOrderData(orderId: string): Promise<void> {
+    if (!isFirebaseConfigured) {
+      throw new Error('لا يمكن تأكيد بيانات الطلب دون اتصال Firebase مباشر.');
+    }
+    const confirm = httpsCallable(functions, 'adminConfirmOrderData');
+    await confirm({ orderId });
+    localOrdersCache = localOrdersCache.map((order) =>
+      order.id === orderId ? { ...order, status: 'Picked Up' as OrderStatus } : order
+    );
+  },
+
   async recordStageTimestamp(
     orderId: string,
     field: 'acceptedAt' | 'arrivedAtMerchantAt' | 'pickedUpAt' | 'deliveredAt',
