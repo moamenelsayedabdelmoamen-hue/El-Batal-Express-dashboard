@@ -265,6 +265,82 @@ export function evaluateScheduleDocAtTime(
   return {hasSchedule: false, isActive: false};
 }
 
+
+/**
+ * Checks whether the captain is within the 30-minute pre-shift readiness window
+ * using Africa/Cairo local time. Only today's upcoming shift can be confirmed.
+ */
+export function isScheduleWithinReadyWindow(
+  scheduleDoc: Record<string, unknown> | undefined,
+  nowMs: number,
+  windowMinutes = 30
+): boolean {
+  if (!scheduleDoc || scheduleDoc.isPaused === true) return false;
+  const ctx = getCairoTimeContext(nowMs);
+  const weekly = scheduleDoc.weeklySchedule;
+  if (weekly && typeof weekly === "object" && !Array.isArray(weekly)) {
+    const weekMap = weekly as Record<string, unknown>;
+    const current = weekMap[ctx.weekdayKey] as Record<string, unknown> | undefined;
+    if (!current || current.isDayOff === true || !Array.isArray(current.shifts)) return false;
+    return current.shifts.some((raw) => {
+      if (!raw || typeof raw !== "object") return false;
+      const slot = raw as Record<string, unknown>;
+      const start = parseMinutes(slot.startTime ?? slot.start);
+      if (start === null) return false;
+      const minutesUntilStart = start - ctx.minutesSinceMidnight;
+      return minutesUntilStart >= 0 && minutesUntilStart <= windowMinutes;
+    });
+  }
+
+  const shiftsArray = Array.isArray(scheduleDoc.shifts)
+    ? scheduleDoc.shifts
+    : Array.isArray(scheduleDoc.schedule)
+      ? scheduleDoc.schedule
+      : [];
+  return shiftsArray.some((raw) => {
+    if (!raw || typeof raw !== "object") return false;
+    const slot = raw as Record<string, unknown>;
+    const dayKey = resolveDayKey(slot);
+    if (dayKey && dayKey !== ctx.weekdayKey) return false;
+    if (slot.isDayOff === true || slot.enabled === false) return false;
+    const start = parseMinutes(slot.startTime ?? slot.start);
+    if (start === null) return false;
+    const minutesUntilStart = start - ctx.minutesSinceMidnight;
+    return minutesUntilStart >= 0 && minutesUntilStart <= windowMinutes;
+  });
+}
+
+/**
+ * Resolves the canonical captain schedule and verifies the pre-shift Ready window.
+ */
+export async function isCaptainWithinReadyWindow(
+  db: DatabaseLike,
+  captainUid: string,
+  captainData: Record<string, unknown>,
+  nowMs: number
+): Promise<boolean> {
+  const directSchedule = await db.collection("captain_schedules").doc(captainUid).get();
+  if (directSchedule.exists) {
+    const data = directSchedule.data() ?? {};
+    if (isScheduleWithinReadyWindow(data, nowMs)) return true;
+    const subSnap = await db.collection("captain_schedules").doc(captainUid).collection("shifts").get();
+    if (!subSnap.empty && isScheduleWithinReadyWindow({
+      shifts: subSnap.docs.map((doc) => doc.data() ?? {}),
+    }, nowMs)) return true;
+    if (evaluateScheduleDocAtTime(data, nowMs).hasSchedule) return false;
+  }
+
+  const querySnap = await db.collection("captain_schedules")
+    .where("captainId", "==", captainUid).limit(5).get();
+  if (!querySnap.empty) {
+    for (const doc of querySnap.docs) {
+      if (isScheduleWithinReadyWindow(doc.data() ?? {}, nowMs)) return true;
+    }
+    return false;
+  }
+  return isScheduleWithinReadyWindow(captainData, nowMs);
+}
+
 /**
  * Checks whether the captain is currently inside an active shift using
  * captain_schedules/{uid}, embedded captain doc schedule, or subcollections.
