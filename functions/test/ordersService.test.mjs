@@ -402,6 +402,16 @@ describe("El-Batal Cloud Functions Order Server Service", () => {
       (e) => e instanceof DomainHttpsError && e.code === "failed-precondition"
     );
 
+    // A stale confirmation from another shift instance must not authorize acceptance.
+    seedCaptain(db, "cap_old_shift", {
+      readyShiftKey: "2026-11-17|tuesday|0000",
+      workingShiftKey: "2026-11-17|tuesday|0000",
+    }, now);
+    await assert.rejects(
+      () => service.acceptOrder("cap_old_shift", {orderId: "ord_1"}),
+      (e) => e instanceof DomainHttpsError && e.code === "failed-precondition"
+    );
+
     // Ready is not the same as working and must never accept or receive an order.
     seedCaptain(db, "cap_ready", {
       workStatus: "ready",
