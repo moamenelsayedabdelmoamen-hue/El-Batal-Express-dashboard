@@ -226,20 +226,19 @@ export const updateCaptainShiftPresence = onCall(
           captainData.workingShiftKey === currentShiftKey) {
         return {success: true, workStatus: "working", unchanged: true};
       }
-      const hasReadyConfirmation = captainData.readyConfirmed === true &&
-        (captainData.workStatus === "ready" || captainData.workStatus === "working") &&
-        captainData.readyShiftKey === currentShiftKey;
-      if (!hasReadyConfirmation) {
-        throw new HttpsError(
-          "failed-precondition",
-          "يجب الضغط على جاهز وتأكيد الحضور قبل التحول إلى يعمل الآن."
-        );
-      }
+      // The authenticated captain's explicit "متصل" action is the readiness
+      // confirmation when a shift is already active. Promote ready + working
+      // in one server write so a separate "ready" callable cannot leave the
+      // UI briefly online and then fail during the second transition.
       await captainRef.update({
         isOnline: true,
         workStatus: "working",
         readyConfirmed: true,
+        readyShiftKey: currentShiftKey,
         workingShiftKey: currentShiftKey,
+        readyConfirmedAt: captainData.readyConfirmed === true
+          ? (captainData.readyConfirmedAt ?? FieldValue.serverTimestamp())
+          : FieldValue.serverTimestamp(),
         presenceStatus: "working",
         availabilityStatus: "working",
         updatedAt: FieldValue.serverTimestamp(),
