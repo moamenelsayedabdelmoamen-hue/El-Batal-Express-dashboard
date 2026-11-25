@@ -2,7 +2,7 @@ import {describe, it} from "node:test";
 import assert from "node:assert/strict";
 import {OrderServerService} from "../lib/ordersService.js";
 import {DomainHttpsError} from "../lib/types.js";
-import {getCairoTimeContext, getScheduleShiftKeyAtTime, isScheduleWithinReadyWindow} from "../lib/shifts.js";
+import {evaluateScheduleDocAtTime, getCairoTimeContext, getScheduleShiftKeyAtTime, isScheduleWithinReadyWindow} from "../lib/shifts.js";
 import {isTerminalMerchantOrderStatus} from "../lib/validators.js";
 
 /**
@@ -810,5 +810,47 @@ describe("Merchant package capacity terminal-state classification", () => {
     ]) {
       assert.equal(isTerminalMerchantOrderStatus(status), true, status);
     }
+  });
+});
+
+
+describe("Legacy Android Calendar weekday compatibility", () => {
+  // 2026-11-25 14:00 in Africa/Cairo (12:00 UTC), Wednesday.
+  const nowMs = Date.UTC(2026, 10, 25, 12, 0);
+  const legacyWednesdaySchedule = {
+    shifts: [{
+      dayOfWeek: 4, // java.util.Calendar.WEDNESDAY
+      startTime: "13:00",
+      endTime: "23:00",
+    }],
+  };
+
+  it("recognizes an active legacy Android Wednesday shift", () => {
+    assert.deepEqual(
+      evaluateScheduleDocAtTime(legacyWednesdaySchedule, nowMs),
+      {hasSchedule: true, isActive: true},
+    );
+  });
+
+  it("builds the same Wednesday shift key for legacy Android schedules", () => {
+    assert.equal(
+      getScheduleShiftKeyAtTime(legacyWednesdaySchedule, nowMs),
+      "2026-11-25|wednesday|0780",
+    );
+  });
+
+  it("does not silently map an unknown numeric weekday to Saturday", () => {
+    const invalidSchedule = {
+      shifts: [{
+        dayOfWeek: 0,
+        startTime: "13:00",
+        endTime: "23:00",
+      }],
+    };
+    assert.deepEqual(
+      evaluateScheduleDocAtTime(invalidSchedule, nowMs),
+      {hasSchedule: true, isActive: false},
+    );
+    assert.equal(getScheduleShiftKeyAtTime(invalidSchedule, nowMs), null);
   });
 });
