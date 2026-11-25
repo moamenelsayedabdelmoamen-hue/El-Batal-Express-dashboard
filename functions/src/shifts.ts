@@ -92,7 +92,7 @@ function parseMinutes(timeStr: unknown): number | null {
   return h * 60 + m;
 }
 
-function mapDayNumberToKey(dayOfWeek: number): string | null {
+function mapDayNumberToKey(dayOfWeek: number): string {
   // Android ShiftEntity stores java.util.Calendar.DAY_OF_WEEK:
   // 1 = Sunday, 2 = Monday, ... 7 = Saturday.
   // Keep legacy numeric schedules aligned with that persisted contract.
@@ -105,7 +105,7 @@ function mapDayNumberToKey(dayOfWeek: number): string | null {
     6: "friday",
     7: "saturday",
   };
-  return mapping[dayOfWeek] ?? null;
+  return mapping[dayOfWeek] ?? "unknown";
 }
 
 function resolveDayKey(entry: Record<string, unknown>): string | null {
