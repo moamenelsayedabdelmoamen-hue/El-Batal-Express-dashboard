@@ -810,6 +810,13 @@ export function assertMerchantAndSubscriptionValid(
 ): void {
   if (!merchantId) return;
 
+  if (!subData) {
+    throw new DomainHttpsError(
+      "failed-precondition",
+      "لا يوجد سجل اشتراك موثوق لهذا التاجر؛ لا يمكن إنشاء طلب جديد."
+    );
+  }
+
   if (merchantData) {
     const mStatus = readString(merchantData, "status").toLowerCase();
     if (
@@ -873,16 +880,57 @@ export function assertMerchantAndSubscriptionValid(
   }
 
   if (subData) {
-    const sStatus = readString(subData, "status").toLowerCase();
-    if (
-      sStatus &&
-      !["active", "approved", "trial", "نشط", "ساري"].includes(sStatus)
-    ) {
+    // The canonical subscription document is authoritative. Its existence alone
+    // must never be interpreted as proof of an active paid plan.
+    const sStatus = readString(
+      subData,
+      "status",
+      "subscriptionStatus",
+      "planStatus"
+    ).toLowerCase();
+    const merchantSubStatus = readString(
+      merchantData,
+      "subscriptionStatus",
+      "planStatus"
+    ).toLowerCase();
+    const activeStatuses = [
+      "active", "approved", "trial", "enabled", "valid", "subscribed",
+      "نشط", "نشطة", "ساري", "سارية",
+    ];
+    const inactiveStatuses = [
+      "expired", "suspended", "disabled", "blocked", "cancelled", "canceled",
+      "inactive", "pending", "pending_review", "under_review",
+      "resubmission_required", "resubmission_requested", "rejected", "unsubscribed",
+    ];
+    if (sStatus && inactiveStatuses.includes(sStatus)) {
       throw new DomainHttpsError(
         "failed-precondition",
-        "اشتراك التاجر غير مفعل حالياً."
+        "اشتراك التاجر منتهي أو موقوف أو لم تتم الموافقة عليه."
       );
     }
+    if (sStatus && !activeStatuses.includes(sStatus)) {
+      throw new DomainHttpsError(
+        "failed-precondition",
+        "حالة اشتراك التاجر غير معروفة؛ يرجى مراجعة الإدارة."
+      );
+    }
+    if (subData.isActive === false || subData.isSubscribed === false) {
+      throw new DomainHttpsError(
+        "failed-precondition",
+        "اشتراك التاجر غير نشط حالياً."
+      );
+    }
+    const hasCanonicalActiveStatus = activeStatuses.includes(sStatus);
+    const hasActiveFlag = subData.isActive === true ||
+      subData.isSubscribed === true ||
+      (!sStatus && activeStatuses.includes(merchantSubStatus) && merchantData?.isSubscribed === true);
+    if (!hasCanonicalActiveStatus && !hasActiveFlag) {
+      throw new DomainHttpsError(
+        "failed-precondition",
+        "لا يوجد اشتراك نشط ومعتمد لهذا التاجر."
+      );
+    }
+
     const sPaymentStatus = readString(subData, "paymentStatus").toLowerCase();
     if (
       sPaymentStatus &&
@@ -894,6 +942,8 @@ export function assertMerchantAndSubscriptionValid(
         "failed",
         "resubmission_required",
         "resubmission_requested",
+        "pending_verification",
+        "pending_review",
       ].includes(sPaymentStatus)
     ) {
       throw new DomainHttpsError(
@@ -911,8 +961,21 @@ export function assertMerchantAndSubscriptionValid(
         "الباقة الحالية لا تتضمن حداً صالحاً لعدد الكباتن."
       );
     }
+    const startMs = Math.max(
+      parseTimestampMs(subData.startDate),
+      parseTimestampMs(subData.startDateMs),
+      parseTimestampMs(subData.activatedAt),
+      parseTimestampMs(subData.subscriptionStartDate)
+    );
+    if (startMs > 0 && nowMs < startMs) {
+      throw new DomainHttpsError(
+        "failed-precondition",
+        "لم يبدأ اشتراك التاجر بعد؛ لا يمكن إنشاء طلب قبل تاريخ التفعيل."
+      );
+    }
     const endMs = Math.max(
       parseTimestampMs(subData.endDate),
+      parseTimestampMs(subData.endDateMs),
       parseTimestampMs(subData.expiryDate),
       parseTimestampMs(subData.expiresAt),
       parseTimestampMs(subData.subscriptionEndDate)

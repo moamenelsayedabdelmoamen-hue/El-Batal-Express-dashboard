@@ -1577,6 +1577,46 @@ describe("Manual Vodafone Cash Subscriptions Server Service (Full 14-Scenario Su
     );
   });
 
+  it("26a. rejects missing, inactive, unknown, unpaid, or not-yet-started canonical subscriptions", () => {
+    const now = Date.UTC(2026, 10, 20, 12, 0, 0);
+    const merchant = {status: "approved", accountType: "merchant", isSubscribed: true};
+    const expectBlocked = (subscription) => assert.throws(
+      () => assertMerchantAndSubscriptionValid("merchant_1", merchant, subscription, now),
+      (err) => err instanceof DomainHttpsError && err.code === "failed-precondition"
+    );
+
+    expectBlocked(undefined);
+    expectBlocked({maxCaptains: 4, paymentStatus: "paid"});
+    expectBlocked({status: "expired", isActive: true, paymentStatus: "paid", maxCaptains: 4});
+    expectBlocked({subscriptionStatus: "pending_review", isActive: false, paymentStatus: "pending_verification", maxCaptains: 4});
+    expectBlocked({status: "active", isActive: false, isSubscribed: false, paymentStatus: "paid", maxCaptains: 4});
+    expectBlocked({status: "active", isActive: true, paymentStatus: "pending_verification", maxCaptains: 4});
+    expectBlocked({
+      status: "active",
+      isActive: true,
+      paymentStatus: "paid",
+      maxCaptains: 4,
+      startDate: "2026-11-21",
+      endDate: "2026-12-31",
+    });
+
+    assert.doesNotThrow(() => assertMerchantAndSubscriptionValid(
+      "merchant_1",
+      merchant,
+      {
+        status: "active",
+        subscriptionStatus: "active",
+        isActive: true,
+        isSubscribed: true,
+        paymentStatus: "paid",
+        maxCaptains: 4,
+        startDate: "2026-11-01",
+        endDate: "2026-12-31",
+      },
+      now
+    ));
+  });
+
   it("27. Unified Admin Guard enforces email_verified, admin doc emailVerified, active/approved status, and blocks suspended allowlisted admins", async () => {
     const {db, service, storageFiles} = createHarness();
     seedMerchantAndRequest(db, storageFiles, {requestId: "req_admin_guard"});
