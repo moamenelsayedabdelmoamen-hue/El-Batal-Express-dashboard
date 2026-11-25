@@ -852,7 +852,14 @@ describe("Legacy Android Calendar weekday compatibility", () => {
       {hasSchedule: true, isActive: false},
     );
     assert.equal(getScheduleShiftKeyAtTime(invalidSchedule, nowMs), null);
-    assert.equal(isScheduleWithinReadyWindow(invalidSchedule, nowMs), false);
+    const invalidUpcomingSchedule = {
+      shifts: [{
+        dayOfWeek: 0,
+        startTime: "14:15",
+        endTime: "23:00",
+      }],
+    };
+    assert.equal(isScheduleWithinReadyWindow(invalidUpcomingSchedule, nowMs), false);
   });
 
   it("keeps legacy shifts without an explicit weekday compatible", () => {
