@@ -128,6 +128,26 @@ function resolveDayKey(entry: Record<string, unknown>): string | null {
   return null;
 }
 
+
+/**
+ * Distinguishes an omitted weekday (legacy all-days schedule) from an explicitly
+ * supplied but invalid weekday. Invalid values must never become all-days shifts.
+ */
+function hasInvalidExplicitDay(entry: Record<string, unknown>): boolean {
+  const dayFields = [
+    "dayKey", "dayName", "day", "weekday",
+    "dayOfWeek", "dayIndex", "dayNumber",
+  ];
+  const hasExplicitDay = dayFields.some((field) => {
+    const value = entry[field];
+    return value !== undefined && value !== null &&
+      !(typeof value === "string" && value.trim() === "");
+  });
+  if (!hasExplicitDay) return false;
+  const dayKey = resolveDayKey(entry);
+  return !dayKey || !WEEKDAY_ORDER.includes(dayKey);
+}
+
 function isShiftListActive(
   shiftsRaw: unknown[],
   currentDayKey: string,
@@ -138,6 +158,7 @@ function isShiftListActive(
   for (const item of shiftsRaw) {
     if (!item || typeof item !== "object") continue;
     const obj = item as Record<string, unknown>;
+    if (hasInvalidExplicitDay(obj)) continue;
     const dayKey = resolveDayKey(obj);
     const startTime = String(obj.startTime ?? obj.start ?? "09:00");
     const endTime = String(obj.endTime ?? obj.end ?? "17:00");
@@ -327,6 +348,7 @@ export function getScheduleShiftKeyAtTime(
   for (const raw of rawShifts) {
     if (!raw || typeof raw !== "object") continue;
     const slot = raw as Record<string, unknown>;
+    if (hasInvalidExplicitDay(slot)) continue;
     const dayKey = resolveDayKey(slot);
     if (slot.isDayOff === true || slot.enabled === false) continue;
     const start = parseMinutes(slot.startTime ?? slot.start);
@@ -411,6 +433,7 @@ export function isScheduleWithinReadyWindow(
   return shiftsArray.some((raw) => {
     if (!raw || typeof raw !== "object") return false;
     const slot = raw as Record<string, unknown>;
+    if (hasInvalidExplicitDay(slot)) return false;
     const dayKey = resolveDayKey(slot);
     if (dayKey && dayKey !== ctx.weekdayKey) return false;
     if (slot.isDayOff === true || slot.enabled === false) return false;

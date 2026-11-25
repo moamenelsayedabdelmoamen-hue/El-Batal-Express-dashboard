@@ -852,5 +852,31 @@ describe("Legacy Android Calendar weekday compatibility", () => {
       {hasSchedule: true, isActive: false},
     );
     assert.equal(getScheduleShiftKeyAtTime(invalidSchedule, nowMs), null);
+    const invalidUpcomingSchedule = {
+      shifts: [{
+        dayOfWeek: 0,
+        startTime: "14:15",
+        endTime: "23:00",
+      }],
+    };
+    assert.equal(isScheduleWithinReadyWindow(invalidUpcomingSchedule, nowMs), false);
+  });
+
+  it("keeps legacy shifts without an explicit weekday compatible", () => {
+    const scheduleWithoutWeekday = {
+      shifts: [{
+        startTime: "13:00",
+        endTime: "23:00",
+      }],
+    };
+    assert.deepEqual(
+      evaluateScheduleDocAtTime(scheduleWithoutWeekday, nowMs),
+      {hasSchedule: true, isActive: true},
+    );
+    assert.equal(
+      getScheduleShiftKeyAtTime(scheduleWithoutWeekday, nowMs),
+      "2026-11-25|wednesday|0780",
+    );
+    assert.equal(isScheduleWithinReadyWindow(scheduleWithoutWeekday, nowMs), false);
   });
 });
