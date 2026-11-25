@@ -236,9 +236,7 @@ export const updateCaptainShiftPresence = onCall(
         readyConfirmed: true,
         readyShiftKey: currentShiftKey,
         workingShiftKey: currentShiftKey,
-        readyConfirmedAt: captainData.readyConfirmed === true
-          ? (captainData.readyConfirmedAt ?? FieldValue.serverTimestamp())
-          : FieldValue.serverTimestamp(),
+        readyConfirmedAt: FieldValue.serverTimestamp(),
         presenceStatus: "working",
         availabilityStatus: "working",
         updatedAt: FieldValue.serverTimestamp(),
