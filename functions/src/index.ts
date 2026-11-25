@@ -741,26 +741,8 @@ export const merchantCreateOrder = onCall(
         ordersRef.where("userId", "==", uid),
       ];
 
-      const replaySnap = await idempotencyRef.get();
-      if (replaySnap.exists) {
-        const replay = replaySnap.data() ?? {};
-        if (readString(replay, "merchantId") !== uid) {
-          throw new HttpsError("permission-denied", "مفتاح الطلب مستخدم لحساب آخر.");
-        }
-        return {
-          success: true,
-          orderId: readString(replay, "orderId"),
-          orderCode: readString(replay, "orderCode"),
-          status: "pending",
-          captainLimit: 0,
-          activeCaptainsCount: 0,
-          remainingCaptains: 0,
-          planId: 0,
-          planName: "",
-          subscriptionVersion: 1,
-          isReplay: true,
-        };
-      }
+      // Idempotency is checked inside the transaction below. Avoid a separate
+      // document read/round trip before starting the atomic reservation.
 
       const MAX_CODE_ATTEMPTS = 25;
       for (let attempt = 1; attempt <= MAX_CODE_ATTEMPTS; attempt++) {
@@ -776,18 +758,12 @@ export const merchantCreateOrder = onCall(
               subscriptionSnap,
               codeSnap,
               keySnap,
-              ordersByMerchantSnap,
-              ordersByRestaurantSnap,
-              ordersByUserSnap,
               capacitySnap,
             ] = await Promise.all([
               tx.get(merchantRef),
               tx.get(subscriptionRef),
               tx.get(codeRef),
               tx.get(idempotencyRef),
-              tx.get(merchantOrdersQueries[0]),
-              tx.get(merchantOrdersQueries[1]),
-              tx.get(merchantOrdersQueries[2]),
               tx.get(capacityRef),
             ]);
 
@@ -830,22 +806,40 @@ export const merchantCreateOrder = onCall(
               throw new HttpsError("failed-precondition", "لا توجد باقة نشطة تسمح بطلب الكباتن.");
             }
 
-            // Reconcile supported owner fields and deduplicate orders. The shared capacity
-            // document is read and written in this transaction to serialize concurrent requests.
-            const activeOrderIds = new Set<string>();
-            for (const snapshot of [
-              ordersByMerchantSnap,
-              ordersByRestaurantSnap,
-              ordersByUserSnap,
-            ]) {
-              for (const orderDoc of snapshot.docs) {
-                if (!isClosedMerchantOrderStatus(
-                  readNormalizedOrderStatus(orderDoc.data() ?? {})
-                )) activeOrderIds.add(orderDoc.id);
-              }
-            }
+            // The capacity document is the serialized source of truth after its first
+            // initialization. Older merchants are reconciled once from legacy owner fields;
+            // subsequent order requests avoid three collection queries on every transaction.
             const capacityData = capacitySnap.data() ?? {};
             const capacityVersion = readNumber(capacityData, "capacityVersion") ?? 0;
+            const activeOrderIds = new Set<string>();
+            if (capacityData.capacityInitialized === true) {
+              const reservedIds = Array.isArray(capacityData.reservedOrderIds)
+                ? capacityData.reservedOrderIds
+                : [];
+              for (const reservedId of reservedIds) {
+                if (typeof reservedId === "string" && reservedId.trim()) {
+                  activeOrderIds.add(reservedId.trim());
+                }
+              }
+            } else {
+              const [ordersByMerchantSnap, ordersByRestaurantSnap, ordersByUserSnap] =
+                await Promise.all([
+                  tx.get(merchantOrdersQueries[0]),
+                  tx.get(merchantOrdersQueries[1]),
+                  tx.get(merchantOrdersQueries[2]),
+                ]);
+              for (const snapshot of [
+                ordersByMerchantSnap,
+                ordersByRestaurantSnap,
+                ordersByUserSnap,
+              ]) {
+                for (const orderDoc of snapshot.docs) {
+                  if (!isClosedMerchantOrderStatus(
+                    readNormalizedOrderStatus(orderDoc.data() ?? {})
+                  )) activeOrderIds.add(orderDoc.id);
+                }
+              }
+            }
             const activeOrderCount = activeOrderIds.size;
             if (activeOrderCount >= maxCaptains) {
               throw new HttpsError(
@@ -990,6 +984,7 @@ export const merchantCreateOrder = onCall(
               merchantId: uid,
               reservedOrderIds: nextReservedOrderIds,
               activeReservationsCount: nextReservedOrderIds.length,
+              capacityInitialized: true,
               captainLimitSnapshot: maxCaptains,
               capacityVersion: capacityVersion + 1,
               lastReservedOrderId: orderRef.id,
