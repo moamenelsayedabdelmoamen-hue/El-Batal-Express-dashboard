@@ -2,7 +2,7 @@ import {describe, it} from "node:test";
 import assert from "node:assert/strict";
 import {OrderServerService} from "../lib/ordersService.js";
 import {DomainHttpsError} from "../lib/types.js";
-import {getCairoTimeContext, getScheduleShiftKeyAtTime, isScheduleWithinReadyWindow} from "../lib/shifts.js";
+import {evaluateScheduleDocAtTime, getCairoTimeContext, getScheduleShiftKeyAtTime, isScheduleWithinReadyWindow} from "../lib/shifts.js";
 import {isTerminalMerchantOrderStatus} from "../lib/validators.js";
 
 /**
@@ -827,7 +827,7 @@ describe("Legacy Android Calendar weekday compatibility", () => {
 
   it("recognizes an active legacy Android Wednesday shift", () => {
     assert.deepEqual(
-      (await import("../lib/shifts.js")).evaluateScheduleDocAtTime(legacyWednesdaySchedule, nowMs),
+      evaluateScheduleDocAtTime(legacyWednesdaySchedule, nowMs),
       {hasSchedule: true, isActive: true},
     );
   });
