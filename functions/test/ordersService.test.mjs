@@ -848,7 +848,7 @@ describe("Legacy Android Calendar weekday compatibility", () => {
       }],
     };
     assert.deepEqual(
-      (await import("../lib/shifts.js")).evaluateScheduleDocAtTime(invalidSchedule, nowMs),
+      evaluateScheduleDocAtTime(invalidSchedule, nowMs),
       {hasSchedule: true, isActive: false},
     );
     assert.equal(getScheduleShiftKeyAtTime(invalidSchedule, nowMs), null);
