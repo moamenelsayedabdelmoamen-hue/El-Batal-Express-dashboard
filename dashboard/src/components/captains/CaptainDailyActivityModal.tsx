@@ -140,19 +140,9 @@ export const CaptainDailyActivityModal: React.FC<Props> = ({ captain, initialTab
       setLoading(true);
       setLoadError('');
       try {
-        const dayWalletRef = doc(db, 'captains', captain.id, 'daily_wallets', selectedDate);
-        const txQuery = query(
-          collection(db, 'captains', captain.id, 'transactions'),
-          where('dayKey', '==', selectedDate)
-        );
-        const [walletSnap, txSnap] = await Promise.all([getDoc(dayWalletRef), getDocs(txQuery)]);
-        if (!active) return;
-        setDailyWallet(walletSnap.exists() ? walletSnap.data() : null);
-        const txRows = txSnap.docs.map((item) => ({ id: item.id, ...item.data() } as WalletTransaction));
-        txRows.sort((a, b) => (toDate(b.createdAt)?.getTime() || 0) - (toDate(a.createdAt)?.getTime() || 0));
-        setTransactions(txRows);
-
         if (tab === 'orders') {
+          // Orders tab must not request wallet data. A wallet permission error
+          // must never prevent the captain's order history from loading.
           const start = Timestamp.fromDate(cairoWallClockToUtc(selectedDate, 0));
           const end = Timestamp.fromDate(cairoWallClockToUtc(selectedDate, 24));
           const runOrderQuery = async (field: string) => getDocs(query(
@@ -187,12 +177,36 @@ export const CaptainDailyActivityModal: React.FC<Props> = ({ captain, initialTab
           setOrders(Array.from(unique.values()).sort((a, b) =>
             (toDate(b.createdAt)?.getTime() || 0) - (toDate(a.createdAt)?.getTime() || 0)
           ));
+          setDailyWallet(null);
+          setTransactions([]);
         } else {
+          // Wallet tab reads only the wallet summary and its own transaction ledger.
+          const dayWalletRef = doc(db, 'captains', captain.id, 'daily_wallets', selectedDate);
+          const txQuery = query(
+            collection(db, 'captains', captain.id, 'transactions'),
+            where('dayKey', '==', selectedDate)
+          );
+          const [walletSnap, txSnap] = await Promise.all([getDoc(dayWalletRef), getDocs(txQuery)]);
+          if (!active) return;
+          setDailyWallet(walletSnap.exists() ? walletSnap.data() : null);
+          const txRows = txSnap.docs.map((item) => ({ id: item.id, ...item.data() } as WalletTransaction));
+          txRows.sort((a, b) => (toDate(b.createdAt)?.getTime() || 0) - (toDate(a.createdAt)?.getTime() || 0));
+          setTransactions(txRows);
           setOrders([]);
         }
       } catch (error) {
         console.error('Failed to load captain daily activity:', error);
-        if (active) setLoadError('تعذر تحميل السجل. تحقق من صلاحيات Firestore والفهارس المطلوبة.');
+        if (active) {
+          const firestoreError = error as { code?: string; message?: string };
+          const code = firestoreError?.code || 'unknown';
+          const message = firestoreError?.message || 'Unknown Firestore error';
+          setLoadError(
+            tab === 'orders'
+              ? `تعذر تحميل طلبات الكابتن ( ${code} ). ${message}`
+              : `تعذر تحميل سجل المحفظة ( ${code} ). ${message}`
+          );
+        }
+      }
       } finally {
         if (active) setLoading(false);
       }
