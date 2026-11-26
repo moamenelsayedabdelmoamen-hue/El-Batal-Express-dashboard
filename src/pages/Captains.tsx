@@ -564,7 +564,8 @@ export const CaptainsPage: React.FC = () => {
                   <th className="py-4 px-4">رقم الهاتف</th>
                   <th className="py-4 px-4">البريد الإلكتروني</th>
                   <th className="py-4 px-4">المركبة</th>
-                  <th className="py-4 px-4">عدد الطلبات</th>\n                  <th className="py-4 px-4">رصيد المحفظة</th>
+                  <th className="py-4 px-4">عدد الطلبات</th>
+                  <th className="py-4 px-4">رصيد المحفظة</th>
                   <th className="py-4 px-4">التقييم</th>
                   <th className="py-4 px-4">تاريخ الحالة</th>
                   <th className="py-4 px-4">كلمة السر</th>
@@ -855,7 +856,15 @@ export const CaptainsPage: React.FC = () => {
         </div>
       )}
 
-      {activityCaptain && (\n        <CaptainDailyActivityModal\n          captain={activityCaptain}\n          initialTab={activityTab}\n          onClose={() => setActivityCaptain(null)}\n        />\n      )}\n\n      {/* View Captain Details Modal */}
+      {activityCaptain && (
+        <CaptainDailyActivityModal
+          captain={activityCaptain}
+          initialTab={activityTab}
+          onClose={() => setActivityCaptain(null)}
+        />
+      )}
+
+      {/* View Captain Details Modal */}
       {viewingCaptain && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-xs">
           <div className="w-full max-w-md bg-[#11141c] border border-zinc-800 rounded-3xl p-6 shadow-2xl relative max-h-[90vh] overflow-y-auto">
