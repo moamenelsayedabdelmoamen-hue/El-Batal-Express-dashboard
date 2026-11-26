@@ -22,6 +22,7 @@ class InMemoryTransactionalFirestore {
     this.docs = new Map(); // path -> { data: object, version: number }
     this.autoId = 1;
     this.YieldOnRead = false;
+    this.now = () => Date.now();
   }
 
   seed(path, data) {
@@ -159,7 +160,7 @@ class InMemoryTransactionalFirestore {
     for (const [k, v] of Object.entries(patch)) {
       if (v && typeof v === "object" && v.__sentinel) {
         if (v.__sentinel === "serverTimestamp") {
-          target[k] = Date.now();
+          target[k] = this.now();
         } else if (v.__sentinel === "deleteField") {
           delete target[k];
         } else if (v.__sentinel === "increment") {
@@ -273,6 +274,8 @@ const MERCHANT_AUTH = {
 function createHarness(initialNowMs = Date.UTC(2026, 10, 20, 10, 0, 0)) {
   const db = new InMemoryTransactionalFirestore();
   let nowMs = initialNowMs;
+  // Keep Firestore serverTimestamp values on the same injected clock as service.now().
+  db.now = () => nowMs;
   const merchantPushes = [];
   const adminPushes = [];
   const storageFiles = new Set();

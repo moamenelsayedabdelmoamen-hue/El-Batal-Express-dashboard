@@ -181,19 +181,19 @@ export const OrdersPage: React.FC = () => {
     }
   }, [restaurantParam, orders]);
 
+  // Orders are supplied by the single realtime listener below. Do not issue a
+  // second full collection read during startup or after an order action.
   const fetchOrders = async () => {
     setLoading(true);
     try {
-      const [resOrders, resCaptains, resMerchants] = await Promise.all([
-        OrderService.getAll(),
+      const [resCaptains, resMerchants] = await Promise.all([
         CaptainService.getAll(),
         RestaurantService.getAll(),
       ]);
-      setOrders(resOrders.data);
       setCaptains(resCaptains.data);
       setMerchants(resMerchants.data);
     } catch (err) {
-      console.error('Failed to load orders, captains, or merchants:', err);
+      console.error('Failed to load supporting order data:', err);
       toastError('فشل تحميل بيانات الطلبات');
     } finally {
       setLoading(false);
@@ -201,12 +201,25 @@ export const OrdersPage: React.FC = () => {
   };
 
   useEffect(() => {
-    fetchOrders();
+    let fallbackLoaded = false;
+    void fetchOrders();
     const unsubscribe = OrderService.subscribeToOrders(
       (liveOrders) => setOrders(liveOrders),
-      () => toastError('انقطع الاتصال المباشر بتحديثات الطلبات')
+      async () => {
+        toastError('انقطع الاتصال المباشر بتحديثات الطلبات');
+        // Preserve a one-time read fallback only when the realtime listener fails.
+        if (!fallbackLoaded) {
+          fallbackLoaded = true;
+          try {
+            const fallback = await OrderService.getAll();
+            setOrders(fallback.data);
+          } catch (error) {
+            console.error('Failed to load fallback orders:', error);
+          }
+        }
+      }
     );
-    return unsubscribe;
+    return () => unsubscribe();
   }, []);
 
   const dateScopedOrders = useMemo(() => {
