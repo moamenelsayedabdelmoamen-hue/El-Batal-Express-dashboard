@@ -143,7 +143,7 @@ function mapDocToCaptain(id: string, data: Record<string, any>): Captain {
         ? data.completedOrders
         : 0,
     totalOrdersCount: Number.isFinite(Number(data.totalOrdersCount)) ? Number(data.totalOrdersCount) : undefined,
-    walletBalance: Number.isFinite(Number(data.walletBalance)) ? Number(data.walletBalance) : 0,
+    walletBalance: data.walletBalance !== undefined && data.walletBalance !== null && Number.isFinite(Number(data.walletBalance)) ? Number(data.walletBalance) : undefined,
     rating: typeof data.rating === 'number' ? data.rating : 5.0,
     createdAt,
     updatedAt,
