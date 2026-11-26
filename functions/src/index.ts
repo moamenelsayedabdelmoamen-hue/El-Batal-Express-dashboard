@@ -20,7 +20,7 @@ import {
 import {CaptainApprovalServerService} from "./captainApprovalService.js";
 import {ManualSubscriptionsServerService} from "./manualSubscriptionsService.js";
 import {OrderServerService} from "./ordersService.js";
-import {getCaptainShiftKeyAtTime, isCaptainInActiveShift} from "./shifts.js";
+import {getCairoTimeContext, getCaptainShiftKeyAtTime, isCaptainInActiveShift} from "./shifts.js";
 import {DomainHttpsError, ReassignTaskPayload} from "./types.js";
 import {
   assertMerchantAndSubscriptionValid,
@@ -42,6 +42,59 @@ import {
 
 initializeApp();
 setGlobalOptions({region: "us-central1", maxInstances: 10});
+
+/**
+ * Close the previous Cairo business day with a server-read wallet balance.
+ * This creates a durable daily balance snapshot without allowing clients to
+ * write or alter financial records.
+ */
+export const snapshotCaptainDailyWalletBalances = onSchedule(
+  {
+    schedule: "55 23 * * *",
+    timeZone: "Africa/Cairo",
+    region: "us-central1",
+  },
+  async () => {
+    const db = getFirestore();
+    const closedDayKey = getCairoTimeContext(Date.now()).dayKey;
+
+    const captainsSnapshot = await db.collection("captains").get();
+    const docs = captainsSnapshot.docs;
+    let written = 0;
+
+    for (let offset = 0; offset < docs.length; offset += 450) {
+      const batch = db.batch();
+      const chunk = docs.slice(offset, offset + 450);
+      for (const captainDoc of chunk) {
+        const rawBalance = captainDoc.get("walletBalance");
+        if (rawBalance === undefined || rawBalance === null) continue;
+        const balance = Number(rawBalance);
+        if (!Number.isFinite(balance)) continue;
+
+        const dailyWalletRef = captainDoc.ref
+          .collection("daily_wallets")
+          .doc(closedDayKey);
+        batch.set(dailyWalletRef, {
+          captainId: captainDoc.id,
+          dayKey: closedDayKey,
+          balanceAtClose: balance,
+          closingBalance: balance,
+          isClosed: true,
+          snapshotAt: FieldValue.serverTimestamp(),
+        }, {merge: true});
+        written += 1;
+      }
+      await batch.commit();
+    }
+
+    logger.info("Captain daily wallet balances snapshotted", {
+      dayKey: closedDayKey,
+      captainCount: docs.length,
+      snapshotsWritten: written,
+    });
+  }
+);
+
 
 const dbAdapter = createAdminDatabaseAdapter(getFirestore());
 const service = new OrderServerService(
