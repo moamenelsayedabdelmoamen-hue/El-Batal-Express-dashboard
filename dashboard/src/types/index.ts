@@ -112,6 +112,8 @@ export interface Captain {
   readyConfirmed?: boolean;
   canReceiveOrders?: boolean;
   ordersCount: number;
+  totalOrdersCount?: number;
+  walletBalance?: number;
   rating: number;
   createdAt?: any;
   createdAtMs?: number;
