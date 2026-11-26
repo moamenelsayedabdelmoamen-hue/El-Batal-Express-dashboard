@@ -50,16 +50,13 @@ setGlobalOptions({region: "us-central1", maxInstances: 10});
  */
 export const snapshotCaptainDailyWalletBalances = onSchedule(
   {
-    schedule: "5 0 * * *",
+    schedule: "55 23 * * *",
     timeZone: "Africa/Cairo",
     region: "us-central1",
   },
   async () => {
     const db = getFirestore();
-    const todayKey = getCairoTimeContext(Date.now()).dayKey;
-    const previousDate = new Date(`${todayKey}T00:00:00Z`);
-    previousDate.setUTCDate(previousDate.getUTCDate() - 1);
-    const closedDayKey = previousDate.toISOString().slice(0, 10);
+    const closedDayKey = getCairoTimeContext(Date.now()).dayKey;
 
     const captainsSnapshot = await db.collection("captains").get();
     const docs = captainsSnapshot.docs;
