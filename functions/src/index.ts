@@ -520,24 +520,44 @@ function timestampToMillis(value: unknown): number | null {
 
 async function buildMerchantSubscriptionResponse(merchantId: string, requestedCaptains = 1) {
   const db = getFirestore();
-  const [merchantSnap, subscriptionSnap, byMerchant, byRestaurant, byUser] = await Promise.all([
-    db.collection("merchants").doc(merchantId).get(),
-    db.collection("subscriptions").doc(merchantId).get(),
-    db.collection("orders").where("merchantId", "==", merchantId).get(),
-    db.collection("orders").where("restaurantId", "==", merchantId).get(),
-    db.collection("orders").where("userId", "==", merchantId).get(),
+  const merchantRef = db.collection("merchants").doc(merchantId);
+  const subscriptionRef = db.collection("subscriptions").doc(merchantId);
+  const capacityRef = merchantRef.collection("capacity").doc("current");
+  const [merchantSnap, subscriptionSnap, capacitySnap] = await Promise.all([
+    merchantRef.get(),
+    subscriptionRef.get(),
+    capacityRef.get(),
   ]);
   const merchant = merchantSnap.data() ?? {};
   const subscription = subscriptionSnap.data() ?? {};
-  const activeOrderIds = new Set<string>();
-  for (const snapshot of [byMerchant, byRestaurant, byUser]) {
-    for (const orderDoc of snapshot.docs) {
-      if (!isClosedMerchantOrderStatus(readNormalizedOrderStatus(orderDoc.data() ?? {}))) {
-        activeOrderIds.add(orderDoc.id);
+  const capacity = capacitySnap.data() ?? {};
+  let activeCaptainsCount = 0;
+
+  if (capacity.capacityInitialized === true) {
+    // Match the same serialized reservation source used by merchantCreateOrder.
+    // This avoids scanning the merchant's entire order history on every subscription refresh.
+    const reservedOrderIds = Array.isArray(capacity.reservedOrderIds)
+      ? capacity.reservedOrderIds.filter((id): id is string => typeof id === "string" && id.trim().length > 0)
+      : [];
+    activeCaptainsCount = new Set(reservedOrderIds).size;
+  } else {
+    // One-time compatibility fallback for merchants whose capacity ledger has not
+    // yet been initialized by the order-creation transaction.
+    const [byMerchant, byRestaurant, byUser] = await Promise.all([
+      db.collection("orders").where("merchantId", "==", merchantId).get(),
+      db.collection("orders").where("restaurantId", "==", merchantId).get(),
+      db.collection("orders").where("userId", "==", merchantId).get(),
+    ]);
+    const activeOrderIds = new Set<string>();
+    for (const snapshot of [byMerchant, byRestaurant, byUser]) {
+      for (const orderDoc of snapshot.docs) {
+        if (!isClosedMerchantOrderStatus(readNormalizedOrderStatus(orderDoc.data() ?? {}))) {
+          activeOrderIds.add(orderDoc.id);
+        }
       }
     }
+    activeCaptainsCount = activeOrderIds.size;
   }
-  const activeCaptainsCount = activeOrderIds.size;
   const {planId, planKey} = resolveCanonicalPlanIdentifier(merchant, subscription);
   const planName =
     readString(subscription, "planName", "packageName", "plan") ||
