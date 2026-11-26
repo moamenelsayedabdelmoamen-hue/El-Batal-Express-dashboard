@@ -258,7 +258,7 @@ export const CaptainDailyActivityModal: React.FC<Props> = ({ captain, initialTab
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div className="p-4 rounded-2xl bg-zinc-900/80 border border-zinc-800">
               <span className="text-xs text-zinc-400 block mb-1">الرصيد الحالي الحقيقي</span>
-              <strong className="text-xl text-emerald-400">{formatMoney(captain.walletBalance)}</strong>
+              <strong className="text-xl text-emerald-400">{captain.walletBalance !== undefined ? formatMoney(captain.walletBalance) : 'غير متاح'}</strong>
               <span className="text-[10px] text-zinc-500 block mt-1">من سجل captains/{captain.id}</span>
             </div>
             <div className="p-4 rounded-2xl bg-zinc-900/80 border border-zinc-800">
