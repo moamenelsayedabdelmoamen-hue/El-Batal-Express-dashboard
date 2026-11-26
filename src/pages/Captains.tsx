@@ -32,6 +32,7 @@ import { uploadImageToFirebaseStorage } from '../utils/storageUtils';
 import { useToast } from '../contexts/ToastContext';
 import { ExportButton } from '../components/common/ExportButton';
 import { exportCaptains } from '../utils/exportUtils';
+import { CaptainDailyActivityModal } from '../components/captains/CaptainDailyActivityModal';
 
 export const CaptainsPage: React.FC = () => {
   const navigate = useNavigate();
@@ -56,6 +57,8 @@ export const CaptainsPage: React.FC = () => {
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [togglingReceptionId, setTogglingReceptionId] = useState<string | null>(null);
   const [storageAuthDenied, setStorageAuthDenied] = useState(false);
+  const [activityCaptain, setActivityCaptain] = useState<Captain | null>(null);
+  const [activityTab, setActivityTab] = useState<'wallet' | 'orders'>('wallet');
 
   // Add / Edit captain form
   const [formData, setFormData] = useState({
@@ -561,7 +564,7 @@ export const CaptainsPage: React.FC = () => {
                   <th className="py-4 px-4">رقم الهاتف</th>
                   <th className="py-4 px-4">البريد الإلكتروني</th>
                   <th className="py-4 px-4">المركبة</th>
-                  <th className="py-4 px-4">عدد الطلبات</th>
+                  <th className="py-4 px-4">عدد الطلبات</th>\n                  <th className="py-4 px-4">رصيد المحفظة</th>
                   <th className="py-4 px-4">التقييم</th>
                   <th className="py-4 px-4">تاريخ الحالة</th>
                   <th className="py-4 px-4">كلمة السر</th>
@@ -626,12 +629,31 @@ export const CaptainsPage: React.FC = () => {
                         {captain.vehicleType || 'دراجة نارية'}
                       </td>
 
-                      {/* عدد الطلبات */}
+                      {/* عدد الطلبات - يفتح سجل طلبات الكابتن لليوم المحدد */}
                       <td className="py-4 px-4">
-                        <div className="flex items-center gap-1.5 text-xs font-black text-white font-['Outfit',sans-serif]">
+                        <button
+                          type="button"
+                          onClick={() => { setActivityCaptain(captain); setActivityTab('orders'); }}
+                          className="inline-flex items-center gap-1.5 text-xs font-black text-white hover:text-amber-300 font-['Outfit',sans-serif] underline-offset-4 hover:underline"
+                          title="عرض طلبات الكابتن اليوم والسجل السابق"
+                        >
                           <TrendingUp className="w-3.5 h-3.5 text-amber-400" />
                           <span>{captain.ordersCount} طلب</span>
-                        </div>
+                        </button>
+                      </td>
+
+                      {/* رصيد المحفظة الحقيقي */}
+                      <td className="py-4 px-4">
+                        <button
+                          type="button"
+                          onClick={() => { setActivityCaptain(captain); setActivityTab('wallet'); }}
+                          className="text-xs font-black text-emerald-400 hover:text-emerald-300 underline-offset-4 hover:underline whitespace-nowrap"
+                          title="عرض الرصيد الحقيقي وسجل المحفظة اليومي"
+                        >
+                          {captain.walletBalance !== undefined
+                            ? `${captain.walletBalance.toLocaleString('ar-EG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ج.م`
+                            : 'غير متاح'}
+                        </button>
                       </td>
 
                       {/* التقييم */}
@@ -833,7 +855,7 @@ export const CaptainsPage: React.FC = () => {
         </div>
       )}
 
-      {/* View Captain Details Modal */}
+      {activityCaptain && (\n        <CaptainDailyActivityModal\n          captain={activityCaptain}\n          initialTab={activityTab}\n          onClose={() => setActivityCaptain(null)}\n        />\n      )}\n\n      {/* View Captain Details Modal */}
       {viewingCaptain && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-xs">
           <div className="w-full max-w-md bg-[#11141c] border border-zinc-800 rounded-3xl p-6 shadow-2xl relative max-h-[90vh] overflow-y-auto">
