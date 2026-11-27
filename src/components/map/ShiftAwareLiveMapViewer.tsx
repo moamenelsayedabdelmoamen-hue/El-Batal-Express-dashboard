@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, Clock3, Phone } from 'lucide-react';
-import { Captain } from '../../types';
+import { CaptainSchedule } from '../../types';
 import { ShiftService } from '../../services/shiftService';
 import { computeCaptainShiftStatus } from '../../utils/shiftUtils';
 import { LiveMapViewer } from './LiveMapViewer';
@@ -13,7 +13,7 @@ import { LiveMapViewer } from './LiveMapViewer';
 type Props = React.ComponentProps<typeof LiveMapViewer>;
 
 export const ShiftAwareLiveMapViewer: React.FC<Props> = (props) => {
-  const [schedules, setSchedules] = useState<Map<string, any>>(new Map());
+  const [schedules, setSchedules] = useState<Map<string, CaptainSchedule>>(new Map());
   const [schedulesLoaded, setSchedulesLoaded] = useState(false);
   const [clockTick, setClockTick] = useState(0);
 
