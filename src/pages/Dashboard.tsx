@@ -165,12 +165,12 @@ export const DashboardPage: React.FC = () => {
     },
     {
       title: 'الكباتن النشطون',
-      value: stats?.activeCaptains ?? 0,
+      value: displayStats.activeCaptains,
       icon: TrendingUp,
       link: '/captains',
       color: 'from-cyan-500/20 to-cyan-600/5',
       iconColor: 'text-cyan-400',
-      badge: 'جاهزون للاستلام',
+      badge: 'متصلون داخل الشفت',
     },
     {
       title: 'إجمالي الطلبات',
