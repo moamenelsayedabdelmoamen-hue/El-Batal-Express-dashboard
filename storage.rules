@@ -182,7 +182,8 @@ service firebase.storage {
     // 3. Order Receipts: orders/{orderId}/receipts/{uniqueFileName}
     // - Read: ONLY the assigned captain of this order, the merchant owning THIS specific order, or an admin.
     // - Create/Update: ONLY the assigned captain when the order status is in the EXPLICIT allowlist
-    //   ['picked_up', 'merchant_rejected', 'awaiting_merchant_confirmation'] (any unknown or closed state is rejected).
+    //   ['arrived_at_merchant', 'at_store', 'picked_up', 'merchant_rejected', 'awaiting_merchant_confirmation']
+    //   (any unknown or closed state is rejected).
     // - Delete: Admin/server authority only.
     match /orders/{orderId}/receipts/{uniqueFileName} {
       allow read: if isAuthenticated() && (
@@ -222,11 +223,11 @@ service firebase.storage {
       allow read: if isAuthenticated() && (
         request.auth.uid == merchantId ||
         isAdmin() ||
-        !allFiles.matches('subscription_receipts/.*')
+        allFiles[0] != 'subscription_receipts'
       );
       allow create, update: if isAuthenticated()
         && (request.auth.uid == merchantId || isAdmin())
-        && !allFiles.matches('subscription_receipts/.*')
+        && allFiles[0] != 'subscription_receipts'
         && isValidImageUpload();
       allow delete: if isAdmin();
     }
