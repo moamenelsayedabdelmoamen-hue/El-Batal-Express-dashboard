@@ -155,12 +155,12 @@ export const MetricsSummary: React.FC<MetricsSummaryProps> = ({ stats }) => {
                   {activeCaptains.toLocaleString('ar-EG')}
                 </span>
                 <span className="text-sm font-bold text-zinc-300">
-                  كابتن جاهز من أصل {totalCaptains}
+                  كابتن متصل داخل ساعات العمل من أصل {totalCaptains}
                 </span>
               </div>
 
               <div className="flex items-center gap-2 mt-1 text-xs text-zinc-400">
-                <span>نسبة جاهزية الأسطول:</span>
+                <span>نسبة الاتصال داخل ساعات العمل:</span>
                 <strong className="text-cyan-300 font-['Outfit',sans-serif] font-bold">
                   %{captainReadinessRate}
                 </strong>
@@ -183,7 +183,7 @@ export const MetricsSummary: React.FC<MetricsSummaryProps> = ({ stats }) => {
               />
             </div>
             <div className="flex items-center justify-between mt-3">
-              <span className="text-[11px] text-zinc-500">جاهزون للاستلام الفوري</span>
+              <span className="text-[11px] text-zinc-500">متصلون داخل ساعات العمل</span>
               <Link
                 id="link-to-captains-detail"
                 to="/captains"

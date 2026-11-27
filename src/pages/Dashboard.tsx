@@ -16,18 +16,22 @@ import {
   Compass,
   CalendarClock,
 } from 'lucide-react';
-import { DashboardStats, Order } from '../types';
+import { Captain, CaptainSchedule, DashboardStats, Order } from '../types';
 import { DashboardService, EMPTY_STATS } from '../services/dashboardService';
 import { PaymentService, computePaymentRevenueMetrics } from '../services/paymentService';
 import { StatusBadge } from '../components/common/StatusBadge';
 import { EmptyState } from '../components/common/EmptyState';
 import { MetricsSummary } from '../components/dashboard/MetricsSummary';
+import { CaptainService } from '../services/captainService';
+import { ShiftService } from '../services/shiftService';
+import { computeCaptainShiftStatus } from '../utils/shiftUtils';
 
 export const DashboardPage: React.FC = () => {
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [recentOrders, setRecentOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [activeCaptainsWithinShift, setActiveCaptainsWithinShift] = useState<number | null>(null);
 
   const fetchDashboard = async () => {
     try {
@@ -64,7 +68,49 @@ export const DashboardPage: React.FC = () => {
       );
     });
 
-    return () => unsubPayments();
+    // Count only captains who are currently connected AND whose Cairo-time shift is active.
+    let liveCaptains: Captain[] = [];
+    let liveSchedules = new Map<string, CaptainSchedule>();
+    let captainsLoaded = false;
+    let schedulesLoaded = false;
+
+    const updateActiveCaptainCount = () => {
+      if (!captainsLoaded || !schedulesLoaded) return;
+
+      const count = liveCaptains.filter((captain) => {
+        const isConnected =
+          captain.isOnline === true ||
+          captain.status === 'online' ||
+          captain.status === 'busy';
+        if (!isConnected) return false;
+
+        return computeCaptainShiftStatus(liveSchedules.get(captain.id)).status === 'active';
+      }).length;
+
+      setActiveCaptainsWithinShift(count);
+    };
+
+    const unsubCaptains = CaptainService.subscribeAll((captains) => {
+      liveCaptains = captains;
+      captainsLoaded = true;
+      updateActiveCaptainCount();
+    });
+
+    const unsubSchedules = ShiftService.subscribeAllSchedules((schedules) => {
+      liveSchedules = schedules;
+      schedulesLoaded = true;
+      updateActiveCaptainCount();
+    });
+
+    // Re-evaluate at shift boundaries even when no Firestore document changes.
+    const shiftClock = window.setInterval(updateActiveCaptainCount, 60_000);
+
+    return () => {
+      unsubPayments();
+      unsubCaptains();
+      unsubSchedules();
+      window.clearInterval(shiftClock);
+    };
   }, []);
 
   const handleRefresh = () => {
@@ -84,6 +130,10 @@ export const DashboardPage: React.FC = () => {
       </div>
     );
   }
+
+  const displayStats = stats
+    ? { ...stats, activeCaptains: activeCaptainsWithinShift ?? stats.activeCaptains }
+    : EMPTY_STATS;
 
   const statCards = [
     {
@@ -111,16 +161,16 @@ export const DashboardPage: React.FC = () => {
       link: '/captains',
       color: 'from-blue-500/20 to-blue-600/5',
       iconColor: 'text-blue-400',
-      badge: `${stats?.activeCaptains ?? 0} متصل`,
+      badge: `${displayStats.activeCaptains} متصل`,
     },
     {
       title: 'الكباتن النشطون',
-      value: stats?.activeCaptains ?? 0,
+      value: displayStats.activeCaptains,
       icon: TrendingUp,
       link: '/captains',
       color: 'from-cyan-500/20 to-cyan-600/5',
       iconColor: 'text-cyan-400',
-      badge: 'جاهزون للاستلام',
+      badge: 'متصلون داخل الشفت',
     },
     {
       title: 'إجمالي الطلبات',
@@ -208,7 +258,7 @@ export const DashboardPage: React.FC = () => {
       </div>
 
       {/* Metrics Summary Component: displays daily order volume, total active captains, and monthly revenue */}
-      <MetricsSummary stats={stats || EMPTY_STATS} />
+      <MetricsSummary stats={displayStats} />
 
       {/* Quick actions & Navigation row */}
       <div className="bg-[#11141c] border border-zinc-800/90 rounded-3xl p-6 shadow-xl">
@@ -296,7 +346,7 @@ export const DashboardPage: React.FC = () => {
               </div>
               <div>
                 <span>متابعة الكباتن الميدانيين</span>
-                <span className="text-[11px] text-zinc-500 block font-normal">{stats?.activeCaptains ?? 0} جاهز للتوصيل</span>
+                <span className="text-[11px] text-zinc-500 block font-normal">{displayStats.activeCaptains} داخل ساعات العمل</span>
               </div>
             </div>
             <ArrowUpLeft className="w-4 h-4 text-zinc-500 group-hover:text-blue-400 transition-colors" />
