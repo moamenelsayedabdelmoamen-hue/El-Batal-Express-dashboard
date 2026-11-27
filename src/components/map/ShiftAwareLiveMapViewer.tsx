@@ -15,7 +15,7 @@ type Props = React.ComponentProps<typeof LiveMapViewer>;
 export const ShiftAwareLiveMapViewer: React.FC<Props> = (props) => {
   const [schedules, setSchedules] = useState<Map<string, any>>(new Map());
   const [schedulesLoaded, setSchedulesLoaded] = useState(false);
-  const [, setClockTick] = useState(0);
+  const [clockTick, setClockTick] = useState(0);
 
   useEffect(() => {
     const unsubscribe = ShiftService.subscribeAllSchedules((nextSchedules) => {
@@ -40,7 +40,7 @@ export const ShiftAwareLiveMapViewer: React.FC<Props> = (props) => {
       const schedule = schedules.get(captain.id);
       return Boolean(schedule) && computeCaptainShiftStatus(schedule).status === 'off_shift';
     });
-  }, [props.captains, schedules, schedulesLoaded]);
+  }, [props.captains, schedules, schedulesLoaded, clockTick]);
 
   const offShiftIds = useMemo(
     () => new Set(offShiftCaptains.map((captain) => captain.id)),
