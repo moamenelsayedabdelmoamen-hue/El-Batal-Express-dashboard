@@ -35,6 +35,7 @@ export const LiveMapPage: React.FC = () => {
   const [activeOrders, setActiveOrders] = useState<Order[]>([]);
   const [connectedInShiftCaptains, setConnectedInShiftCaptains] = useState<Captain[]>([]);
   const [offShiftCaptains, setOffShiftCaptains] = useState<Captain[]>([]);
+  const [activeRosterModal, setActiveRosterModal] = useState<'restaurants' | 'connected' | 'offShift' | 'trips' | null>(null);
 
   const [, setIsLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
@@ -323,87 +324,90 @@ export const LiveMapPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Real-time KPI Stats Counters */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-3">
-        <div className="p-3.5 rounded-xl bg-[#0d1017] border border-zinc-800/80 shadow-md">
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-zinc-400 font-bold">التجار على الخريطة</span>
-            <Store className="w-4 h-4 text-amber-400" />
-          </div>
-          <div className="mt-2 flex items-baseline gap-1.5">
-            <span className="text-xl font-extrabold text-zinc-100 font-mono">{stats.restaurantsWithGps}</span>
-            <span className="text-[11px] text-zinc-500">من {stats.totalRestaurants}</span>
-          </div>
-        </div>
-
-        <div className="p-3.5 rounded-xl bg-[#0d1017] border border-emerald-500/20 shadow-md min-w-0">
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-zinc-400 font-bold">الكباتن المتصلين داخل ساعات العمل</span>
-            <Activity className="w-4 h-4 text-emerald-400" />
-          </div>
-          <div className="mt-2 flex items-baseline gap-1.5">
-            <span className="text-xl font-extrabold text-emerald-400 font-mono">{stats.onlineCaptains}</span>
-            <span className="text-[11px] text-zinc-500">متصل وداخل الشفت</span>
-          </div>
-          <div className="mt-3 max-h-28 space-y-1 overflow-y-auto border-t border-zinc-800 pt-2">
-            {connectedInShiftCaptains.length ? connectedInShiftCaptains.map((captain) => (
-              <div key={captain.id} className="flex items-center justify-between gap-2 text-[11px]">
-                <span className="truncate text-zinc-200">{captain.name}</span>
-                <span className="shrink-0 text-emerald-400">متصل</span>
-              </div>
-            )) : <p className="text-[11px] text-zinc-500">لا يوجد كباتن متصلون داخل الشفت حالياً</p>}
-          </div>
-        </div>
-
-        <div className="p-3.5 rounded-xl bg-[#0d1017] border border-orange-500/20 shadow-md min-w-0">
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-zinc-400 font-bold">كباتن خارج ساعات العمل</span>
-            <Bike className="w-4 h-4 text-orange-400" />
-          </div>
-          <div className="mt-2 flex items-baseline gap-1.5">
-            <span className="text-xl font-extrabold text-orange-300 font-mono">{stats.offShiftCaptains}</span>
-            <span className="text-[11px] text-zinc-500">خارج الشفت</span>
-          </div>
-          <div className="mt-3 max-h-28 space-y-1 overflow-y-auto border-t border-zinc-800 pt-2">
-            {offShiftCaptains.length ? offShiftCaptains.map((captain) => (
-              <div key={captain.id} className="flex items-center justify-between gap-2 text-[11px]">
-                <span className="truncate text-zinc-200">{captain.name}</span>
-                <span className="shrink-0 text-orange-300">خارج الشفت</span>
-              </div>
-            )) : <p className="text-[11px] text-zinc-500">لا يوجد كباتن خارج ساعات العمل حالياً</p>}
-          </div>
-        </div>
-
-        <div className="p-3.5 rounded-xl bg-[#0d1017] border border-amber-500/20 shadow-md min-w-0">
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-zinc-400 font-bold">في رحلات نشطة</span>
-            <Navigation className="w-4 h-4 text-amber-400" />
-          </div>
-          <div className="mt-2 flex items-baseline gap-1.5">
-            <span className="text-xl font-extrabold text-amber-300 font-mono">{stats.activeTripsCount}</span>
-            <span className="text-[11px] text-zinc-500">طلبات مسندة لكباتن</span>
-          </div>
-          <div className="mt-3 max-h-28 space-y-2 overflow-y-auto border-t border-zinc-800 pt-2">
-            {activeCaptainTrips.length ? activeCaptainTrips.map((order) => (
-              <div key={order.id} className="space-y-0.5 text-[11px]">
-                <p className="truncate font-bold text-zinc-100">{order.captainName || captains.find((captain) => captain.id === order.captainId)?.name || 'كابتن غير محدد'}</p>
-                <p className="truncate text-zinc-400">{order.restaurantName || 'تاجر غير محدد'} · طلب #{order.orderNumber || order.id.slice(0, 8)}</p>
-              </div>
-            )) : <p className="text-[11px] text-zinc-500">لا توجد رحلات مسندة لكباتن حالياً</p>}
-          </div>
-        </div>
-
-        <div className="p-3.5 rounded-xl bg-[#0d1017] border border-zinc-800/80 shadow-md">
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-zinc-400 font-bold">الرحلات الجارية</span>
-            <span className="w-2.5 h-2.5 rounded-full bg-amber-400 animate-ping"></span>
-          </div>
-          <div className="mt-2 flex items-baseline gap-1.5">
-            <span className="text-xl font-extrabold text-amber-300 font-mono">{activeOrders.length}</span>
-            <span className="text-[11px] text-zinc-500">كل الطلبات غير المكتملة</span>
-          </div>
-        </div>
+      {/* Clickable Live Map KPI Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
+        <button type="button" onClick={() => setActiveRosterModal('restaurants')} className="w-full text-right p-4 rounded-xl bg-[#0d1017] border border-zinc-800/80 shadow-md hover:border-amber-500/50 hover:bg-zinc-900/80 transition-colors cursor-pointer focus:outline-none focus:ring-2 focus:ring-amber-500/60">
+          <div className="flex items-center justify-between gap-2"><span className="text-sm text-zinc-300 font-bold">التجار على الخريطة</span><Store className="w-5 h-5 text-amber-400" /></div>
+          <div className="mt-3 flex items-baseline gap-2"><span className="text-2xl font-extrabold text-zinc-100 font-mono">{stats.restaurantsWithGps}</span><span className="text-xs text-zinc-500">تاجر — اضغط لعرض القائمة</span></div>
+        </button>
+        <button type="button" onClick={() => setActiveRosterModal('connected')} className="w-full text-right p-4 rounded-xl bg-[#0d1017] border border-emerald-500/20 shadow-md hover:border-emerald-400/60 hover:bg-zinc-900/80 transition-colors cursor-pointer focus:outline-none focus:ring-2 focus:ring-emerald-500/60">
+          <div className="flex items-center justify-between gap-2"><span className="text-sm text-zinc-300 font-bold">الكباتن المتصلون داخل ساعات العمل</span><Activity className="w-5 h-5 text-emerald-400" /></div>
+          <div className="mt-3 flex items-baseline gap-2"><span className="text-2xl font-extrabold text-emerald-400 font-mono">{stats.onlineCaptains}</span><span className="text-xs text-zinc-500">كابتن — اضغط لعرض القائمة</span></div>
+        </button>
+        <button type="button" onClick={() => setActiveRosterModal('offShift')} className="w-full text-right p-4 rounded-xl bg-[#0d1017] border border-orange-500/20 shadow-md hover:border-orange-400/60 hover:bg-zinc-900/80 transition-colors cursor-pointer focus:outline-none focus:ring-2 focus:ring-orange-500/60">
+          <div className="flex items-center justify-between gap-2"><span className="text-sm text-zinc-300 font-bold">كباتن خارج ساعات العمل</span><Bike className="w-5 h-5 text-orange-400" /></div>
+          <div className="mt-3 flex items-baseline gap-2"><span className="text-2xl font-extrabold text-orange-300 font-mono">{stats.offShiftCaptains}</span><span className="text-xs text-zinc-500">كابتن — اضغط لعرض القائمة</span></div>
+        </button>
+        <button type="button" onClick={() => setActiveRosterModal('trips')} className="w-full text-right p-4 rounded-xl bg-[#0d1017] border border-amber-500/20 shadow-md hover:border-amber-400/60 hover:bg-zinc-900/80 transition-colors cursor-pointer focus:outline-none focus:ring-2 focus:ring-amber-500/60">
+          <div className="flex items-center justify-between gap-2"><span className="text-sm text-zinc-300 font-bold">في رحلات نشطة</span><Navigation className="w-5 h-5 text-amber-400" /></div>
+          <div className="mt-3 flex items-baseline gap-2"><span className="text-2xl font-extrabold text-amber-300 font-mono">{stats.activeTripsCount}</span><span className="text-xs text-zinc-500">رحلة — اضغط لعرض التفاصيل</span></div>
+        </button>
       </div>
+
+      {activeRosterModal && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/75 p-3 sm:p-6" onClick={() => setActiveRosterModal(null)} role="presentation">
+          <section role="dialog" aria-modal="true" aria-labelledby="live-roster-modal-title" dir="rtl" onClick={(event) => event.stopPropagation()} className="w-full max-w-2xl max-h-[85vh] overflow-hidden rounded-2xl border border-zinc-700 bg-[#111720] shadow-2xl flex flex-col">
+            <header className="flex items-center justify-between gap-3 border-b border-zinc-800 p-4 sm:p-5">
+              <div>
+                <h3 id="live-roster-modal-title" className="text-base sm:text-lg font-extrabold text-zinc-100">
+                  {activeRosterModal === 'restaurants' && 'كل التجار على الخريطة'}
+                  {activeRosterModal === 'connected' && 'الكباتن المتصلون داخل ساعات العمل'}
+                  {activeRosterModal === 'offShift' && 'كل الكباتن خارج ساعات العمل'}
+                  {activeRosterModal === 'trips' && 'تفاصيل الرحلات النشطة'}
+                </h3>
+                <p className="mt-1 text-xs text-zinc-400">
+                  {activeRosterModal === 'restaurants' && `عدد التجار: ${plottedMerchants.length}`}
+                  {activeRosterModal === 'connected' && `عدد الكباتن: ${connectedInShiftCaptains.length}`}
+                  {activeRosterModal === 'offShift' && `عدد الكباتن: ${offShiftCaptains.length}`}
+                  {activeRosterModal === 'trips' && `عدد الرحلات: ${activeCaptainTrips.length}`}
+                </p>
+              </div>
+              <button type="button" onClick={() => setActiveRosterModal(null)} aria-label="إغلاق النافذة" className="shrink-0 rounded-lg border border-zinc-700 p-2 text-zinc-300 hover:bg-zinc-800 hover:text-white"><X className="h-5 w-5" /></button>
+            </header>
+            <div className="overflow-y-auto p-3 sm:p-4 space-y-2">
+              {activeRosterModal === 'restaurants' && (
+                plottedMerchants.length ? plottedMerchants.map((merchant) => (
+                  <button type="button" key={merchant.id} onClick={() => { handleSelectRestaurant(merchant); setActiveRosterModal(null); }} className="w-full rounded-xl border border-zinc-800 bg-zinc-900/70 p-3 text-right hover:border-amber-500/50 hover:bg-zinc-800/80 transition-colors">
+                    <div className="flex items-center justify-between gap-3"><span className="font-bold text-sm text-zinc-100">{merchant.name}</span><span className="text-[11px] text-amber-300 shrink-0">عرض على الخريطة</span></div>
+                    <div className="mt-1 text-xs text-zinc-400">{merchant.address || 'لا يوجد عنوان مسجل'}</div>
+                    {merchant.phone && <div className="mt-1 text-xs text-zinc-500" dir="ltr">{merchant.phone}</div>}
+                  </button>
+                )) : <p className="p-8 text-center text-sm text-zinc-400">لا يوجد تجار لديهم مواقع محددة على الخريطة حالياً</p>
+              )}
+              {activeRosterModal === 'connected' && (
+                connectedInShiftCaptains.length ? connectedInShiftCaptains.map((captain) => (
+                  <button type="button" key={captain.id} onClick={() => { handleSelectCaptain(captain); setActiveRosterModal(null); }} className="w-full rounded-xl border border-zinc-800 bg-zinc-900/70 p-3 text-right hover:border-emerald-500/50 hover:bg-zinc-800/80 transition-colors">
+                    <div className="flex items-center justify-between gap-3"><span className="font-bold text-sm text-zinc-100">{captain.name}</span><span className="text-[11px] text-emerald-300 shrink-0">متصل داخل الشفت</span></div>
+                    <div className="mt-1 text-xs text-zinc-400" dir="ltr">{captain.phone || 'لا يوجد رقم هاتف'}</div>
+                  </button>
+                )) : <p className="p-8 text-center text-sm text-zinc-400">لا يوجد كباتن متصلون داخل ساعات العمل حالياً</p>
+              )}
+              {activeRosterModal === 'offShift' && (
+                offShiftCaptains.length ? offShiftCaptains.map((captain) => (
+                  <button type="button" key={captain.id} onClick={() => { handleSelectCaptain(captain); setActiveRosterModal(null); }} className="w-full rounded-xl border border-zinc-800 bg-zinc-900/70 p-3 text-right hover:border-orange-500/50 hover:bg-zinc-800/80 transition-colors">
+                    <div className="flex items-center justify-between gap-3"><span className="font-bold text-sm text-zinc-100">{captain.name}</span><span className="text-[11px] text-orange-300 shrink-0">خارج ساعات العمل</span></div>
+                    <div className="mt-1 text-xs text-zinc-400" dir="ltr">{captain.phone || 'لا يوجد رقم هاتف'}</div>
+                  </button>
+                )) : <p className="p-8 text-center text-sm text-zinc-400">لا يوجد كباتن خارج ساعات العمل حالياً</p>
+              )}
+              {activeRosterModal === 'trips' && (
+                activeCaptainTrips.length ? activeCaptainTrips.map((order) => {
+                  const assignedCaptain = captains.find((captain) => captain.id === order.captainId);
+                  return (
+                    <button type="button" key={order.id} onClick={() => { handleSelectOrder(order); setActiveRosterModal(null); }} className="w-full rounded-xl border border-zinc-800 bg-zinc-900/70 p-3 text-right hover:border-amber-500/50 hover:bg-zinc-800/80 transition-colors">
+                      <div className="flex flex-wrap items-center justify-between gap-2"><span className="font-bold text-sm text-zinc-100">طلب #{order.orderNumber || order.id.slice(0, 8)}</span><span className="text-[11px] text-amber-300">{order.status}</span></div>
+                      <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                        <p className="text-zinc-300">الكابتن: <span className="font-bold text-zinc-100">{order.captainName || assignedCaptain?.name || 'كابتن غير محدد'}</span></p>
+                        <p className="text-zinc-300">التاجر: <span className="font-bold text-zinc-100">{order.restaurantName || 'تاجر غير محدد'}</span></p>
+                      </div>
+                    </button>
+                  );
+                }) : <p className="p-8 text-center text-sm text-zinc-400">لا توجد رحلات نشطة مسندة إلى كباتن حالياً</p>
+              )}
+            </div>
+          </section>
+        </div>
+      )}
 
       {/* Filter and Search Bar */}
       <div className="p-4 rounded-2xl bg-[#0d1017] border border-zinc-800/80 flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3 shadow-md">
