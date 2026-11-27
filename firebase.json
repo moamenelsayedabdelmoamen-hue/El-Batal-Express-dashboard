@@ -10,7 +10,7 @@
   ],
   "hosting": {
     "site": "elbatalexpress",
-    "public": "dashboard/dist",
+    "public": "dist",
     "ignore": [
       "firebase.json",
       "**/.*",
