@@ -33,6 +33,8 @@ export const LiveMapPage: React.FC = () => {
   const [resolvedCoordsMap, setResolvedCoordsMap] = useState<Record<string, Coordinates>>({});
   const [captains, setCaptains] = useState<Captain[]>([]);
   const [activeOrders, setActiveOrders] = useState<Order[]>([]);
+  const [connectedInShiftCaptains, setConnectedInShiftCaptains] = useState<Captain[]>([]);
+  const [offShiftCaptains, setOffShiftCaptains] = useState<Captain[]>([]);
 
   const [, setIsLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
@@ -176,23 +178,21 @@ export const LiveMapPage: React.FC = () => {
   }, [restaurants, selectedRestaurant]);
 
   // 2. Computed Live Statistics & Merchant Location Lists
+  const activeCaptainTrips = useMemo(
+    () => activeOrders.filter((order) => Boolean(order.captainId || order.captainName)),
+    [activeOrders]
+  );
+
   const stats = useMemo(() => {
     const restaurantsWithGps = restaurants.filter((r) => r.coords).length;
-    const onlineCaptains = captains.filter((c) => c.isOnline || c.status === 'available' || c.status === 'busy');
-    const availableCaptains = captains.filter((c) => c.status === 'available' || c.status === 'online');
-    const busyCaptains = captains.filter((c) => c.status === 'busy');
-    const activeTripsCount = activeOrders.length;
-
     return {
       restaurantsWithGps,
       totalRestaurants: restaurants.length,
-      onlineCaptains: onlineCaptains.length,
-      availableCaptains: availableCaptains.length,
-      busyCaptains: busyCaptains.length,
-      totalCaptains: captains.length,
-      activeTripsCount,
+      onlineCaptains: connectedInShiftCaptains.length,
+      offShiftCaptains: offShiftCaptains.length,
+      activeTripsCount: activeCaptainTrips.length,
     };
-  }, [restaurants, captains, activeOrders]);
+  }, [restaurants, connectedInShiftCaptains, offShiftCaptains, activeCaptainTrips]);
 
   const plottedMerchants = useMemo(
     () => restaurants.filter((r) => Boolean(r.coords)),
@@ -324,69 +324,83 @@ export const LiveMapPage: React.FC = () => {
       </div>
 
       {/* Real-time KPI Stats Counters */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-3">
         <div className="p-3.5 rounded-xl bg-[#0d1017] border border-zinc-800/80 shadow-md">
           <div className="flex items-center justify-between">
             <span className="text-xs text-zinc-400 font-bold">التجار على الخريطة</span>
             <Store className="w-4 h-4 text-amber-400" />
           </div>
           <div className="mt-2 flex items-baseline gap-1.5">
-            <span className="text-xl font-extrabold text-zinc-100 font-mono">
-              {stats.restaurantsWithGps}
-            </span>
+            <span className="text-xl font-extrabold text-zinc-100 font-mono">{stats.restaurantsWithGps}</span>
             <span className="text-[11px] text-zinc-500">من {stats.totalRestaurants}</span>
           </div>
         </div>
 
-        <div className="p-3.5 rounded-xl bg-[#0d1017] border border-zinc-800/80 shadow-md">
+        <div className="p-3.5 rounded-xl bg-[#0d1017] border border-emerald-500/20 shadow-md min-w-0">
           <div className="flex items-center justify-between">
-            <span className="text-xs text-zinc-400 font-bold">الكباتن المتصلين</span>
+            <span className="text-xs text-zinc-400 font-bold">الكباتن المتصلين داخل ساعات العمل</span>
             <Activity className="w-4 h-4 text-emerald-400" />
           </div>
           <div className="mt-2 flex items-baseline gap-1.5">
-            <span className="text-xl font-extrabold text-emerald-400 font-mono">
-              {stats.onlineCaptains}
-            </span>
-            <span className="text-[11px] text-zinc-500">متصل الآن</span>
+            <span className="text-xl font-extrabold text-emerald-400 font-mono">{stats.onlineCaptains}</span>
+            <span className="text-[11px] text-zinc-500">متصل وداخل الشفت</span>
+          </div>
+          <div className="mt-3 max-h-28 space-y-1 overflow-y-auto border-t border-zinc-800 pt-2">
+            {connectedInShiftCaptains.length ? connectedInShiftCaptains.map((captain) => (
+              <div key={captain.id} className="flex items-center justify-between gap-2 text-[11px]">
+                <span className="truncate text-zinc-200">{captain.name}</span>
+                <span className="shrink-0 text-emerald-400">متصل</span>
+              </div>
+            )) : <p className="text-[11px] text-zinc-500">لا يوجد كباتن متصلون داخل الشفت حالياً</p>}
           </div>
         </div>
 
-        <div className="p-3.5 rounded-xl bg-[#0d1017] border border-zinc-800/80 shadow-md">
+        <div className="p-3.5 rounded-xl bg-[#0d1017] border border-orange-500/20 shadow-md min-w-0">
           <div className="flex items-center justify-between">
-            <span className="text-xs text-zinc-400 font-bold">كباتن متاحين</span>
-            <Bike className="w-4 h-4 text-emerald-400" />
+            <span className="text-xs text-zinc-400 font-bold">كباتن خارج ساعات العمل</span>
+            <Bike className="w-4 h-4 text-orange-400" />
           </div>
           <div className="mt-2 flex items-baseline gap-1.5">
-            <span className="text-xl font-extrabold text-emerald-300 font-mono">
-              {stats.availableCaptains}
-            </span>
-            <span className="text-[11px] text-zinc-500">جاهز للطلب</span>
+            <span className="text-xl font-extrabold text-orange-300 font-mono">{stats.offShiftCaptains}</span>
+            <span className="text-[11px] text-zinc-500">خارج الشفت</span>
+          </div>
+          <div className="mt-3 max-h-28 space-y-1 overflow-y-auto border-t border-zinc-800 pt-2">
+            {offShiftCaptains.length ? offShiftCaptains.map((captain) => (
+              <div key={captain.id} className="flex items-center justify-between gap-2 text-[11px]">
+                <span className="truncate text-zinc-200">{captain.name}</span>
+                <span className="shrink-0 text-orange-300">خارج الشفت</span>
+              </div>
+            )) : <p className="text-[11px] text-zinc-500">لا يوجد كباتن خارج ساعات العمل حالياً</p>}
           </div>
         </div>
 
-        <div className="p-3.5 rounded-xl bg-[#0d1017] border border-zinc-800/80 shadow-md">
+        <div className="p-3.5 rounded-xl bg-[#0d1017] border border-amber-500/20 shadow-md min-w-0">
           <div className="flex items-center justify-between">
             <span className="text-xs text-zinc-400 font-bold">في رحلات نشطة</span>
-            <Navigation className="w-4 h-4 text-amber-500" />
+            <Navigation className="w-4 h-4 text-amber-400" />
           </div>
           <div className="mt-2 flex items-baseline gap-1.5">
-            <span className="text-xl font-extrabold text-amber-400 font-mono">
-              {stats.busyCaptains}
-            </span>
-            <span className="text-[11px] text-zinc-500">مشغول حالياً</span>
+            <span className="text-xl font-extrabold text-amber-300 font-mono">{stats.activeTripsCount}</span>
+            <span className="text-[11px] text-zinc-500">طلبات مسندة لكباتن</span>
+          </div>
+          <div className="mt-3 max-h-28 space-y-2 overflow-y-auto border-t border-zinc-800 pt-2">
+            {activeCaptainTrips.length ? activeCaptainTrips.map((order) => (
+              <div key={order.id} className="space-y-0.5 text-[11px]">
+                <p className="truncate font-bold text-zinc-100">{order.captainName || captains.find((captain) => captain.id === order.captainId)?.name || 'كابتن غير محدد'}</p>
+                <p className="truncate text-zinc-400">{order.restaurantName || 'تاجر غير محدد'} · طلب #{order.orderNumber || order.id.slice(0, 8)}</p>
+              </div>
+            )) : <p className="text-[11px] text-zinc-500">لا توجد رحلات مسندة لكباتن حالياً</p>}
           </div>
         </div>
 
-        <div className="col-span-2 sm:col-span-1 p-3.5 rounded-xl bg-[#0d1017] border border-zinc-800/80 shadow-md">
+        <div className="p-3.5 rounded-xl bg-[#0d1017] border border-zinc-800/80 shadow-md">
           <div className="flex items-center justify-between">
             <span className="text-xs text-zinc-400 font-bold">الرحلات الجارية</span>
             <span className="w-2.5 h-2.5 rounded-full bg-amber-400 animate-ping"></span>
           </div>
           <div className="mt-2 flex items-baseline gap-1.5">
-            <span className="text-xl font-extrabold text-amber-300 font-mono">
-              {stats.activeTripsCount}
-            </span>
-            <span className="text-[11px] text-zinc-500">طلب قيد التنفيذ</span>
+            <span className="text-xl font-extrabold text-amber-300 font-mono">{activeOrders.length}</span>
+            <span className="text-[11px] text-zinc-500">كل الطلبات غير المكتملة</span>
           </div>
         </div>
       </div>
@@ -629,6 +643,10 @@ export const LiveMapPage: React.FC = () => {
 
       {/* Main Interactive Map Viewer */}
       <LiveMapViewer
+        onShiftRosterChange={({ connectedInShiftCaptains: connected, offShiftCaptains: offShift }) => {
+          setConnectedInShiftCaptains(connected);
+          setOffShiftCaptains(offShift);
+        }}
         restaurants={restaurants}
         captains={captains}
         activeOrders={activeOrders}
