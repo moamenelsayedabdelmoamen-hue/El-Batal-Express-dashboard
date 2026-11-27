@@ -15,7 +15,7 @@ import {
   Crosshair,
   X,
 } from 'lucide-react';
-import { LiveMapViewer } from '../components/map/LiveMapViewer';
+import { ShiftAwareLiveMapViewer as LiveMapViewer } from '../components/map/ShiftAwareLiveMapViewer';
 import { NearestCaptainsModal } from '../components/map/NearestCaptainsModal';
 import { EntityDetailsPanel } from '../components/map/EntityDetailsPanel';
 import { LiveMapService } from '../services/liveMapService';
