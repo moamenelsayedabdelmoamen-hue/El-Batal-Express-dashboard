@@ -16,7 +16,7 @@ describe("merchant order image access", () => {
   });
 
   it("only signs a receipt path recorded on an order owned by this merchant", () => {
-    assert.match(source, /storagePath\\.match/);
+    assert.match(source, /storagePath\.match/);
     assert.match(source, /receiptImagePath/);
     assert.match(source, /const ownsOrder = \["merchantId", "restaurantId", "storeId", "vendorId", "ownerId"\]/);
     assert.match(source, /const recordedReceipt = \[/);
@@ -24,7 +24,7 @@ describe("merchant order image access", () => {
   });
 
   it("only signs a captain profile photo when the captain is assigned to a merchant-owned order", () => {
-    assert.match(source, /captainId = match\\[1\\]/);
+    assert.match(source, /captainId = match\[1\]/);
     assert.match(source, /const candidateFields = \["captainId", "captainUid", "driverId", "assignedCaptainId"\]/);
     assert.match(source, /orders\.docs\.some/);
     assert.match(source, /order\[key\] === uid/);
