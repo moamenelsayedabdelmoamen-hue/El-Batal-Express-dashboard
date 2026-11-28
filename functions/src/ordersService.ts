@@ -300,6 +300,18 @@ export class OrderServerService {
 
       const captainName = readString(captainData, "fullName", "name");
       const captainPhone = readString(captainData, "phone", "phoneNumber");
+      // Keep the captain photo on the order itself so the Merchant app can render it
+      // without a second captain-document lookup. Storage paths are supported by clients.
+      const captainPhotoUrl = readString(
+        captainData,
+        "profileImageUrl",
+        "photoUrl",
+        "imageUrl",
+        "personalImageUrl",
+        "profileImagePath",
+        "personalImage",
+        "avatarUri"
+      );
       const createdAtMs = parseTimestampMs(
         order.createdAt ?? order.created_at ?? order.timestamp
       );
@@ -317,6 +329,7 @@ export class OrderServerService {
         captainUid: uid,
         captainName,
         captainPhone,
+        captainPhotoUrl,
         offeredCaptainId: null,
         offerExpiresAt: null,
         eligibleCaptainIds: s.deleteField(),
@@ -335,7 +348,7 @@ export class OrderServerService {
         currentOrderId: orderId,
         activeMerchantId: merchantId,
         currentMerchantId: merchantId,
-        captainPhotoUrl: readString(captainData, "profileImageUrl", "photoUrl", "imageUrl", "personalImageUrl"),
+        captainPhotoUrl,
         activeOfferOrderId: null,
         activeOfferGeneration: null,
         activeOfferExpiresAt: null,

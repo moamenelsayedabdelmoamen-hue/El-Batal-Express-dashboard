@@ -714,12 +714,26 @@ describe("El-Batal Cloud Functions Order Server Service", () => {
     const now = Date.UTC(2026, 10, 18, 12, 0, 0);
     const {db, service} = createHarness(now);
     seedMerchantAndSub(db, "merch_1");
-    seedCaptain(db, "cap_1", {walletBalance: 100.0, totalOrdersCount: 5, commissionRate: 0.1}, now);
+    seedCaptain(db, "cap_1", {
+      walletBalance: 100.0,
+      totalOrdersCount: 5,
+      commissionRate: 0.1,
+      profileImagePath: "captains/cap_1/profile/profile.jpg",
+    }, now);
     seedPendingOrder(db, "ord_life", {deliveryFee: 50.0});
 
     await service.dispatchNewOrSearchingOrder("ord_life");
     await service.acceptOrder("cap_1", {orderId: "ord_life"});
     assert.equal(db.getDocData("captains/cap_1").availabilityStatus, "on_trip");
+    assert.equal(
+      db.getDocData("orders/ord_life").captainPhotoUrl,
+      "captains/cap_1/profile/profile.jpg",
+      "Accepted order must carry the captain's Storage photo path for the Merchant app."
+    );
+    assert.equal(
+      db.getDocData("captains/cap_1").captainPhotoUrl,
+      "captains/cap_1/profile/profile.jpg"
+    );
     await service.captainArrivedAtMerchant("cap_1", {orderId: "ord_life"});
     await service.confirmPickup("cap_1", {orderId: "ord_life"});
 
