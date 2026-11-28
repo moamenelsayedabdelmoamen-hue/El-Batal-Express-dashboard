@@ -10,7 +10,7 @@
     "deploy": "firebase deploy --only functions",
     "logs": "firebase functions:log",
     "migrate:remove-legacy-captain-passwords": "node scripts/cleanup-legacy-captain-password-fields.cjs",
-    "test": "npm run build && node --test test/ordersService.test.mjs test/manualSubscriptionsService.test.mjs test/captainApprovalService.test.mjs test/rulesVerification.test.mjs"
+    "test": "npm run build && node --test test/ordersService.test.mjs test/manualSubscriptionsService.test.mjs test/captainApprovalService.test.mjs test/rulesVerification.test.mjs test/orderMediaAccess.test.mjs"
   },
   "name": "functions",
   "engines": {
