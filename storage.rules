@@ -71,19 +71,40 @@ service firebase.storage {
       );
     }
 
-    // EXPLICIT ALLOWLIST of order statuses permitted for receipt upload.
-    // Any missing, unknown, initial ('pending', 'accepted', 'at_store'), en_route,
-    // or closed ('delivered', 'completed', 'cancelled', 'expired', 'closed') status is REJECTED.
+    // A server-owned timestamp proves that the captain reached the merchant.
+    // Never trust a client-supplied status alone to bypass the arrival step.
+    function hasServerRecordedCaptainArrival(orderData) {
+      return (
+        ('arrivedAtMerchantAt' in orderData && orderData.arrivedAtMerchantAt is timestamp) ||
+        ('arrivedAtStoreTimestamp' in orderData && orderData.arrivedAtStoreTimestamp is timestamp) ||
+        ('arrived_at_merchant_at' in orderData && orderData.arrived_at_merchant_at is timestamp) ||
+        ('arrived_at_store_timestamp' in orderData && orderData.arrived_at_store_timestamp is timestamp)
+      );
+    }
+
+    // Keep this allowlist aligned with submitCustomerDeliveryDetails in Cloud Functions.
+    // Initial, unknown, en-route and terminal states remain blocked.
     function isExplicitAllowedReceiptUploadStatus(orderData) {
       return ('status' in orderData)
         && (orderData.status is string)
-        && (orderData.status in [
-          'arrived_at_merchant',
-          'at_store',
-          'picked_up',
-          'merchant_rejected',
-          'awaiting_merchant_confirmation'
-        ]);
+        && (
+          orderData.status in [
+            'arrived_at_merchant',
+            'at_store',
+            'arrived',
+            'arrived_store',
+            'picked_up',
+            'order_data_entered',
+            'data_entered',
+            'merchant_rejected',
+            'awaiting_merchant_confirmation',
+            'awaiting_confirmation'
+          ] ||
+          (
+            orderData.status in ['accepted', 'assigned'] &&
+            hasServerRecordedCaptainArrival(orderData)
+          )
+        );
     }
 
     function canReadOrderReceiptDoc(orderDoc) {
