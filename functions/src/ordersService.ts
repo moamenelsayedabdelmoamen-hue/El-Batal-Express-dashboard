@@ -565,11 +565,24 @@ export class OrderServerService {
         "awaiting_merchant_confirmation",
         "awaiting_confirmation",
       ]);
+      // Older clients or dashboard updates may leave the visible status at
+      // accepted/assigned after the server has already recorded the captain's
+      // arrival. Permit that legacy state only when the server-owned arrival
+      // timestamp proves the pickup stage was reached.
+      const hasServerRecordedArrival = parseTimestampMs(
+        order.arrivedAtMerchantAt ??
+          order.arrivedAtStoreTimestamp ??
+          order.arrived_at_merchant_at ??
+          order.arrived_at_store_timestamp
+      ) > 0;
+      const isAcceptedAfterArrival =
+        (status === "accepted" || status === "assigned") &&
+        hasServerRecordedArrival;
 
-      if (!allowedStatuses.has(status)) {
+      if (!allowedStatuses.has(status) && !isAcceptedAfterArrival) {
         throw new DomainHttpsError(
           "failed-precondition",
-          "حالة الطلب الحالية لا تسمح برفع بيانات العميل والإيصال."
+          `حالة الطلب الحالية (${status || "غير محددة"}) لا تسمح برفع بيانات العميل والإيصال.`
         );
       }
 
