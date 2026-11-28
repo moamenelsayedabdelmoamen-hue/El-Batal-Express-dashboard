@@ -116,7 +116,7 @@ describe("Static Security & Architecture Invariants (Rules + Server-Only + Paymo
     // Legacy nested receipts must not inherit authenticated-user read access from merchant assets.
     assert.match(
       storageRules,
-      /match\s+\/merchants\/\{merchantId\}\/\{allFiles=\*\*\}\s*\{[\s\S]*?allow read:\s*if isAuthenticated\(\)[\s\S]*?!allFiles\.matches\('subscription_receipts\/\.\*'\)/
+      /match\s+\/merchants\/\{merchantId\}\/\{allFiles=\*\*\}\s*\{[\s\S]*?allow read:\s*if isAuthenticated\(\)[\s\S]*?allFiles\[0\]\s*!=\s*'subscription_receipts'/
     );
     // Nested merchant receipt paths are create-only for the owner; generic asset rules cannot grant updates.
     const genericMerchantRules = storageRules.match(
@@ -124,7 +124,7 @@ describe("Static Security & Architecture Invariants (Rules + Server-Only + Paymo
     )?.[1] || "";
     assert.match(
       genericMerchantRules,
-      /allow create, update:\s*if isAuthenticated\(\)[\s\S]*?!allFiles\.matches\('subscription_receipts\/\.\*'\)/
+      /allow create, update:\s*if isAuthenticated\(\)[\s\S]*?allFiles\[0\]\s*!=\s*'subscription_receipts'/
     );
     const nestedReceiptRules = storageRules.match(
       /match\s+\/merchants\/\{merchantId\}\/subscription_receipts\/\{fileName\}\s*\{([\s\S]*?)\n    \}/

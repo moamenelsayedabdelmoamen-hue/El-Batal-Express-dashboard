@@ -674,6 +674,42 @@ describe("El-Batal Cloud Functions Order Server Service", () => {
     assert.equal(db.getDocData("orders/ord_legacy").dispatchStatus, "no_captains_available");
   });
 
+  it("allows legacy accepted status for receipt submission only after server-recorded merchant arrival", async () => {
+    const now = Date.UTC(2026, 10, 18, 12, 0, 0);
+    const {db, service} = createHarness(now);
+    seedMerchantAndSub(db, "merch_1");
+    seedCaptain(db, "cap_1", {}, now);
+    seedPendingOrder(db, "ord_legacy_receipt");
+
+    await service.dispatchNewOrSearchingOrder("ord_legacy_receipt");
+    await service.acceptOrder("cap_1", {orderId: "ord_legacy_receipt"});
+
+    const receiptPayload = {
+      orderId: "ord_legacy_receipt",
+      customerName: "أحمد علي",
+      customerPhone: "01012345678",
+      receiptImagePath: "orders/ord_legacy_receipt/receipts/r1.jpg",
+    };
+
+    // The initial accepted state must not bypass the merchant-arrival step.
+    await assert.rejects(
+      () => service.submitCustomerDeliveryDetails("cap_1", receiptPayload),
+      (e) => e instanceof DomainHttpsError && e.code === "failed-precondition"
+    );
+
+    // The arrival callable records a trusted server timestamp. If a legacy
+    // writer later restores "accepted", that evidence still permits submission.
+    await service.captainArrivedAtMerchant("cap_1", {orderId: "ord_legacy_receipt"});
+    await db.collection("orders").doc("ord_legacy_receipt").update({status: "accepted"});
+
+    const result = await service.submitCustomerDeliveryDetails("cap_1", receiptPayload);
+    assert.equal(result.status, "awaiting_merchant_confirmation");
+    assert.equal(
+      db.getDocData("orders/ord_legacy_receipt").status,
+      "awaiting_merchant_confirmation"
+    );
+  });
+
   it("7. Full lifecycle & atomic idempotent confirmDelivery (zero double-crediting)", async () => {
     const now = Date.UTC(2026, 10, 18, 12, 0, 0);
     const {db, service} = createHarness(now);
