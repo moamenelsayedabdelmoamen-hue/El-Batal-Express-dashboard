@@ -1,6 +1,7 @@
 import {initializeApp} from "firebase-admin/app";
 import {createHash, randomInt} from "node:crypto";
 import {getFirestore, FieldValue, GeoPoint} from "firebase-admin/firestore";
+import {getStorage} from "firebase-admin/storage";
 import {setGlobalOptions} from "firebase-functions";
 import * as logger from "firebase-functions/logger";
 import {
@@ -364,6 +365,89 @@ export const submitCustomerDeliveryDetails = onCall(
 /**
  * Callable 5: Atomic idempotent delivery completion and wallet credit.
  */
+
+/**
+ * Returns a short-lived image URL only after verifying that the authenticated merchant
+ * owns the order (receipt) or an order assigned to the captain (profile photo).
+ * This is a narrow fallback for private Storage objects; it does not relax Storage rules.
+ */
+export const getMerchantOrderImageUrl = onCall(
+  {region: "us-central1"},
+  async (request) => {
+    const uid = request.auth?.uid;
+    if (!uid) throw new HttpsError("unauthenticated", "يجب تسجيل الدخول أولاً.");
+
+    const storagePath = readString(
+      (request.data ?? {}) as Record<string, unknown>,
+      "storagePath"
+    ).trim().replace(/^\/+/, "");
+    if (!storagePath || storagePath.length > 1024 ||
+        storagePath.includes("..") || storagePath.includes("\\") ||
+        storagePath.includes("?") || storagePath.includes("#")) {
+      throw new HttpsError("invalid-argument", "مسار الصورة غير صالح.");
+    }
+
+    const db = getFirestore();
+    const merchantSnap = await db.collection("merchants").doc(uid).get();
+    if (!merchantSnap.exists) {
+      throw new HttpsError("permission-denied", "هذا الحساب ليس حساب تاجر معتمداً.");
+    }
+
+    let authorized = false;
+    if (storagePath.startsWith("orders/")) {
+      const match = storagePath.match(/^orders\/([^/]+)\/receipts\/[^/]+$/);
+      if (!match) throw new HttpsError("invalid-argument", "مسار إيصال الطلب غير صالح.");
+      const orderSnap = await db.collection("orders").doc(match[1]).get();
+      if (!orderSnap.exists) throw new HttpsError("not-found", "الطلب غير موجود.");
+      const order = (orderSnap.data() ?? {}) as Record<string, unknown>;
+      const ownsOrder = ["merchantId", "restaurantId", "storeId", "vendorId", "ownerId"]
+        .some((key) => order[key] === uid);
+      const recordedReceipt = [
+        "receiptImagePath", "receiptImageUrl", "receiptPath", "receiptUrl",
+        "receipt_image_path", "receipt_image_url",
+      ].some((key) => order[key] === storagePath);
+      authorized = ownsOrder && recordedReceipt;
+    } else if (storagePath.startsWith("captains/")) {
+      const match = storagePath.match(/^captains\/([^/]+)\/profile\/profile\.jpg$/);
+      if (!match) throw new HttpsError("invalid-argument", "مسار صورة الكابتن غير صالح.");
+      const captainId = match[1];
+      const captainSnap = await db.collection("captains").doc(captainId).get();
+      if (!captainSnap.exists) throw new HttpsError("not-found", "ملف الكابتن غير موجود.");
+
+      // Query by captain only (single-field index), then verify merchant ownership server-side.
+      const candidateFields = ["captainId", "captainUid", "driverId", "assignedCaptainId"];
+      for (const field of candidateFields) {
+        const orders = await db.collection("orders")
+          .where(field, "==", captainId)
+          .limit(50)
+          .get();
+        if (orders.docs.some((doc) => {
+          const order = doc.data() as Record<string, unknown>;
+          return ["merchantId", "restaurantId", "storeId", "vendorId", "ownerId"]
+            .some((key) => order[key] === uid);
+        })) {
+          authorized = true;
+          break;
+        }
+      }
+    } else {
+      throw new HttpsError("invalid-argument", "نوع الصورة غير مدعوم.");
+    }
+
+    if (!authorized) {
+      throw new HttpsError("permission-denied", "غير مسموح لهذا التاجر بعرض هذه الصورة.");
+    }
+
+    const file = getStorage().bucket().file(storagePath);
+    const [exists] = await file.exists();
+    if (!exists) throw new HttpsError("not-found", "ملف الصورة غير موجود في التخزين.");
+
+    const expiresAt = Date.now() + 15 * 60 * 1000;
+    const [url] = await file.getSignedUrl({action: "read", expires: expiresAt});
+    return {url, expiresAt};
+  }
+);
+
 export const confirmDelivery = onCall(
   {region: "us-central1"},
   async (request) => {
